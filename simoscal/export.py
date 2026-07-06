@@ -9,11 +9,14 @@ each into a :class:`~simoscal.render.RenderedTable` for the writers.
 
 from __future__ import annotations
 
-from typing import Optional, Sequence
+import csv
+from pathlib import Path
+from typing import Optional, Sequence, Union
 
 from .calfile import CalFile, TableView
+from .render import RenderedTable
 
-__all__ = ["select_tables"]
+__all__ = ["select_tables", "write_csv"]
 
 
 def select_tables(
@@ -61,3 +64,35 @@ def select_tables(
             selected[view.uniqueid] = view
 
     return list(selected.values())
+
+
+def _write_grid_block(writer, rt: RenderedTable) -> None:
+    """Write one ``RenderedTable``'s grid rows, shape-driven (no header for 1x1)."""
+    rows, cols = rt.values.shape
+    if rows == 1 and cols == 1:
+        writer.writerow([rt.values[0, 0]])
+        return
+    if rt.y_labels is None:
+        # Single row (1D, no y-axis): a bare header row + a bare data row —
+        # no spurious leading blank cell for the missing row axis.
+        writer.writerow(list(rt.x_labels))
+        writer.writerow(list(rt.values[0]))
+        return
+    writer.writerow([""] + list(rt.x_labels))
+    for i, y in enumerate(rt.y_labels):
+        writer.writerow([y] + list(rt.values[i]))
+
+
+def write_csv(tables: Sequence[RenderedTable], path: Union[str, Path]) -> None:
+    """Write ``tables`` to a single CSV file as stacked, labeled grid blocks.
+
+    Each table is preceded by a metadata row (symbol, title, units) and
+    followed by a blank separator line, in call order. Values are written at
+    full precision via Python's default float formatting — no rounding.
+    """
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        for rt in tables:
+            w.writerow([rt.symbol or "", rt.title or "", rt.units or ""])
+            _write_grid_block(w, rt)
+            w.writerow([])
