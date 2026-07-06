@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import csv
+import struct
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from simoscal import (
@@ -11,7 +14,9 @@ from simoscal import (
     BinImage,
     CalFile,
     parse_xdf,
+    render_table,
     select_tables,
+    write_csv,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -25,6 +30,25 @@ def mini_cal() -> CalFile:
     # sized just enough to cover the fixture's highest declared address.
     size = model.base_offset + 0x6000
     buf = bytearray(size)
+    img = BinImage(buf, region_start=model.region_start, region_size=len(buf))
+    return CalFile(model, img)
+
+
+@pytest.fixture(scope="module")
+def mini_cal_with_data() -> CalFile:
+    """Same mini.xdf, but with real decodable bytes (mirrors test_render.py)."""
+    model = parse_xdf(str(MINI_XDF))
+    size = model.base_offset + 0x6000
+    buf = bytearray(size)
+    off = model.base_offset + 0x1000
+    buf[off : off + 200] = struct.pack("<100h", *range(100))
+    buf[model.base_offset + 0x2000] = 200
+    foff = model.base_offset + 0x4000
+    buf[foff : foff + 4] = struct.pack("<f", 12.5)
+    xoff = model.base_offset + 0x5000
+    buf[xoff : xoff + 10] = struct.pack("<5H", 1000, 2000, 3000, 4000, 5000)
+    zoff = model.base_offset + 0x5010
+    buf[zoff : zoff + 10] = struct.pack("<5H", 10, 20, 30, 40, 50)
     img = BinImage(buf, region_start=model.region_start, region_size=len(buf))
     return CalFile(model, img)
 
@@ -81,3 +105,88 @@ def test_select_no_input_raises_valueerror(mini_cal: CalFile):
 def test_select_real_axis_category_count(real_cal):
     views = select_tables(real_cal, category="Axis")
     assert len(views) == 444
+
+
+# --------------------------------------------------------------------------- #
+# U3 — CSV writer
+# --------------------------------------------------------------------------- #
+def _read_csv_blocks(path: Path) -> list[list[list[str]]]:
+    """Split a written CSV into blank-line-separated blocks of rows."""
+    with open(path, newline="") as f:
+        rows = list(csv.reader(f))
+    blocks: list[list[list[str]]] = []
+    current: list[list[str]] = []
+    for row in rows:
+        if row == []:
+            if current:
+                blocks.append(current)
+                current = []
+        else:
+            current.append(row)
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def test_write_csv_10x10_roundtrips(mini_cal_with_data: CalFile, tmp_path):
+    view = mini_cal_with_data.get("SYM_10X10")
+    rt = render_table(view)
+    out = tmp_path / "out.csv"
+    write_csv([rt], out)
+
+    blocks = _read_csv_blocks(out)
+    assert len(blocks) == 1
+    meta, *grid = blocks[0]
+    assert meta == ["SYM_10X10", "Ten by Ten", "%"]
+    header, *data_rows = grid
+    assert header[0] == ""
+    recovered = np.array([[float(c) for c in r[1:]] for r in data_rows])
+    np.testing.assert_array_equal(recovered, view.values)
+
+
+def test_write_csv_multiple_tables_stacked_in_order(mini_cal_with_data: CalFile, tmp_path):
+    tables = [
+        render_table(mini_cal_with_data.get("SYM_10X10")),
+        render_table(mini_cal_with_data.get("PROFILE_1D")),
+        render_table(mini_cal_with_data.get("SYM_SCALAR")),
+    ]
+    out = tmp_path / "out.csv"
+    write_csv(tables, out)
+
+    blocks = _read_csv_blocks(out)
+    assert len(blocks) == 3
+    assert [b[0][0] for b in blocks] == ["SYM_10X10", "PROFILE_1D", "SYM_SCALAR"]
+
+    # 1D block: no leading blank cell in header, no leading label in data row.
+    _, header, data = blocks[1]
+    assert header == ["1000.0", "2000.0", "3000.0", "4000.0", "5000.0"]
+    assert data == ["10.0", "20.0", "30.0", "40.0", "50.0"]
+
+    # Scalar block: bare value line only, no header row.
+    _, value_row = blocks[2]
+    assert value_row == ["200.0"]
+
+
+def test_write_csv_full_precision_value_roundtrips(mini_cal_with_data: CalFile, tmp_path):
+    view = mini_cal_with_data.get("SYM_10X10")
+    rt = render_table(view)
+    out = tmp_path / "out.csv"
+    write_csv([rt], out)
+
+    blocks = _read_csv_blocks(out)
+    _, header, *data_rows = blocks[0]
+    recovered = np.array([[float(c) for c in r[1:]] for r in data_rows])
+    np.testing.assert_array_equal(recovered, view.values)
+    # A cell with a many-decimal-digit value round-trips exactly through str->float.
+    assert float(data_rows[1][2]) == view.values[1, 1]
+
+
+def test_write_csv_real_tables_roundtrip(real_cal, tmp_path):
+    tables = [render_table(v) for v in real_cal.unique_tables()[:5]]
+    out = tmp_path / "out.csv"
+    write_csv(tables, out)
+
+    blocks = _read_csv_blocks(out)
+    assert len(blocks) == 5
+    for rt, block in zip(tables, blocks):
+        assert block[0][0] == (rt.symbol or "")

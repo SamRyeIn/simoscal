@@ -38,7 +38,7 @@ from .codec import (
 )
 from .calfile import CalFile, TableView
 from .render import RenderedTable, render_table
-from .export import select_tables
+from .export import select_tables, write_csv
 from .checksum import (
     ChecksumReport,
     StaleChecksumWarning,
@@ -89,6 +89,7 @@ __all__ = [
     "RenderedTable",
     "render_table",
     "select_tables",
+    "write_csv",
     "ChecksumReport",
     "StaleChecksumWarning",
     "verify_checksums",
