@@ -16,9 +16,9 @@ from typing import Optional, Sequence, Union
 import openpyxl
 
 from .calfile import CalFile, TableView
-from .render import RenderedTable
+from .render import RenderedTable, render_table
 
-__all__ = ["select_tables", "write_csv", "write_xlsx"]
+__all__ = ["select_tables", "write_csv", "write_xlsx", "export_tables"]
 
 _MAX_SHEET_NAME_LEN = 31
 _INVALID_SHEET_CHARS = set("[]:*?/\\")
@@ -153,3 +153,32 @@ def write_xlsx(tables: Sequence[RenderedTable], path: Union[str, Path]) -> None:
                     ws.append(row)
                 ws.append([])
     wb.save(str(path))
+
+
+def export_tables(
+    cal: CalFile,
+    path: Union[str, Path],
+    *,
+    symbols: Optional[Sequence[str]] = None,
+    category: Optional[str] = None,
+    all_tables: bool = False,
+) -> None:
+    """Select, render, and write tables to ``path`` in one call.
+
+    Resolves the selection (:func:`select_tables`), renders every match
+    (:func:`~simoscal.render.render_table`), and dispatches to :func:`write_csv`
+    or :func:`write_xlsx` by ``path``'s suffix. An unrecognized suffix raises
+    ``ValueError`` rather than guessing a format.
+    """
+    views = select_tables(cal, symbols=symbols, category=category, all_tables=all_tables)
+    tables = [render_table(v) for v in views]
+
+    suffix = Path(path).suffix.lower()
+    if suffix == ".csv":
+        write_csv(tables, path)
+    elif suffix == ".xlsx":
+        write_xlsx(tables, path)
+    else:
+        raise ValueError(
+            f"unrecognized export suffix {suffix!r} for {path!r}; expected .csv or .xlsx"
+        )
