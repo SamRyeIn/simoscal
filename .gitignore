@@ -17,3 +17,7 @@ venv/
 
 # OS
 .DS_Store
+
+# Demo script output
+demos/*.csv
+demos/*.xlsx
