@@ -43,6 +43,8 @@ class RenderedTable:
     ``values`` is always a 2D ``(rows, cols)`` numpy array, even in degenerate
     cases. ``x_labels`` is always present; ``y_labels`` is ``None`` when the
     table has a single row (1D or scalar) — there is no row axis to label.
+    ``x_units``/``y_units`` are the axis's declared units (``None`` when the
+    axis has none), independent of whether the axis is embedded or label-only.
     """
 
     symbol: Optional[str]
@@ -51,6 +53,8 @@ class RenderedTable:
     categories: tuple[str, ...]
     x_labels: tuple[float, ...]
     y_labels: Optional[tuple[float, ...]]
+    x_units: Optional[str]
+    y_units: Optional[str]
     values: np.ndarray
 
 
@@ -73,5 +77,7 @@ def render_table(view: TableView) -> RenderedTable:
         categories=tuple(c.name for c in view.table.categories),
         x_labels=x_labels,
         y_labels=y_labels,
+        x_units=view.table.x.units if view.table.x is not None else None,
+        y_units=view.table.y.units if view.table.y is not None else None,
         values=values,
     )

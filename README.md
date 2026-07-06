@@ -118,7 +118,7 @@ export_tables(cal, "full_dump.xlsx", all_tables=True)  # one sheet per category
 |--------|-------------|
 | `export_tables(cal, path, *, symbols=None, category=None, all_tables=False)` | Select, render, and write in one call. Dispatches to CSV/xlsx by `path`'s suffix. |
 | `select_tables(cal, *, symbols=None, category=None, all_tables=False)` | Resolve a selection spec into a deduplicated `list[TableView]`, unioned by `uniqueid`. |
-| `render_table(view)` → `RenderedTable` | The shared table→grid rendering layer (`symbol`, `title`, `units`, `categories`, `x_labels`, `y_labels`, `values`). Public so Phase 3 (visualization) can reuse it directly. |
+| `render_table(view)` → `RenderedTable` | The shared table→grid rendering layer (`symbol`, `title`, `units`, `categories`, `x_labels`, `y_labels`, `x_units`, `y_units`, `values`). Public so Phase 3 (visualization) can reuse it directly. |
 | `write_csv(tables, path)` | All tables in **one file**, stacked as labeled grid blocks. |
 | `write_xlsx(tables, path)` | Tables grouped onto sheets **by XDF category**; a multi-category table is written onto every one of its categories' sheets. |
 

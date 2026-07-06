@@ -48,6 +48,9 @@ def test_render_10x10_index_fallback(mini_cal: CalFile):
     assert rt.units == "%"
     assert rt.x_labels == tuple(float(i) for i in range(10))
     assert rt.y_labels == tuple(float(i) for i in range(10))
+    # Mini's x/y axes are label-only with no <units> element.
+    assert rt.x_units is None
+    assert rt.y_units is None
     np.testing.assert_array_equal(rt.values, view.values)
 
 
@@ -56,6 +59,8 @@ def test_render_1d_real_x_axis(mini_cal: CalFile):
     rt = render_table(view)
     assert rt.x_labels == (1000.0, 2000.0, 3000.0, 4000.0, 5000.0)
     assert rt.y_labels is None
+    assert rt.x_units == "RPM"
+    assert rt.y_units is None  # y axis has no <units> element
     assert rt.values.shape == (1, 5)
     np.testing.assert_array_equal(rt.values, view.values)
 
@@ -75,6 +80,8 @@ def test_render_real_2d_table(real_cal):
     view = real_cal.get("IP_PRS_UP_THR_DIF_WIDE_OPEN_THR")
     assert view.shape == (6, 6)
     rt = render_table(view)
+    assert rt.x_units == "rpm"
+    assert rt.y_units == "hPa"
     np.testing.assert_allclose(rt.x_labels, view.axis_values("x").ravel())
     np.testing.assert_allclose(rt.y_labels, view.axis_values("y").ravel())
     np.testing.assert_array_equal(rt.values, view.values)
