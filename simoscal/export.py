@@ -93,12 +93,13 @@ def _grid_rows(rt: RenderedTable) -> list[list]:
 def _table_block_rows(rt: RenderedTable) -> list[list]:
     """A metadata row followed by the table's grid rows.
 
-    The metadata row is ``symbol, title, units, x_units, y_units`` — the axis
-    units ride alongside the z units rather than cluttering the grid header.
+    The metadata row is ``symbol, title, x_units, y_units, units`` — axis
+    units in x, y, z order, riding alongside the metadata rather than
+    cluttering the grid header.
     """
     meta = [
-        rt.symbol or "", rt.title or "", rt.units or "",
-        rt.x_units or "", rt.y_units or "",
+        rt.symbol or "", rt.title or "",
+        rt.x_units or "", rt.y_units or "", rt.units or "",
     ]
     return [meta, *_grid_rows(rt)]
 
@@ -106,8 +107,8 @@ def _table_block_rows(rt: RenderedTable) -> list[list]:
 def write_csv(tables: Sequence[RenderedTable], path: Union[str, Path]) -> None:
     """Write ``tables`` to a single CSV file as stacked, labeled grid blocks.
 
-    Each table is preceded by a metadata row (symbol, title, units, x_units,
-    y_units) and followed by a blank separator line, in call order. Values are
+    Each table is preceded by a metadata row (symbol, title, x_units, y_units,
+    units) and followed by a blank separator line, in call order. Values are
     written at full precision via Python's default float formatting — no
     rounding. Encoded ``utf-8-sig`` (a UTF-8 BOM) so spreadsheet apps that
     guess encoding by heuristic (Excel/Numbers) detect UTF-8 instead of

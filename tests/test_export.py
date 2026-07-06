@@ -140,7 +140,7 @@ def test_write_csv_10x10_roundtrips(mini_cal_with_data: CalFile, tmp_path):
     blocks = _read_csv_blocks(out)
     assert len(blocks) == 1
     meta, *grid = blocks[0]
-    assert meta == ["SYM_10X10", "Ten by Ten", "%", "", ""]
+    assert meta == ["SYM_10X10", "Ten by Ten", "", "", "%"]
     header, *data_rows = grid
     assert header[0] == ""
     recovered = np.array([[float(c) for c in r[1:]] for r in data_rows])
@@ -213,7 +213,7 @@ def test_write_csv_utf8_bom_and_axis_units(real_cal, tmp_path):
 
     blocks = _read_csv_blocks(out)
     meta = blocks[0][0]
-    assert meta == [rt.symbol, rt.title, "°CRK", "rpm", "mg/stk"]
+    assert meta == [rt.symbol, rt.title, "rpm", "mg/stk", "°CRK"]
 
 
 # --------------------------------------------------------------------------- #

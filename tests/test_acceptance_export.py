@@ -79,7 +79,7 @@ def test_ae1_2d_grid_matches_table_values(mini_cal: CalFile, tmp_path):
 
     (block,) = _read_csv_blocks(out)
     meta, header, *data_rows = block
-    assert meta == ["SYM_10X10", "Ten by Ten", "%", "", ""]
+    assert meta == ["SYM_10X10", "Ten by Ten", "", "", "%"]
     assert header[1:] == [str(float(i)) for i in range(10)]
     row_labels = [r[0] for r in data_rows]
     assert row_labels == [str(float(i)) for i in range(10)]
