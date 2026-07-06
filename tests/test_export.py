@@ -115,7 +115,7 @@ def test_select_real_axis_category_count(real_cal):
 # --------------------------------------------------------------------------- #
 def _read_csv_blocks(path: Path) -> list[list[list[str]]]:
     """Split a written CSV into blank-line-separated blocks of rows."""
-    with open(path, newline="") as f:
+    with open(path, newline="", encoding="utf-8-sig") as f:
         rows = list(csv.reader(f))
     blocks: list[list[list[str]]] = []
     current: list[list[str]] = []
@@ -140,7 +140,7 @@ def test_write_csv_10x10_roundtrips(mini_cal_with_data: CalFile, tmp_path):
     blocks = _read_csv_blocks(out)
     assert len(blocks) == 1
     meta, *grid = blocks[0]
-    assert meta == ["SYM_10X10", "Ten by Ten", "%"]
+    assert meta == ["SYM_10X10", "Ten by Ten", "%", "", ""]
     header, *data_rows = grid
     assert header[0] == ""
     recovered = np.array([[float(c) for c in r[1:]] for r in data_rows])
@@ -193,6 +193,27 @@ def test_write_csv_real_tables_roundtrip(real_cal, tmp_path):
     assert len(blocks) == 5
     for rt, block in zip(tables, blocks):
         assert block[0][0] == (rt.symbol or "")
+
+
+def test_write_csv_utf8_bom_and_axis_units(real_cal, tmp_path):
+    # This table has non-ASCII z units ("°CRK") and real x/y axis units
+    # ("rpm" / "mg/stk") — the regression case for both the Mac Roman/CP1252
+    # mojibake bug and the missing-axis-units gap.
+    view = real_cal.get("IP_CAM_SP_IS_MPLH_CH_VCP[EX][LFT_ALL]")
+    rt = render_table(view)
+    assert rt.units == "°CRK"
+    assert rt.x_units == "rpm"
+    assert rt.y_units == "mg/stk"
+
+    out = tmp_path / "out.csv"
+    write_csv([rt], out)
+
+    raw = out.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")  # UTF-8 BOM
+
+    blocks = _read_csv_blocks(out)
+    meta = blocks[0][0]
+    assert meta == [rt.symbol, rt.title, "°CRK", "rpm", "mg/stk"]
 
 
 # --------------------------------------------------------------------------- #
@@ -268,12 +289,14 @@ def test_write_xlsx_sheet_name_sanitized_and_deduped(tmp_path):
     rt1 = RenderedTable(
         symbol="A", title="A title", units="u",
         categories=(long_prefix + "_one",),
-        x_labels=(0.0,), y_labels=None, values=np.array([[1.0]]),
+        x_labels=(0.0,), y_labels=None,
+        x_units=None, y_units=None, values=np.array([[1.0]]),
     )
     rt2 = RenderedTable(
         symbol="B", title="B title", units="u",
         categories=(long_prefix + "_two",),
-        x_labels=(0.0,), y_labels=None, values=np.array([[2.0]]),
+        x_labels=(0.0,), y_labels=None,
+        x_units=None, y_units=None, values=np.array([[2.0]]),
     )
     out = tmp_path / "out.xlsx"
     write_xlsx([rt1, rt2], out)

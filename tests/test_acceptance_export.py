@@ -53,7 +53,7 @@ def mini_cal() -> CalFile:
 
 
 def _read_csv_blocks(path: Path) -> list[list[list[str]]]:
-    with open(path, newline="") as f:
+    with open(path, newline="", encoding="utf-8-sig") as f:
         rows = list(csv.reader(f))
     blocks: list[list[list[str]]] = []
     current: list[list[str]] = []
@@ -79,7 +79,7 @@ def test_ae1_2d_grid_matches_table_values(mini_cal: CalFile, tmp_path):
 
     (block,) = _read_csv_blocks(out)
     meta, header, *data_rows = block
-    assert meta == ["SYM_10X10", "Ten by Ten", "%"]
+    assert meta == ["SYM_10X10", "Ten by Ten", "%", "", ""]
     assert header[1:] == [str(float(i)) for i in range(10)]
     row_labels = [r[0] for r in data_rows]
     assert row_labels == [str(float(i)) for i in range(10)]
