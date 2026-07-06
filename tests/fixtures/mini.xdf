@@ -8,6 +8,7 @@
     <REGION type="0xFFFFFFFF" startaddress="0x0" size="0x400000" regionflags="0x0" name="Binary" desc="BIN for the XDF" />
     <CATEGORY index="0x0" name="Axis" />
     <CATEGORY index="0x1" name="Boost Control" />
+    <CATEGORY index="0x2" name="Fuel Trim" />
   </XDFHEADER>
   <XDFTABLE uniqueid="0x100" flags="0x30">
     <title>Ten by Ten</title>
@@ -36,6 +37,7 @@
     <title>Scalar One</title>
     <description>SYM_SCALAR</description>
     <CATEGORYMEM index="0" category="2" />
+    <CATEGORYMEM index="1" category="3" />
     <XDFAXIS uniqueid="0x0" id="x">
       <indexcount>1</indexcount>
       <MATH equation="X"><VAR id="X" /></MATH>
@@ -80,6 +82,7 @@
   <XDFTABLE uniqueid="0x500" flags="0x30">
     <title>RPM Profile</title>
     <description>PROFILE_1D</description>
+    <CATEGORYMEM index="0" category="3" />
     <XDFAXIS uniqueid="0x0" id="x">
       <EMBEDDEDDATA mmedtypeflags="0x2" mmedaddress="0x5000" mmedelementsizebits="16" mmedcolcount="5" mmedrowcount="1" mmedmajorstridebits="16" mmedminorstridebits="0" />
       <indexcount>5</indexcount>

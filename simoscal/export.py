@@ -13,10 +13,15 @@ import csv
 from pathlib import Path
 from typing import Optional, Sequence, Union
 
+import openpyxl
+
 from .calfile import CalFile, TableView
 from .render import RenderedTable
 
-__all__ = ["select_tables", "write_csv"]
+__all__ = ["select_tables", "write_csv", "write_xlsx"]
+
+_MAX_SHEET_NAME_LEN = 31
+_INVALID_SHEET_CHARS = set("[]:*?/\\")
 
 
 def select_tables(
@@ -66,21 +71,28 @@ def select_tables(
     return list(selected.values())
 
 
-def _write_grid_block(writer, rt: RenderedTable) -> None:
-    """Write one ``RenderedTable``'s grid rows, shape-driven (no header for 1x1)."""
+def _grid_rows(rt: RenderedTable) -> list[list]:
+    """The grid rows for one ``RenderedTable``, shape-driven (no header for 1x1).
+
+    Shared by both writers so CSV and xlsx stay trivially consistent — a
+    format-agnostic list of rows, each a plain list of cell values.
+    """
     rows, cols = rt.values.shape
     if rows == 1 and cols == 1:
-        writer.writerow([rt.values[0, 0]])
-        return
+        return [[rt.values[0, 0]]]
     if rt.y_labels is None:
         # Single row (1D, no y-axis): a bare header row + a bare data row —
         # no spurious leading blank cell for the missing row axis.
-        writer.writerow(list(rt.x_labels))
-        writer.writerow(list(rt.values[0]))
-        return
-    writer.writerow([""] + list(rt.x_labels))
+        return [list(rt.x_labels), list(rt.values[0])]
+    grid = [[""] + list(rt.x_labels)]
     for i, y in enumerate(rt.y_labels):
-        writer.writerow([y] + list(rt.values[i]))
+        grid.append([y] + list(rt.values[i]))
+    return grid
+
+
+def _table_block_rows(rt: RenderedTable) -> list[list]:
+    """A metadata row followed by the table's grid rows."""
+    return [[rt.symbol or "", rt.title or "", rt.units or ""], *_grid_rows(rt)]
 
 
 def write_csv(tables: Sequence[RenderedTable], path: Union[str, Path]) -> None:
@@ -93,6 +105,51 @@ def write_csv(tables: Sequence[RenderedTable], path: Union[str, Path]) -> None:
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
         for rt in tables:
-            w.writerow([rt.symbol or "", rt.title or "", rt.units or ""])
-            _write_grid_block(w, rt)
+            for row in _table_block_rows(rt):
+                w.writerow(row)
             w.writerow([])
+
+
+def _sanitize_sheet_name(name: str, used: set[str]) -> str:
+    """A workbook-safe, unique sheet name truncated to Excel's 31-char limit."""
+    cleaned = "".join("_" if c in _INVALID_SHEET_CHARS else c for c in name)
+    cleaned = cleaned[:_MAX_SHEET_NAME_LEN] or "Sheet"
+    candidate = cleaned
+    n = 1
+    while candidate in used:
+        suffix = f"~{n}"
+        candidate = cleaned[: _MAX_SHEET_NAME_LEN - len(suffix)] + suffix
+        n += 1
+    used.add(candidate)
+    return candidate
+
+
+def write_xlsx(tables: Sequence[RenderedTable], path: Union[str, Path]) -> None:
+    """Write ``tables`` to a single xlsx workbook, sheets grouped by XDF category.
+
+    One sheet per category represented across ``tables`` (union), named from
+    the category and sanitized/truncated to Excel's 31-character sheet-name
+    limit. A table in N categories is written onto N sheets in full — not
+    linked or referenced once — matching how TunerPro itself cross-lists a
+    table. A table with no categories is not written to any sheet (grouping
+    is by category; there is nothing to group it under).
+    """
+    categories: list[str] = []
+    seen: set[str] = set()
+    for rt in tables:
+        for cat in rt.categories:
+            if cat not in seen:
+                seen.add(cat)
+                categories.append(cat)
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    used_names: set[str] = set()
+    for cat in categories:
+        ws = wb.create_sheet(title=_sanitize_sheet_name(cat, used_names))
+        for rt in tables:
+            if cat in rt.categories:
+                for row in _table_block_rows(rt):
+                    ws.append(row)
+                ws.append([])
+    wb.save(str(path))
