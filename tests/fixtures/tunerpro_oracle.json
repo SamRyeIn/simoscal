@@ -1,0 +1,114 @@
+{
+  "xdf": "SC8S50.V1.0.xdf",
+  "bin": "5G0906259L__0002.bin",
+  "captured": "2026-07-06 by Sam, TunerPro (screenshots in oracles/TunerPro_export/)",
+  "tolerance": 0.01,
+  "tables": [
+    {
+      "uniqueid": "0x11f9c",
+      "symbol": "ID_PORT_SP",
+      "note": "10x10 int8, identity scaling",
+      "values": [
+        [1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+        [1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+        [1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+        [1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+        [1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+      ]
+    },
+    {
+      "uniqueid": "0x12000",
+      "symbol": "ID_PORT_SP_CH",
+      "note": "10x10 int8, identity scaling",
+      "values": [
+        [1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
+        [1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+        [1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+        [1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+        [1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+      ]
+    },
+    {
+      "uniqueid": "0x4d0d0",
+      "symbol": "IP_PRS_UP_THR_DIF_WIDE_OPEN_THR",
+      "note": "6x6 uint16, non-identity scaling; exercises the sign-flag fix (CR-20260706-22) and column-major order (CR-20260706-21)",
+      "values": [
+        [250.00, 250.00, 150.00, 100.00, 95.02, 90.05],
+        [250.00, 250.00, 150.00, 100.00, 95.02, 90.05],
+        [250.00, 250.00, 150.00, 100.00, 95.02, 90.05],
+        [250.00, 250.00, 150.00, 100.00, 95.02, 90.05],
+        [250.00, 250.00, 150.00, 100.00, 95.02, 90.05],
+        [250.00, 250.00, 150.00, 100.00, 95.02, 90.05]
+      ]
+    },
+    {
+      "uniqueid": "0x21c96",
+      "symbol": "IP_N_SP_IS_BAS[MT]",
+      "note": "6x6 int16, identity scaling",
+      "values": [
+        [1100, 960, 900, 800, 700, 700],
+        [1100, 960, 900, 800, 700, 700],
+        [1100, 960, 900, 800, 700, 700],
+        [1100, 960, 900, 800, 700, 700],
+        [1100, 960, 900, 800, 700, 700],
+        [1100, 960, 900, 800, 700, 700]
+      ]
+    },
+    {
+      "uniqueid": "0x22192",
+      "symbol": "IP_N_SP_IS_T_AST_STST",
+      "note": "6x4 uint16, identity scaling; non-square column-major table exercising the row/col order fix (CR-20260706-21)",
+      "values": [
+        [900, 900, 640, 640],
+        [1200, 1200, 800, 800],
+        [1000, 1000, 790, 790],
+        [950, 950, 780, 780],
+        [900, 900, 700, 700],
+        [600, 600, 600, 600]
+      ]
+    },
+    {
+      "uniqueid": "0x36ec",
+      "symbol": "C_FAC_POW_PUT_CTL_BOL",
+      "note": "1x1 uint16, non-identity scaling; exercises the sign-flag fix (CR-20260706-22)",
+      "values": [[102.00]]
+    },
+    {
+      "uniqueid": "0x2564",
+      "symbol": "C_LF_CMB_MOD_INH_RED",
+      "note": "1x1 uint32 bit field, identity scaling; exercises the sign-flag fix (CR-20260706-22)",
+      "values": [[4294967103.0]]
+    },
+    {
+      "uniqueid": "0x9b84",
+      "symbol": "C_DPL",
+      "note": "1x1 float32, m^3; TunerPro display truncates to 2 decimals (0.00) so this is a low-precision pin, not a value check",
+      "tol": 0.005,
+      "values": [[0.00]]
+    },
+    {
+      "uniqueid": "0x9cac",
+      "symbol": "C_PRS_IM_SP_MAX",
+      "note": "1x1 float32, hPa",
+      "tol": 0.5,
+      "values": [[239996.00]]
+    },
+    {
+      "uniqueid": "0x9bd4",
+      "symbol": "C_M_AIR_CYL_SP_MAX",
+      "note": "1x1 float32; TunerPro display truncates to 2 decimals (0.00) so this is a low-precision pin, not a value check",
+      "tol": 0.005,
+      "values": [[0.00]]
+    }
+  ]
+}

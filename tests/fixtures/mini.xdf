@@ -1,0 +1,80 @@
+<XDFFORMAT version="1.60">
+  <XDFHEADER>
+    <flags>0x1</flags>
+    <deftitle>mini.a2l</deftitle>
+    <description>Hand-written fixture for simoscal U2 parser tests</description>
+    <BASEOFFSET offset="0x200000" subtract="0" />
+    <DEFAULTS datasizeinbits="8" sigdigits="4" outputtype="1" signed="0" lsbfirst="1" float="0" />
+    <REGION type="0xFFFFFFFF" startaddress="0x0" size="0x400000" regionflags="0x0" name="Binary" desc="BIN for the XDF" />
+    <CATEGORY index="0x0" name="Axis" />
+    <CATEGORY index="0x1" name="Boost Control" />
+  </XDFHEADER>
+  <XDFTABLE uniqueid="0x100" flags="0x30">
+    <title>Ten by Ten</title>
+    <description>SYM_10X10</description>
+    <CATEGORYMEM index="0" category="2" />
+    <XDFAXIS uniqueid="0x0" id="x">
+      <indexcount>10</indexcount>
+      <MATH equation="X"><VAR id="X" /></MATH>
+      <LABEL index="0" value="-" />
+    </XDFAXIS>
+    <XDFAXIS uniqueid="0x0" id="y">
+      <indexcount>10</indexcount>
+      <MATH equation="X"><VAR id="X" /></MATH>
+      <LABEL index="0" value="-" />
+    </XDFAXIS>
+    <XDFAXIS uniqueid="0x0" id="z">
+      <EMBEDDEDDATA mmedtypeflags="0x6" mmedaddress="0x1000" mmedelementsizebits="16" mmedcolcount="10" mmedrowcount="10" mmedmajorstridebits="16" mmedminorstridebits="0" />
+      <indexcount>10</indexcount>
+      <min>-100.0</min>
+      <max>99.9969482421875</max>
+      <units>%</units>
+      <MATH equation="((1.0 * X) - 0.0 ) / (327.68 - (0.0 * X))"><VAR id="X" /></MATH>
+    </XDFAXIS>
+  </XDFTABLE>
+  <XDFTABLE uniqueid="0x200" flags="0x30">
+    <title>Scalar One</title>
+    <description>SYM_SCALAR</description>
+    <CATEGORYMEM index="0" category="2" />
+    <XDFAXIS uniqueid="0x0" id="x">
+      <indexcount>1</indexcount>
+      <MATH equation="X"><VAR id="X" /></MATH>
+      <LABEL index="0" value="-" />
+    </XDFAXIS>
+    <XDFAXIS uniqueid="0x0" id="y">
+      <indexcount>1</indexcount>
+      <MATH equation="X"><VAR id="X" /></MATH>
+      <LABEL index="0" value="-" />
+    </XDFAXIS>
+    <XDFAXIS uniqueid="0x0" id="z">
+      <EMBEDDEDDATA mmedtypeflags="0x2" mmedaddress="0x2000" mmedelementsizebits="8" mmedcolcount="1" mmedrowcount="1" mmedmajorstridebits="8" mmedminorstridebits="0" />
+      <indexcount>1</indexcount>
+      <min>0.0</min>
+      <max>255.0</max>
+      <units>-</units>
+      <MATH equation="X"><VAR id="X" /></MATH>
+    </XDFAXIS>
+  </XDFTABLE>
+  <XDFTABLE uniqueid="0x300" flags="0x30">
+    <title>Duplicate A</title>
+    <description>SYM_DUP</description>
+    <XDFAXIS uniqueid="0x0" id="z">
+      <EMBEDDEDDATA mmedtypeflags="0x2" mmedaddress="0x3000" mmedelementsizebits="8" mmedcolcount="1" mmedrowcount="1" mmedmajorstridebits="8" mmedminorstridebits="0" />
+      <min>0.0</min>
+      <max>255.0</max>
+      <units>-</units>
+      <MATH equation="X"><VAR id="X" /></MATH>
+    </XDFAXIS>
+  </XDFTABLE>
+  <XDFTABLE uniqueid="0x400" flags="0x30">
+    <title>Duplicate B</title>
+    <description>SYM_DUP</description>
+    <XDFAXIS uniqueid="0x0" id="z">
+      <EMBEDDEDDATA mmedtypeflags="0x10006" mmedaddress="0x4000" mmedelementsizebits="32" mmedcolcount="1" mmedrowcount="1" mmedmajorstridebits="32" mmedminorstridebits="0" />
+      <min>0.0</min>
+      <max>1000.0</max>
+      <units>kPa</units>
+      <MATH equation="X"><VAR id="X" /></MATH>
+    </XDFAXIS>
+  </XDFTABLE>
+</XDFFORMAT>
