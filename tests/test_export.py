@@ -7,16 +7,19 @@ import struct
 from pathlib import Path
 
 import numpy as np
+import openpyxl
 import pytest
 
 from simoscal import (
     AmbiguousTableError,
     BinImage,
     CalFile,
+    RenderedTable,
     parse_xdf,
     render_table,
     select_tables,
     write_csv,
+    write_xlsx,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -190,3 +193,103 @@ def test_write_csv_real_tables_roundtrip(real_cal, tmp_path):
     assert len(blocks) == 5
     for rt, block in zip(tables, blocks):
         assert block[0][0] == (rt.symbol or "")
+
+
+# --------------------------------------------------------------------------- #
+# U4 — xlsx writer
+# --------------------------------------------------------------------------- #
+def _strip_trailing_none(row: tuple) -> tuple:
+    """Drop right-padding ``None``s from a row (sheet-wide max_column padding)."""
+    row = list(row)
+    while row and row[-1] is None:
+        row.pop()
+    return tuple(row)
+
+
+def _sheet_blocks(ws) -> list[list[tuple]]:
+    """Split a worksheet into blank-row-separated blocks (mirrors _read_csv_blocks)."""
+    blocks: list[list[tuple]] = []
+    current: list[tuple] = []
+    for row in ws.iter_rows(values_only=True):
+        row = _strip_trailing_none(row)
+        if not row:
+            if current:
+                blocks.append(current)
+                current = []
+        else:
+            current.append(row)
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def test_write_xlsx_sheets_by_category(mini_cal_with_data: CalFile, tmp_path):
+    tables = [
+        render_table(mini_cal_with_data.get("SYM_10X10")),
+        render_table(mini_cal_with_data.get("SYM_SCALAR")),
+        render_table(mini_cal_with_data.get("PROFILE_1D")),
+    ]
+    out = tmp_path / "out.xlsx"
+    write_xlsx(tables, out)
+
+    wb = openpyxl.load_workbook(out)
+    assert set(wb.sheetnames) == {"Boost Control", "Fuel Trim"}
+
+    boost_symbols = {b[0][0] for b in _sheet_blocks(wb["Boost Control"])}
+    assert boost_symbols == {"SYM_10X10", "SYM_SCALAR"}
+
+    fuel_symbols = {b[0][0] for b in _sheet_blocks(wb["Fuel Trim"])}
+    assert fuel_symbols == {"SYM_SCALAR", "PROFILE_1D"}
+
+
+def test_write_xlsx_multi_category_table_identical_on_both_sheets(
+    mini_cal_with_data: CalFile, tmp_path
+):
+    tables = [
+        render_table(mini_cal_with_data.get("SYM_10X10")),
+        render_table(mini_cal_with_data.get("SYM_SCALAR")),
+        render_table(mini_cal_with_data.get("PROFILE_1D")),
+    ]
+    out = tmp_path / "out.xlsx"
+    write_xlsx(tables, out)
+
+    wb = openpyxl.load_workbook(out)
+    boost_block = next(
+        b for b in _sheet_blocks(wb["Boost Control"]) if b[0][0] == "SYM_SCALAR"
+    )
+    fuel_block = next(
+        b for b in _sheet_blocks(wb["Fuel Trim"]) if b[0][0] == "SYM_SCALAR"
+    )
+    assert boost_block == fuel_block
+
+
+def test_write_xlsx_sheet_name_sanitized_and_deduped(tmp_path):
+    long_prefix = "X" * 40
+    rt1 = RenderedTable(
+        symbol="A", title="A title", units="u",
+        categories=(long_prefix + "_one",),
+        x_labels=(0.0,), y_labels=None, values=np.array([[1.0]]),
+    )
+    rt2 = RenderedTable(
+        symbol="B", title="B title", units="u",
+        categories=(long_prefix + "_two",),
+        x_labels=(0.0,), y_labels=None, values=np.array([[2.0]]),
+    )
+    out = tmp_path / "out.xlsx"
+    write_xlsx([rt1, rt2], out)
+
+    wb = openpyxl.load_workbook(out)
+    assert len(wb.sheetnames) == 2
+    assert wb.sheetnames[0] != wb.sheetnames[1]
+    assert all(len(name) <= 31 for name in wb.sheetnames)
+
+
+def test_write_xlsx_real_axis_category_slice(real_cal, tmp_path):
+    views = select_tables(real_cal, category="Axis")
+    tables = [render_table(v) for v in views]
+    out = tmp_path / "out.xlsx"
+    write_xlsx(tables, out)
+
+    wb = openpyxl.load_workbook(out)
+    assert "Axis" in wb.sheetnames
+    assert len(_sheet_blocks(wb["Axis"])) == 444
