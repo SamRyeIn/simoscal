@@ -77,4 +77,27 @@
       <MATH equation="X"><VAR id="X" /></MATH>
     </XDFAXIS>
   </XDFTABLE>
+  <XDFTABLE uniqueid="0x500" flags="0x30">
+    <title>RPM Profile</title>
+    <description>PROFILE_1D</description>
+    <XDFAXIS uniqueid="0x0" id="x">
+      <EMBEDDEDDATA mmedtypeflags="0x2" mmedaddress="0x5000" mmedelementsizebits="16" mmedcolcount="5" mmedrowcount="1" mmedmajorstridebits="16" mmedminorstridebits="0" />
+      <indexcount>5</indexcount>
+      <units>RPM</units>
+      <MATH equation="X"><VAR id="X" /></MATH>
+    </XDFAXIS>
+    <XDFAXIS uniqueid="0x0" id="y">
+      <indexcount>1</indexcount>
+      <MATH equation="X"><VAR id="X" /></MATH>
+      <LABEL index="0" value="-" />
+    </XDFAXIS>
+    <XDFAXIS uniqueid="0x0" id="z">
+      <EMBEDDEDDATA mmedtypeflags="0x2" mmedaddress="0x5010" mmedelementsizebits="16" mmedcolcount="5" mmedrowcount="1" mmedmajorstridebits="16" mmedminorstridebits="0" />
+      <indexcount>5</indexcount>
+      <min>0.0</min>
+      <max>65535.0</max>
+      <units>kPa</units>
+      <MATH equation="X"><VAR id="X" /></MATH>
+    </XDFAXIS>
+  </XDFTABLE>
 </XDFFORMAT>

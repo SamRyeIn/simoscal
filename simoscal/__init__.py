@@ -37,6 +37,7 @@ from .codec import (
     numpy_dtype_for,
 )
 from .calfile import CalFile, TableView
+from .render import RenderedTable, render_table
 from .checksum import (
     ChecksumReport,
     StaleChecksumWarning,
@@ -84,6 +85,8 @@ __all__ = [
     "numpy_dtype_for",
     "CalFile",
     "TableView",
+    "RenderedTable",
+    "render_table",
     "ChecksumReport",
     "StaleChecksumWarning",
     "verify_checksums",
