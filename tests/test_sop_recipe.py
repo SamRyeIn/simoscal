@@ -13,6 +13,7 @@ sections below as they land.
 from __future__ import annotations
 
 import struct
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -32,12 +33,13 @@ FIXTURES = Path(__file__).parent / "fixtures"
 MINI_XDF = FIXTURES / "mini.xdf"
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def mini_cal() -> CalFile:
     """A tiny CalFile with decodable bytes (mirrors the export test's fixture).
 
     Provides ``SYM_10X10`` (happy resolve), ``SYM_DUP`` (ambiguous) and lets a
     bogus symbol exercise the missing path — none of which needs the real bin.
+    Function-scoped so write tests get a fresh, unedited image each time.
     """
     model = parse_xdf(str(MINI_XDF))
     size = model.base_offset + 0x6000
@@ -207,3 +209,236 @@ class TestResolveReal:
         assert len(entry.symbols) == 9
         for sym in entry.symbols:
             assert "_PORT_L[STND]" in sym  # never _PORT_H or [LFT_1]
+
+
+# --------------------------------------------------------------------------- #
+# U2 — axis-matching helpers (pure functions, no fixture needed)
+# --------------------------------------------------------------------------- #
+from simoscal.sop_recipe import (  # noqa: E402
+    AXIS_MATCH_TOL,
+    OUTCOME_ALREADY_SATISFIED,
+    OUTCOME_APPLIED,
+    OUTCOME_AXIS_MISMATCH,
+    OUTCOME_GUARD_BLOCKED,
+    OUTCOME_SKIPPED,
+    OUTCOME_UNRESOLVED,
+    CutRule,
+    LiteralGrid,
+    TorqueCurve,
+    _key_column_match,
+    _positional_axis_match,
+    _run_write,
+    apply_entry,
+)
+from simoscal.model import FloatBugGuardError, RawRangeError  # noqa: E402
+from simoscal.safety import EditRangeWarning  # noqa: E402
+
+
+class TestAxisMatching:
+    def test_positional_match_exact(self) -> None:
+        axis = np.array([400.0, 700.0, 1000.0])
+        assert _positional_axis_match(axis, (400, 700, 1000)) == [0, 1, 2]
+
+    def test_positional_match_tolerates_transcription_noise(self) -> None:
+        # guide 498.99 vs a stock 499.985 (~1.0 apart, ~100 from neighbours).
+        axis = np.array([399.988, 499.985, 599.982])
+        assert _positional_axis_match(axis, (399.99, 498.99, 599.98)) == [0, 1, 2]
+
+    def test_positional_match_rejects_count_mismatch(self) -> None:
+        axis = np.array([1.0, 2.0])
+        assert _positional_axis_match(axis, (1, 2, 3)) is None
+
+    def test_positional_match_rejects_far_breakpoints(self) -> None:
+        # lambda-style: same count, but breakpoints genuinely different.
+        axis = np.array([70.0, 120.0, 180.0])
+        assert _positional_axis_match(axis, (150, 300, 500)) is None
+
+    def test_positional_match_none_axis(self) -> None:
+        assert _positional_axis_match(None, (1, 2)) is None
+
+    def test_key_column_match_exact_and_nearmiss(self) -> None:
+        # 4200 must NOT snap to the 4250 key (near-miss guard), 4000 must match.
+        axis = np.array([4000.0, 4200.0, 4250.0])
+        m = _key_column_match(axis, (4000, 4250, 4360), tol=10.0)
+        assert m == {0: 0, 2: 1}  # col1 (4200) unmatched
+
+
+class TestRunWrite:
+    def test_captures_edit_range_warning(self) -> None:
+        def w() -> None:
+            warnings.warn(EditRangeWarning("cell over max"))
+
+        status, text = _run_write(w)
+        assert status == "ok"
+        assert "over max" in text
+
+    def test_float_bug_guard_maps_to_guard_blocked(self) -> None:
+        def w() -> None:
+            raise FloatBugGuardError("boom")
+
+        status, text = _run_write(w)
+        assert status == "guard_blocked"
+        assert text == "boom"
+
+    def test_raw_range_maps_to_guard_blocked(self) -> None:
+        def w() -> None:
+            raise RawRangeError("overflow")
+
+        status, text = _run_write(w)
+        assert status == "guard_blocked"
+        assert "overflow" in text
+
+    def test_clean_write_returns_ok_no_text(self) -> None:
+        assert _run_write(lambda: None) == ("ok", "")
+
+
+# --------------------------------------------------------------------------- #
+# U2 — write paths on the mini fixture
+# --------------------------------------------------------------------------- #
+def _entry(**kw) -> RecipeEntry:
+    kw.setdefault("guide_section", "test")
+    kw.setdefault("description", "test")
+    return RecipeEntry(**kw)
+
+
+class TestWriteMini:
+    def test_literal_scalar_applies_then_already_satisfied(self, mini_cal: CalFile) -> None:
+        e = _entry(kind="literal_scalar", symbols=("SYM_SCALAR",), target=42.0)
+        [out] = apply_entry(mini_cal, resolve_symbol_map(mini_cal, (e,))[0])
+        assert out.outcome == OUTCOME_APPLIED
+        assert out.new == 42.0
+        assert mini_cal.get("SYM_SCALAR").values[0, 0] == 42.0
+        # re-applying the same value is already_satisfied, not a re-write.
+        [out2] = apply_entry(mini_cal, resolve_symbol_map(mini_cal, (e,))[0])
+        assert out2.outcome == OUTCOME_ALREADY_SATISFIED
+
+    def test_literal_broadcast_sets_every_cell(self, mini_cal: CalFile) -> None:
+        e = _entry(kind="literal_broadcast", symbols=("SYM_10X10",), target=0.15)
+        [rentry] = resolve_symbol_map(mini_cal, (e,))
+        [out] = apply_entry(mini_cal, rentry)
+        assert out.outcome == OUTCOME_APPLIED
+        vals = mini_cal.get("SYM_10X10").values
+        # every cell equal (broadcast) and near the requested value (quantized).
+        assert np.allclose(vals, vals[0, 0])
+        assert abs(vals[0, 0] - 0.15) < 0.05
+
+    def test_cut_transform_only_touches_cells_over_threshold(self, mini_cal: CalFile) -> None:
+        before = mini_cal.get("SYM_10X10").values.copy()
+        thresh = float(np.median(before))
+        e = _entry(kind="cut_transform", symbols=("SYM_10X10",),
+                   target=CutRule(threshold=thresh, amount=0.06))
+        [rentry] = resolve_symbol_map(mini_cal, (e,))
+        [out] = apply_entry(mini_cal, rentry)
+        assert out.outcome == OUTCOME_APPLIED
+        after = mini_cal.get("SYM_10X10").values
+        over = before > thresh
+        # cells at/under threshold are byte-identical; cells over it dropped.
+        assert np.array_equal(after[~over], before[~over])
+        assert np.all(after[over] < before[over])
+
+    def test_axis_mismatch_leaves_table_untouched(self, mini_cal: CalFile) -> None:
+        # A grid whose y-keys can't match SYM_10X10's axis → mismatch, no write.
+        before = mini_cal.get("SYM_10X10").values.copy()
+        grid = LiteralGrid(
+            x_keys=tuple(range(10)),
+            y_keys=tuple(9000 + i for i in range(10)),  # nowhere near the real axis
+            cells=tuple(tuple(1.0 for _ in range(10)) for _ in range(10)),
+        )
+        e = _entry(kind="literal_table", symbols=("SYM_10X10",), target=grid)
+        [rentry] = resolve_symbol_map(mini_cal, (e,))
+        [out] = apply_entry(mini_cal, rentry)
+        assert out.outcome == OUTCOME_AXIS_MISMATCH
+        assert np.array_equal(mini_cal.get("SYM_10X10").values, before)
+        assert mini_cal.edited is False  # nothing staged
+
+    def test_unresolved_symbol_becomes_unresolved_outcome(self, mini_cal: CalFile) -> None:
+        e = _entry(kind="literal_scalar", symbols=("NOPE",), target=1.0)
+        [rentry] = resolve_symbol_map(mini_cal, (e,))
+        [out] = apply_entry(mini_cal, rentry)
+        assert out.outcome == OUTCOME_UNRESOLVED
+        assert mini_cal.edited is False
+
+    def test_skip_entry_yields_single_skipped_outcome(self, mini_cal: CalFile) -> None:
+        e = _entry(kind="skip_vague", reason="no symbol")
+        [rentry] = resolve_symbol_map(mini_cal, (e,))
+        [out] = apply_entry(mini_cal, rentry)
+        assert out.outcome == OUTCOME_SKIPPED
+        assert "no symbol" in out.detail
+
+
+# --------------------------------------------------------------------------- #
+# U2 — integration read-backs on the real bin (AE1)
+# --------------------------------------------------------------------------- #
+def _find(section_prefix: str) -> RecipeEntry:
+    return next(e for e in SYMBOL_MAP if e.guide_section.startswith(section_prefix))
+
+
+def _apply_one(cal: CalFile, entry: RecipeEntry):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        [rentry] = resolve_symbol_map(cal, (entry,))
+        return apply_entry(cal, rentry)
+
+
+class TestWriteReal:
+    def test_iga_written_to_all_nine_siblings_stay_stock(self, real_cal: CalFile) -> None:
+        stock_h = real_cal.get("IP_IGA_BAS_IVVT_VVL_PORT_H[STND][0][0]").values.copy()
+        outs = _apply_one(real_cal, _find("Timing — Basic Ignition"))
+        assert len(outs) == 9
+        assert all(o.outcome == OUTCOME_APPLIED for o in outs)
+        # the literal grid landed (row 0 first cell = guide 17.62, quantized).
+        v = real_cal.get("IP_IGA_BAS_IVVT_VVL_PORT_L[STND][2][2]").values
+        assert abs(v[0, 0] - 17.62) < 0.02
+        # Port-Flap-High sibling untouched.
+        assert np.array_equal(
+            real_cal.get("IP_IGA_BAS_IVVT_VVL_PORT_H[STND][0][0]").values, stock_h
+        )
+
+    def test_put_setpoint_axis_and_last_row(self, real_cal: CalFile) -> None:
+        outs = _apply_one(real_cal, _find("Boost — Option 2"))
+        assert [o.outcome for o in outs] == [OUTCOME_APPLIED, OUTCOME_APPLIED]
+        put = real_cal.get("IP_PUT_SP")
+        assert abs(np.asarray(put.axis_values("y")).ravel()[-1] - 2698.97) < 0.05
+        expected = [2698.97, 2698.97, 2499.96, 2349.97, 2298.97, 2198.97]
+        assert np.allclose(put.values[-1], expected, atol=0.05)
+
+    def test_iat_rowmap_zeroes_cold_keeps_70_5_stock(self, real_cal: CalFile) -> None:
+        iat = real_cal.get("IP_IGA_BAS_TEMP_N_32")
+        y = np.asarray(iat.axis_values("y")).ravel()
+        stock = iat.values.copy()
+        i_705 = int(np.argmin(np.abs(y - 70.5)))
+        outs = _apply_one(real_cal, _find("Timing — Spark IAT"))
+        assert outs[0].outcome == OUTCOME_APPLIED
+        assert "70.5" in outs[0].detail
+        after = real_cal.get("IP_IGA_BAS_TEMP_N_32").values
+        # cold rows (<=30 °C) zeroed; the 70.5 row byte-identical to stock.
+        cold = y <= 30 + 1e-6
+        assert np.allclose(after[cold], 0.0)
+        assert np.array_equal(after[i_705], stock[i_705])
+
+    def test_lambda_axis_mismatch_leaves_stock(self, real_cal: CalFile) -> None:
+        stock = real_cal.get("IP_LAMB_BAS_HPDI[1]").values.copy()
+        outs = _apply_one(real_cal, _find("Fueling — Basic lambda"))
+        assert all(o.outcome == OUTCOME_AXIS_MISMATCH for o in outs)
+        assert np.array_equal(real_cal.get("IP_LAMB_BAS_HPDI[1]").values, stock)
+
+    def test_torque_curve_full_on_at_partial_on_eco(self, real_cal: CalFile) -> None:
+        outs = _apply_one(real_cal, _find("1. Torque request — Max Torque"))
+        assert len(outs) == 30
+        assert all(o.outcome == OUTCOME_APPLIED for o in outs)
+        at = next(o for o in outs if "IP_TQ_POW_MAX_AT" in o.symbol)
+        eco = next(o for o in outs if "IP_TQ_POW_MAX_ECO" in o.symbol)
+        assert "20/20" in at.detail
+        assert "left stock" in eco.detail  # ECO has 2 columns with no curve key
+        # AT peak row cell at 2500 rpm == 440 (guide), broadcast across gears.
+        atv = real_cal.get("IP_TQ_POW_MAX_AT[POW_1][0]").values
+        assert np.allclose(atv[:, 5], 440.0, atol=0.5)  # col 5 == 2500 rpm
+
+    def test_cut_transform_real_cyl_head(self, real_cal: CalFile) -> None:
+        before = real_cal.get("CoTE_tHdCtlSp_M_VW").values.copy()
+        outs = _apply_one(real_cal, _find("Cooling — cylinder head"))
+        assert outs[0].outcome == OUTCOME_APPLIED
+        after = real_cal.get("CoTE_tHdCtlSp_M_VW").values
+        over = before > 90.0
+        assert np.all(after[over] < before[over])          # cut applied
+        assert np.array_equal(after[~over], before[~over])  # ≤90 untouched

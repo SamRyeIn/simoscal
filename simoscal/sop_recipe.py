@@ -34,11 +34,15 @@ Units U1-U6 of the plan build this file up: U1 is the symbol map + resolution
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
+
+import numpy as np
 
 from .calfile import CalFile, TableView
-from .model import AmbiguousTableError
+from .model import AmbiguousTableError, FloatBugGuardError, RawRangeError
+from .safety import EditRangeWarning
 
 __all__ = [
     # kinds
@@ -70,6 +74,17 @@ __all__ = [
     "ResolvedEntry",
     "SYMBOL_MAP",
     "resolve_symbol_map",
+    # outcomes + write paths
+    "OUTCOME_APPLIED",
+    "OUTCOME_APPLIED_BUILDOUT",
+    "OUTCOME_ALREADY_SATISFIED",
+    "OUTCOME_GUARDED_SKIP",
+    "OUTCOME_GUARD_BLOCKED",
+    "OUTCOME_AXIS_MISMATCH",
+    "OUTCOME_UNRESOLVED",
+    "OUTCOME_SKIPPED",
+    "TableOutcome",
+    "apply_entry",
 ]
 
 # --------------------------------------------------------------------------- #
@@ -667,3 +682,386 @@ def resolve_symbol_map(
             resolutions = ()  # a pure skip with nothing to resolve
         resolved.append(ResolvedEntry(entry=entry, resolutions=resolutions))
     return resolved
+
+
+# =========================================================================== #
+# U2-U4 — write paths
+#
+# Every write is staged through the existing Phase 1 ``TableView`` edit API
+# (``set`` / ``set_cell``): inverse-scaled, range-checked, minimal-diff. No new
+# safety logic — the recipe only *catches* the existing guards per entry so one
+# table's guard never aborts the rest, and records the outcome for the report.
+# =========================================================================== #
+
+# ---- outcome vocabulary ---------------------------------------------------- #
+OUTCOME_APPLIED = "applied"                    # literal / scalar / broadcast write staged
+OUTCOME_APPLIED_BUILDOUT = "applied_buildout"  # TTA/ATT derived build-out (U4)
+OUTCOME_ALREADY_SATISFIED = "already_satisfied"  # target already met — nothing staged
+OUTCOME_GUARDED_SKIP = "guarded_skip"          # ceiling guard: current already past target (U3)
+OUTCOME_GUARD_BLOCKED = "guard_blocked"        # FloatBugGuard/RawRange rejected the write
+OUTCOME_AXIS_MISMATCH = "axis_mismatch"        # table axes differ from the guide's — not written
+OUTCOME_UNRESOLVED = "unresolved"              # symbol not found/ambiguous in this bin
+OUTCOME_SKIPPED = "skipped"                    # documented skip (log-dependent / vague / out-of-scope)
+
+
+@dataclass(frozen=True)
+class TableOutcome:
+    """One table's outcome, the atom the report (U5) is built from.
+
+    ``old``/``new`` carry the pre/post scalar value for (1,1) edits — for scalars
+    this old→new pair *is* the review artifact, since ``compare_tables`` produces
+    no PNG for a single cell (plan Key Decision 6). ``detail`` carries prose for
+    non-scalar edits (coverage, warnings, skip reasons).
+    """
+
+    symbol: str
+    guide_section: str
+    outcome: str
+    detail: str = ""
+    old: Optional[float] = None
+    new: Optional[float] = None
+    warning: str = ""  # captured EditRangeWarning text, if any
+
+
+def _fmt(v: float) -> str:
+    return f"{v:.6g}"
+
+
+# ---- axis matching --------------------------------------------------------- #
+def _positional_axis_match(
+    axis_vals: Optional[np.ndarray],
+    keys: tuple[float, ...],
+    *,
+    tol_frac: float = 0.4,
+    tol_floor: float = 0.6,
+) -> Optional[list[int]]:
+    """Match a full guide axis to a table axis position-for-position.
+
+    Returns ``[0, 1, …, n-1]`` when the table's axis has the *same count* as
+    ``keys`` and every key sits within a spacing-relative tolerance of the axis
+    value at the same position; otherwise ``None`` (a genuine axis mismatch).
+
+    The tolerance is ``max(tol_floor, tol_frac × local_spacing)`` so transcription
+    noise (e.g. a guide breakpoint 498.99 vs a stock 499.985, ~1.0 apart but
+    ~100 from its neighbours) matches, while a table whose breakpoints are truly
+    different (e.g. lambda's 150 vs a stock 70) is rejected.
+    """
+    if axis_vals is None:
+        return None
+    a = np.asarray(axis_vals, dtype=np.float64).ravel()
+    if a.size != len(keys):
+        return None
+    for i, k in enumerate(keys):
+        neighbours = []
+        if i > 0:
+            neighbours.append(abs(a[i] - a[i - 1]))
+        if i < a.size - 1:
+            neighbours.append(abs(a[i + 1] - a[i]))
+        spacing = min(neighbours) if neighbours else (abs(a[i]) or 1.0)
+        tol = max(tol_floor, tol_frac * spacing)
+        if abs(a[i] - k) > tol:
+            return None
+    return list(range(len(keys)))
+
+
+def _key_column_match(
+    axis_vals: Optional[np.ndarray],
+    keys: tuple[float, ...],
+    *,
+    tol: float = 10.0,
+) -> dict[int, int]:
+    """Map each table column index → the index of the ``keys`` entry it equals.
+
+    Used for the torque curve, where the guide's RPM keys are looked up per
+    column (unlike a full grid). A column whose axis value is not within ``tol``
+    of any key is simply absent from the result (left stock, reported). ``tol`` is
+    absolute and well under the smallest gap between distinct RPM keys (110), so
+    a near-miss (ECO's 4200 vs the curve's 4250) does not falsely match.
+    """
+    out: dict[int, int] = {}
+    if axis_vals is None:
+        return out
+    a = np.asarray(axis_vals, dtype=np.float64).ravel()
+    for c, av in enumerate(a):
+        best_j, best_d = None, tol
+        for j, k in enumerate(keys):
+            d = abs(av - k)
+            if d <= best_d:
+                best_j, best_d = j, d
+        if best_j is not None:
+            out[c] = best_j
+    return out
+
+
+# ---- staging wrapper: catch the existing guards, capture warnings ---------- #
+def _run_write(fn: Callable[[], None]) -> tuple[str, str]:
+    """Run a staging closure; return ``(status, text)`` without ever raising.
+
+    ``status`` ∈ {``"ok"``, ``"guard_blocked"``}. A :class:`FloatBugGuardError`
+    or :class:`RawRangeError` (both leave the table byte-identical — the range
+    check runs before staging) maps to ``guard_blocked`` with the error text; a
+    successful write returns any :class:`EditRangeWarning` text it emitted.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            fn()
+        except (FloatBugGuardError, RawRangeError) as exc:
+            return "guard_blocked", str(exc)
+    warn_text = "; ".join(
+        str(w.message) for w in caught if issubclass(w.category, EditRangeWarning)
+    )
+    return "ok", warn_text
+
+
+# ---- per-view writers ------------------------------------------------------ #
+def _apply_literal_scalar(view: TableView, section: str, value: float) -> TableOutcome:
+    old = float(view.values.ravel()[0])
+    status, text = _run_write(lambda: view.set_cell(0, 0, value))
+    if status == "guard_blocked":
+        return TableOutcome(view.symbol, section, OUTCOME_GUARD_BLOCKED,
+                            detail=text, old=old, new=value)
+    if abs(old - value) < 1e-9:
+        return TableOutcome(view.symbol, section, OUTCOME_ALREADY_SATISFIED,
+                            old=old, new=value)
+    return TableOutcome(view.symbol, section, OUTCOME_APPLIED,
+                        old=old, new=value, warning=text)
+
+
+def _apply_literal_broadcast(view: TableView, section: str, value: float) -> TableOutcome:
+    rows, cols = view.shape
+    arr = np.full((rows, cols), float(value), dtype=np.float64)
+    status, text = _run_write(lambda: view.set(arr))
+    if status == "guard_blocked":
+        return TableOutcome(view.symbol, section, OUTCOME_GUARD_BLOCKED, detail=text)
+    return TableOutcome(view.symbol, section, OUTCOME_APPLIED,
+                        detail=f"broadcast {_fmt(value)} to all {rows * cols} cells",
+                        warning=text)
+
+
+def _apply_literal_table(view: TableView, section: str, grid: "LiteralGrid") -> TableOutcome:
+    rows, cols = view.shape
+    row_idx = _positional_axis_match(view.axis_values("y"), grid.y_keys)
+    col_idx = _positional_axis_match(view.axis_values("x"), grid.x_keys)
+    if row_idx is None or col_idx is None:
+        which = []
+        if col_idx is None:
+            which.append("x")
+        if row_idx is None:
+            which.append("y")
+        return TableOutcome(
+            view.symbol, section, OUTCOME_AXIS_MISMATCH,
+            detail=(
+                f"table {'/'.join(which)} axis differs from the guide's example bin "
+                "(count or breakpoints) — not written; needs manual axis setup"
+            ),
+        )
+    target = np.array(grid.cells, dtype=np.float64)
+    status, text = _run_write(lambda: view.set(target))
+    if status == "guard_blocked":
+        return TableOutcome(view.symbol, section, OUTCOME_GUARD_BLOCKED, detail=text)
+    return TableOutcome(view.symbol, section, OUTCOME_APPLIED,
+                        detail=f"wrote {rows}x{cols} literal grid (axis-matched)",
+                        warning=text)
+
+
+def _apply_torque_curve(view: TableView, section: str, curve: "TorqueCurve") -> TableOutcome:
+    rows, cols = view.shape
+    keys = tuple(p[0] for p in curve.points)
+    vals = tuple(p[1] for p in curve.points)
+    col_to_key = _key_column_match(view.axis_values("x"), keys)
+    if not col_to_key:
+        return TableOutcome(view.symbol, section, OUTCOME_AXIS_MISMATCH,
+                            detail="no RPM column matched the torque curve — not written")
+    target = view.values.astype(np.float64).copy()
+    for c, j in col_to_key.items():
+        target[:, c] = vals[j]
+    status, text = _run_write(lambda: view.set(target))
+    if status == "guard_blocked":
+        return TableOutcome(view.symbol, section, OUTCOME_GUARD_BLOCKED, detail=text)
+    matched = len(col_to_key)
+    detail = f"applied curve to {matched}/{cols} RPM columns × {rows} rows"
+    if matched < cols:
+        unmatched = sorted(
+            float(np.asarray(view.axis_values("x")).ravel()[c])
+            for c in range(cols) if c not in col_to_key
+        )
+        detail += f"; columns left stock (no curve key): {unmatched}"
+    return TableOutcome(view.symbol, section, OUTCOME_APPLIED, detail=detail, warning=text)
+
+
+def _apply_cut_transform(view: TableView, section: str, rule: "CutRule") -> TableOutcome:
+    vals = view.values.astype(np.float64)
+    rows, cols = view.shape
+    changed = 0
+    warn_texts: list[str] = []
+    for r in range(rows):
+        for c in range(cols):
+            if vals[r, c] > rule.threshold:
+                new_v = vals[r, c] - rule.amount
+                status, text = _run_write(
+                    lambda r=r, c=c, nv=new_v: view.set_cell(r, c, nv)
+                )
+                if status == "guard_blocked":
+                    return TableOutcome(view.symbol, section, OUTCOME_GUARD_BLOCKED,
+                                        detail=text)
+                if text:
+                    warn_texts.append(text)
+                changed += 1
+    if changed == 0:
+        return TableOutcome(view.symbol, section, OUTCOME_ALREADY_SATISFIED,
+                            detail=f"no cell over {_fmt(rule.threshold)}")
+    return TableOutcome(
+        view.symbol, section, OUTCOME_APPLIED,
+        detail=f"cut {_fmt(rule.amount)} from {changed} cells over {_fmt(rule.threshold)}",
+        warning="; ".join(w for w in warn_texts if w),
+    )
+
+
+def _apply_iat_rowmap(view: TableView, section: str, rowmap: "IatRowMap") -> TableOutcome:
+    yvals = view.axis_values("y")
+    if yvals is None:
+        return TableOutcome(view.symbol, section, OUTCOME_AXIS_MISMATCH,
+                            detail="IAT table has no decodable Y axis — not written")
+    y = np.asarray(yvals, dtype=np.float64).ravel()
+    rows, cols = view.shape
+    if cols != len(rowmap.x_keys):
+        return TableOutcome(
+            view.symbol, section, OUTCOME_AXIS_MISMATCH,
+            detail=f"IAT column count {cols} ≠ {len(rowmap.x_keys)} guide keys — not written",
+        )
+    author = {bp: row for bp, row in rowmap.rows}
+    changed_rows, left_rows = [], []
+    warn_texts: list[str] = []
+    for r in range(rows):
+        yb = y[r]
+        if yb <= rowmap.zero_below + 1e-6:
+            target_row = [0.0] * cols
+        else:
+            match = next((bp for bp in author if abs(bp - yb) <= AXIS_MATCH_TOL), None)
+            if match is None:
+                left_rows.append(round(float(yb), 2))
+                continue
+            target_row = list(author[match])
+        for c in range(cols):
+            status, text = _run_write(
+                lambda r=r, c=c, v=target_row[c]: view.set_cell(r, c, v)
+            )
+            if status == "guard_blocked":
+                return TableOutcome(view.symbol, section, OUTCOME_GUARD_BLOCKED, detail=text)
+            if text:
+                warn_texts.append(text)
+        changed_rows.append(round(float(yb), 2))
+    detail = f"row-mapped {len(changed_rows)} Y rows onto stock breakpoints"
+    if left_rows:
+        detail += f"; left stock (no author breakpoint): {left_rows}"
+    return TableOutcome(view.symbol, section, OUTCOME_APPLIED, detail=detail,
+                        warning="; ".join(w for w in warn_texts if w))
+
+
+def _apply_axis_write(cal: CalFile, view: TableView, section: str,
+                      spec: "AxisWriteSpec") -> list[TableOutcome]:
+    # 1) confirm this bin's PUT Y axis is the stock shape we built the spec against
+    y = view.axis_values("y")
+    if y is None or _positional_axis_match(y, spec.expected_axis) is None:
+        return [TableOutcome(
+            view.symbol, section, OUTCOME_AXIS_MISMATCH,
+            detail="PUT setpoint Y axis differs from the expected stock axis — not written",
+        )]
+    # 2) confirm the standalone axis table is present and monotonic after the edit
+    try:
+        axis_view = cal.get(spec.axis_symbol)
+    except (KeyError, AmbiguousTableError) as exc:
+        return [TableOutcome(spec.axis_symbol, section, OUTCOME_UNRESOLVED,
+                             detail=f"axis table not resolvable: {exc}")]
+    ar, ac = spec.axis_cell
+    axis_now = np.asarray(axis_view.values, dtype=np.float64).ravel()
+    prev = axis_now[ac - 1] if ac - 1 >= 0 else -np.inf
+    nxt = axis_now[ac + 1] if ac + 1 < axis_now.size else np.inf
+    if not (prev < spec.axis_target < nxt):
+        return [TableOutcome(
+            spec.axis_symbol, section, OUTCOME_AXIS_MISMATCH,
+            detail=(f"axis target {_fmt(spec.axis_target)} would break monotonicity "
+                    f"({_fmt(prev)} < target < {_fmt(nxt)}) — not written"),
+        )]
+    outcomes: list[TableOutcome] = []
+    old_bp = float(axis_now[ac])
+    status, text = _run_write(lambda: axis_view.set_cell(ar, ac, spec.axis_target))
+    if status == "guard_blocked":
+        return [TableOutcome(spec.axis_symbol, section, OUTCOME_GUARD_BLOCKED, detail=text)]
+    outcomes.append(TableOutcome(
+        spec.axis_symbol, section, OUTCOME_APPLIED,
+        detail=f"raised PUT Y breakpoint {spec.axis_cell}", old=old_bp,
+        new=spec.axis_target, warning=text))
+    # 3) write the shaped last row of IP_PUT_SP
+    last = view.shape[0] - 1
+    warn_texts: list[str] = []
+    for c, v in enumerate(spec.last_row_values):
+        status, text = _run_write(lambda c=c, v=v: view.set_cell(last, c, v))
+        if status == "guard_blocked":
+            outcomes.append(TableOutcome(view.symbol, section, OUTCOME_GUARD_BLOCKED,
+                                         detail=text))
+            return outcomes
+        if text:
+            warn_texts.append(text)
+    outcomes.append(TableOutcome(
+        view.symbol, section, OUTCOME_APPLIED,
+        detail=f"shaped boost curve into last row ({len(spec.last_row_values)} cells)",
+        warning="; ".join(w for w in warn_texts if w)))
+    return outcomes
+
+
+# ---- entry dispatch -------------------------------------------------------- #
+# Per-view writers keyed by kind. U3 (guarded_ceiling) and U4 (tta_att_buildout)
+# register their writers into this table when they land.
+_PER_VIEW_WRITERS: dict[str, Callable[[TableView, str, object], TableOutcome]] = {
+    KIND_LITERAL_SCALAR: lambda v, s, t: _apply_literal_scalar(v, s, float(t)),
+    KIND_LITERAL_BROADCAST: lambda v, s, t: _apply_literal_broadcast(v, s, float(t)),
+    KIND_LITERAL_TABLE: _apply_literal_table,
+    KIND_TORQUE_CURVE: _apply_torque_curve,
+    KIND_CUT_TRANSFORM: _apply_cut_transform,
+    KIND_IAT_ROWMAP: _apply_iat_rowmap,
+}
+
+
+def apply_entry(cal: CalFile, resolved: ResolvedEntry) -> list[TableOutcome]:
+    """Apply one resolved entry, returning one :class:`TableOutcome` per table.
+
+    Skip-kind entries yield a single documented ``skipped`` outcome. Write-kind
+    entries yield one outcome per symbol: an unresolved symbol becomes an
+    ``unresolved`` outcome (never a guess), a resolved one is dispatched to its
+    per-kind writer. ``axis_write`` is special-cased (it drives a second, axis
+    table beyond its own symbol). ``guarded_ceiling`` / ``tta_att_buildout`` are
+    registered by U3 / U4.
+    """
+    entry = resolved.entry
+    section = entry.guide_section
+
+    if entry.kind in SKIP_KINDS:
+        syms = ", ".join(entry.symbols) if entry.symbols else (
+            " | ".join(entry.search_prefixes) if entry.search_prefixes else "—"
+        )
+        return [TableOutcome(syms, section, OUTCOME_SKIPPED,
+                             detail=f"[{entry.kind}] {entry.reason}")]
+
+    outcomes: list[TableOutcome] = []
+
+    if entry.kind == KIND_AXIS_WRITE:
+        res = resolved.resolutions[0]
+        if not res.resolved or res.view is None:
+            return [TableOutcome(res.symbol, section, OUTCOME_UNRESOLVED, detail=res.reason)]
+        return _apply_axis_write(cal, res.view, section, entry.target)
+
+    writer = _PER_VIEW_WRITERS.get(entry.kind)
+    if writer is None:
+        raise NotImplementedError(
+            f"no writer registered for kind {entry.kind!r} "
+            f"(section {section!r}) — U3/U4 add guarded_ceiling / tta_att_buildout"
+        )
+    for res in resolved.resolutions:
+        if not res.resolved or res.view is None:
+            outcomes.append(TableOutcome(res.symbol, section, OUTCOME_UNRESOLVED,
+                                         detail=res.reason))
+            continue
+        outcomes.append(writer(res.view, section, entry.target))
+    return outcomes
