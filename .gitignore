@@ -21,3 +21,4 @@ venv/
 # Demo script output
 demos/*.csv
 demos/*.xlsx
+demos/plots/
