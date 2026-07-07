@@ -11,6 +11,7 @@ license = { text = "Proprietary" }
 authors = [{ name = "Sam Ryan", email = "samryan1021@gmail.com" }]
 dependencies = [
     "numpy>=1.24",
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]

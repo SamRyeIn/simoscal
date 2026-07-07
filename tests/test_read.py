@@ -275,10 +275,10 @@ def test_calfile_scalar_and_float(mini_cal: CalFile):
 
 
 def test_calfile_unique_tables_dedup(mini_cal: CalFile):
-    # mini has 4 XDFTABLE entries but SYM_DUP twice under distinct uniqueids,
-    # so all 4 are distinct ids -> 4 unique views.
-    assert len(mini_cal.unique_tables()) == 4
-    assert len(mini_cal) == 4
+    # mini has 5 XDFTABLE entries but SYM_DUP twice under distinct uniqueids,
+    # so all 5 are distinct ids -> 5 unique views.
+    assert len(mini_cal.unique_tables()) == 5
+    assert len(mini_cal) == 5
 
 
 def test_calfile_axis_values_none_when_label_only(mini_cal: CalFile):
