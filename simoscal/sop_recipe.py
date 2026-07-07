@@ -1011,9 +1011,40 @@ def _apply_axis_write(cal: CalFile, view: TableView, section: str,
     return outcomes
 
 
+# ---- U3: guarded ceiling write --------------------------------------------- #
+def _guarded_ceiling_write(view: TableView, section: str, target: float) -> TableOutcome:
+    """Raise a limiter to ``target`` — but never write a lower value over a higher.
+
+    Reads the current value first (per the guide's "if already >2700, don't
+    touch"): writes ``target`` only when ``current < target``; records
+    ``guarded_skip`` (no write staged, table byte-identical) when the limiter is
+    already at or above the target; ``already_satisfied`` when it is exactly the
+    target. A write that trips :class:`FloatBugGuardError` (the float-bug limiter
+    constants) is caught as ``guard_blocked`` — the table stays byte-identical
+    and the recipe continues (plan Key Decision 3 / AE2).
+    """
+    current = float(view.values.ravel()[0])
+    tol = 1e-6 * (abs(target) + 1.0)
+    if current > target + tol:
+        return TableOutcome(
+            view.symbol, section, OUTCOME_GUARDED_SKIP, old=current, new=target,
+            detail=(f"current {_fmt(current)} already exceeds target "
+                    f"{_fmt(target)} — left unchanged (never lowered)"),
+        )
+    if abs(current - target) <= tol:
+        return TableOutcome(view.symbol, section, OUTCOME_ALREADY_SATISFIED,
+                            old=current, new=target)
+    status, text = _run_write(lambda: view.set_cell(0, 0, target))
+    if status == "guard_blocked":
+        return TableOutcome(view.symbol, section, OUTCOME_GUARD_BLOCKED,
+                            detail=text, old=current, new=target)
+    return TableOutcome(view.symbol, section, OUTCOME_APPLIED,
+                        old=current, new=target, warning=text)
+
+
 # ---- entry dispatch -------------------------------------------------------- #
-# Per-view writers keyed by kind. U3 (guarded_ceiling) and U4 (tta_att_buildout)
-# register their writers into this table when they land.
+# Per-view writers keyed by kind. U4 (tta_att_buildout) registers its writer into
+# this table when it lands.
 _PER_VIEW_WRITERS: dict[str, Callable[[TableView, str, object], TableOutcome]] = {
     KIND_LITERAL_SCALAR: lambda v, s, t: _apply_literal_scalar(v, s, float(t)),
     KIND_LITERAL_BROADCAST: lambda v, s, t: _apply_literal_broadcast(v, s, float(t)),
@@ -1021,6 +1052,7 @@ _PER_VIEW_WRITERS: dict[str, Callable[[TableView, str, object], TableOutcome]] =
     KIND_TORQUE_CURVE: _apply_torque_curve,
     KIND_CUT_TRANSFORM: _apply_cut_transform,
     KIND_IAT_ROWMAP: _apply_iat_rowmap,
+    KIND_GUARDED_CEILING: lambda v, s, t: _guarded_ceiling_write(v, s, float(t)),
 }
 
 

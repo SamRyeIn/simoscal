@@ -442,3 +442,59 @@ class TestWriteReal:
         over = before > 90.0
         assert np.all(after[over] < before[over])          # cut applied
         assert np.array_equal(after[~over], before[~over])  # ≤90 untouched
+
+
+# --------------------------------------------------------------------------- #
+# U3 — guarded ceiling-write helper
+# --------------------------------------------------------------------------- #
+from simoscal.sop_recipe import (  # noqa: E402
+    OUTCOME_GUARDED_SKIP,
+    _guarded_ceiling_write,
+)
+
+
+class TestGuardedCeiling:
+    def test_below_target_writes(self, mini_cal: CalFile) -> None:
+        # SYM_SCALAR stock = 200; target 250 → applied.
+        view = mini_cal.get("SYM_SCALAR")
+        out = _guarded_ceiling_write(view, "test", 250.0)
+        assert out.outcome == OUTCOME_APPLIED
+        assert out.old == 200.0 and out.new == 250.0
+        assert mini_cal.get("SYM_SCALAR").values[0, 0] == 250.0
+
+    def test_above_target_guarded_skip_byte_identical(self, mini_cal: CalFile) -> None:
+        view = mini_cal.get("SYM_SCALAR")
+        out = _guarded_ceiling_write(view, "test", 150.0)
+        assert out.outcome == OUTCOME_GUARDED_SKIP
+        assert out.old == 200.0  # observed current recorded
+        assert mini_cal.get("SYM_SCALAR").values[0, 0] == 200.0  # unchanged
+        assert mini_cal.edited is False  # nothing staged
+
+    def test_equal_target_already_satisfied(self, mini_cal: CalFile) -> None:
+        view = mini_cal.get("SYM_SCALAR")
+        out = _guarded_ceiling_write(view, "test", 200.0)
+        assert out.outcome == OUTCOME_ALREADY_SATISFIED
+        assert mini_cal.edited is False
+
+
+class TestGuardedCeilingReal:
+    def test_overboost_candidate_guarded_skip(self, real_cal: CalFile) -> None:
+        # C_PRS_IM_SP_LIM stock (~271695) already exceeds the 2700 target — the
+        # guard must never lower it (AE2), and it stays byte-identical.
+        stock = real_cal.get("C_PRS_IM_SP_LIM").values.copy()
+        outs = _apply_one(real_cal, _find("Limiters — Overboost"))
+        assert outs[0].outcome == OUTCOME_GUARDED_SKIP
+        assert np.array_equal(real_cal.get("C_PRS_IM_SP_LIM").values, stock)
+
+    def test_float_bug_limiter_guard_blocked(self, real_cal: CalFile) -> None:
+        # C_PRS_IM_SP_MAX → 350000 exceeds the declared upper limit and is
+        # float-bug flagged: guard_blocked, table byte-identical, recipe continues.
+        stock = real_cal.get("C_PRS_IM_SP_MAX").values.copy()
+        outs = _apply_one(real_cal, _find("Limiters — Max requested pressure"))
+        assert outs[0].outcome == OUTCOME_GUARD_BLOCKED
+        assert np.array_equal(real_cal.get("C_PRS_IM_SP_MAX").values, stock)
+
+    def test_compressor_and_turbo_limiters_raise(self, real_cal: CalFile) -> None:
+        outs = _apply_one(real_cal, _find("Limiters — Turbo shaft"))
+        assert all(o.outcome == OUTCOME_APPLIED for o in outs)
+        assert real_cal.get("C_N_TCHA_MAX").values[0, 0] == pytest.approx(220000, abs=5)
