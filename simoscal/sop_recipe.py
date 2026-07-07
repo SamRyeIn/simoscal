@@ -850,13 +850,16 @@ def _apply_literal_broadcast(view: TableView, section: str, value: float) -> Tab
 
 def _apply_literal_table(view: TableView, section: str, grid: "LiteralGrid") -> TableOutcome:
     rows, cols = view.shape
-    row_idx = _positional_axis_match(view.axis_values("y"), grid.y_keys)
-    col_idx = _positional_axis_match(view.axis_values("x"), grid.x_keys)
-    if row_idx is None or col_idx is None:
+    # A non-None _positional_axis_match is always the identity index list
+    # (list(range(n))); correctness rests on its count-and-alignment guarantee,
+    # so the full-grid write below is axis-aligned. Keep only the pass/fail here.
+    x_ok = _positional_axis_match(view.axis_values("x"), grid.x_keys) is not None
+    y_ok = _positional_axis_match(view.axis_values("y"), grid.y_keys) is not None
+    if not x_ok or not y_ok:
         which = []
-        if col_idx is None:
+        if not x_ok:
             which.append("x")
-        if row_idx is None:
+        if not y_ok:
             which.append("y")
         return TableOutcome(
             view.symbol, section, OUTCOME_AXIS_MISMATCH,
@@ -901,29 +904,23 @@ def _apply_torque_curve(view: TableView, section: str, curve: "TorqueCurve") -> 
 
 def _apply_cut_transform(view: TableView, section: str, rule: "CutRule") -> TableOutcome:
     vals = view.values.astype(np.float64)
-    rows, cols = view.shape
-    changed = 0
-    warn_texts: list[str] = []
-    for r in range(rows):
-        for c in range(cols):
-            if vals[r, c] > rule.threshold:
-                new_v = vals[r, c] - rule.amount
-                status, text = _run_write(
-                    lambda r=r, c=c, nv=new_v: view.set_cell(r, c, nv)
-                )
-                if status == "guard_blocked":
-                    return TableOutcome(view.symbol, section, OUTCOME_GUARD_BLOCKED,
-                                        detail=text)
-                if text:
-                    warn_texts.append(text)
-                changed += 1
+    # Build the whole target grid, then stage it in one range-checked write so a
+    # guard trip leaves the table byte-identical (CR-20260707-01).
+    target = vals.copy()
+    mask = vals > rule.threshold
+    target[mask] = vals[mask] - rule.amount
+    changed = int(np.count_nonzero(mask))
     if changed == 0:
         return TableOutcome(view.symbol, section, OUTCOME_ALREADY_SATISFIED,
                             detail=f"no cell over {_fmt(rule.threshold)}")
+    status, text = _run_write(lambda: view.set(target))
+    if status == "guard_blocked":
+        return TableOutcome(view.symbol, section, OUTCOME_GUARD_BLOCKED,
+                            detail=text)
     return TableOutcome(
         view.symbol, section, OUTCOME_APPLIED,
         detail=f"cut {_fmt(rule.amount)} from {changed} cells over {_fmt(rule.threshold)}",
-        warning="; ".join(w for w in warn_texts if w),
+        warning=text,
     )
 
 
@@ -940,8 +937,11 @@ def _apply_iat_rowmap(view: TableView, section: str, rowmap: "IatRowMap") -> Tab
             detail=f"IAT column count {cols} ≠ {len(rowmap.x_keys)} guide keys — not written",
         )
     author = {bp: row for bp, row in rowmap.rows}
+    # Assemble the full target grid (rows with no author breakpoint keep their
+    # stock values), then stage it in one range-checked write so a guard trip
+    # leaves the table byte-identical (CR-20260707-01).
+    target = view.values.astype(np.float64).copy()
     changed_rows, left_rows = [], []
-    warn_texts: list[str] = []
     for r in range(rows):
         yb = y[r]
         if yb <= rowmap.zero_below + 1e-6:
@@ -952,20 +952,16 @@ def _apply_iat_rowmap(view: TableView, section: str, rowmap: "IatRowMap") -> Tab
                 left_rows.append(round(float(yb), 2))
                 continue
             target_row = list(author[match])
-        for c in range(cols):
-            status, text = _run_write(
-                lambda r=r, c=c, v=target_row[c]: view.set_cell(r, c, v)
-            )
-            if status == "guard_blocked":
-                return TableOutcome(view.symbol, section, OUTCOME_GUARD_BLOCKED, detail=text)
-            if text:
-                warn_texts.append(text)
+        target[r, :] = target_row
         changed_rows.append(round(float(yb), 2))
+    status, text = _run_write(lambda: view.set(target))
+    if status == "guard_blocked":
+        return TableOutcome(view.symbol, section, OUTCOME_GUARD_BLOCKED, detail=text)
     detail = f"row-mapped {len(changed_rows)} Y rows onto stock breakpoints"
     if left_rows:
         detail += f"; left stock (no author breakpoint): {left_rows}"
     return TableOutcome(view.symbol, section, OUTCOME_APPLIED, detail=detail,
-                        warning="; ".join(w for w in warn_texts if w))
+                        warning=text)
 
 
 def _apply_axis_write(cal: CalFile, view: TableView, section: str,
@@ -1002,21 +998,22 @@ def _apply_axis_write(cal: CalFile, view: TableView, section: str,
         spec.axis_symbol, section, OUTCOME_APPLIED,
         detail=f"raised PUT Y breakpoint {spec.axis_cell}", old=old_bp,
         new=spec.axis_target, warning=text))
-    # 3) write the shaped last row of IP_PUT_SP
+    # 3) write the shaped last row of IP_PUT_SP — stage the whole grid in one
+    # range-checked write so a guard trip leaves the table byte-identical
+    # (CR-20260707-01); columns beyond last_row_values keep their stock values.
     last = view.shape[0] - 1
-    warn_texts: list[str] = []
+    target = view.values.astype(np.float64).copy()
     for c, v in enumerate(spec.last_row_values):
-        status, text = _run_write(lambda c=c, v=v: view.set_cell(last, c, v))
-        if status == "guard_blocked":
-            outcomes.append(TableOutcome(view.symbol, section, OUTCOME_GUARD_BLOCKED,
-                                         detail=text))
-            return outcomes
-        if text:
-            warn_texts.append(text)
+        target[last, c] = v
+    status, text = _run_write(lambda: view.set(target))
+    if status == "guard_blocked":
+        outcomes.append(TableOutcome(view.symbol, section, OUTCOME_GUARD_BLOCKED,
+                                     detail=text))
+        return outcomes
     outcomes.append(TableOutcome(
         view.symbol, section, OUTCOME_APPLIED,
         detail=f"shaped boost curve into last row ({len(spec.last_row_values)} cells)",
-        warning="; ".join(w for w in warn_texts if w)))
+        warning=text))
     return outcomes
 
 

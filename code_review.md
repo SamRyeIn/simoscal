@@ -45,6 +45,8 @@ in place as they are fixed or dismissed.
 | CR-20260706-20 | Low      | CONFIRMED | tests/fixtures/README.md | AE1 capture procedure relies on error-prone hand transcription             | Open   |
 | CR-20260706-21 | High     | CONFIRMED | simoscal/codec.py        | 2D table decode uses row-major reshape against column-major on-bin data    | Fixed (2026-07-06) |
 | CR-20260706-22 | High     | CONFIRMED | simoscal/xdf.py          | mmedtypeflags sign bit inverted for at least three real int16/int32 tables | Fixed (2026-07-06) |
+| CR-20260707-01 | Medium   | PLAUSIBLE | simoscal/sop_recipe.py   | Multi-cell writers leave a table partly written if a guard trips mid-loop  | Fixed (2026-07-07) |
+| CR-20260707-02 | Low      | CONFIRMED | simoscal/sop_recipe.py   | Vestigial row_idx/col_idx locals only None-checked in _apply_literal_table | Fixed (2026-07-07) |
 
 ---
 
@@ -458,3 +460,132 @@ now expresses signed as `0x3 = 0x01|0x02`).
   values (`ID_PORT_SP_CH`, `IP_N_SP_IS_BAS[MT]`) decode correctly in value
   *content* even though `ID_PORT_SP_CH` shares CR-20260706-21's row/col bug —
   recorded as expected-fail in the oracle's `note` field pending the fix.
+
+---
+
+## Review 2026-07-07 — SOP tune recipe (`simoscal/sop_recipe.py` + demo + tests + docs)
+
+- **Scope:** the six-commit `feat/sop-tune-recipe` branch (U1–U6) implementing
+  `Docs/plans/2026-07-06-003-feat-sop-tune-recipe-plan.md`, reviewed as a whole-
+  branch diff against `main` (merge-base `244061c`): `simoscal/sop_recipe.py`
+  (new, 1396 lines), `demos/apply_sop_recipe.py` (new), `tests/test_sop_recipe.py`
+  (new), `tests/test_acceptance_sop.py` (new), and the `simoscal/__init__.py` /
+  `README.md` / `.gitignore` edits.
+- **Method:** whole-file read of the new module against the live Phase 1–3 API it
+  consumes (`calfile.py`, `safety.py`, `writer.py`); ran `test_sop_recipe.py` +
+  `test_acceptance_sop.py` (**74 passed**) and the full `Code/` suite (**295
+  passed**); ran the demo end-to-end against the real bin (checksums **CLEAN**,
+  DO NOT FLASH raised, 118 outcomes, minimal-diff save); and — given the brick /
+  engine-damage stake of flashing a real ECU — did an independent second pass on
+  **every transcribed literal value** against the source `knowledge/ecu-tuning-
+  basics.md`, plus a trace of the write-staging order in `writer.py`/`safety.py`.
+- **Headline:** no correctness bugs in the applied edits, and no safety-guarantee
+  regressions. Symbol-resolution failures are data not exceptions; the existing
+  float-bug / range / raw-width guards are caught per-entry (never swallowed,
+  never abort the run); every literal grid/curve/scalar matches the guide byte-
+  for-byte (Max-Torque curve, IGA 16×16, PUT setpoint last row, Spark-IAT rows,
+  all limiter targets); axis-matched writes fail loud on the lambda mismatch as
+  designed; the coherence gate correctly self-raises DO NOT FLASH on this bin.
+  Two low-impact findings only, both in the recipe module, neither reachable on
+  the current symbol set.
+
+### CR-20260707-01 — Multi-cell writers not atomic on a mid-loop guard — Medium, PLAUSIBLE — Fixed (2026-07-07)
+
+`simoscal/sop_recipe.py:902` (`_apply_cut_transform`), `:930` (`_apply_iat_rowmap`),
+`:971` (`_apply_axis_write`). These three writers stage edits cell-by-cell in a
+loop — `_run_write(lambda: view.set_cell(...))` per cell — and on the first
+failure `return … OUTCOME_GUARD_BLOCKED`. But `writer.stage_cell` checks
+`check_raw_fits` and *then* writes bytes (`writer.py:128` before `:138`), so each
+completed iteration has already staged its bytes irreversibly. A guard tripping
+on cell *N* therefore leaves cells `0…N-1` written while the returned outcome is
+`guard_blocked` — whose contract (docstring `:1032`, and the README's
+"the table stays byte-identical and the recipe continues") promises the opposite.
+This is the same silent-partial-corruption shape the library's fail-loud mandate
+exists to prevent, and the analogue of CR-20260706-10.
+
+**Failure scenario:** any future symbol routed to one of these three kinds whose
+per-cell physical value inverts to an out-of-width raw (`RawRangeError`) — or a
+float-bug-flagged symbol mapped to `cut_transform`/`iat_rowmap`/`axis_write`
+(`FloatBugGuardError`) — trips the guard partway through, and the report records
+`guard_blocked` on a table that is now half-written and neither stock nor the
+intended target. Latent today: none of the three current targets
+(`CoTE_tHdCtlSp_M_VW`, `IP_IGA_BAS_TEMP_N_32`, `IP_PUT_SP`) is float-bug-flagged,
+and all of their values sit in range, so no guard fires in the loop.
+
+**Suggested fix:** stage the whole grid atomically. Build the target array and
+call `view.set(target)` once (as the `literal_table` / `broadcast` / `torque_curve`
+paths already do — `set` range-checks the full array before staging any byte), or
+snapshot `view.raw` at entry and restore it if any loop iteration reports
+`guard_blocked`, so the `guard_blocked` outcome keeps its byte-identical contract.
+
+**Fixed 2026-07-07:** all three writers now assemble the full target grid (rows/
+cells left stock keep their decoded `view.values`) and stage it in a single
+`_run_write(lambda: view.set(target))`. `set` range-checks the whole array before
+staging any byte, so a `FloatBugGuardError`/`RawRangeError` now leaves the table
+byte-identical — restoring the `guard_blocked` contract. `_apply_axis_write`'s
+standalone breakpoint write (a different table) was already a single `set_cell`
+and is unchanged. Verified: 74 SOP tests + full suite 295 passed; demo still
+118 outcomes / checksums CLEAN / DO NOT FLASH.
+
+### CR-20260707-02 — Vestigial `row_idx`/`col_idx` locals in `_apply_literal_table` — Low, CONFIRMED — Fixed (2026-07-07)
+
+`simoscal/sop_recipe.py:853-854`. `row_idx = _positional_axis_match(...)` and
+`col_idx = _positional_axis_match(...)` are computed but only ever consumed as
+`None` checks (`:855`, and the `which` diagnostic `:857-859`); the actual write
+uses the full `grid.cells` via `view.set(target)` (`:868-869`). The names read as
+if the matched indices drive cell placement, when in fact a non-`None` result is
+always `list(range(n))` and correctness rests on the count-and-alignment guarantee
+`_positional_axis_match` provides. Harmless, but a small altitude trap for the
+next reader.
+
+**Suggested fix:** rebind to booleans — `x_ok = _positional_axis_match(view.axis_values("x"), grid.x_keys) is not None`
+(and `y_ok`) — or keep the locals with a one-line comment that a non-`None`
+result is always the identity index list, so the full-grid write is trivially
+axis-aligned.
+
+**Fixed 2026-07-07:** rebound to `x_ok`/`y_ok` booleans with a one-line comment
+noting that a non-`None` match is always the identity index list, so the
+`view.set(target)` full-grid write is trivially axis-aligned. Behavior identical
+(the `which` diagnostic and axis-mismatch outcome are unchanged).
+
+### Not findings (checked and clean)
+
+- **Transcription integrity — verified independently.** Every literal payload in
+  `SYMBOL_MAP` matches `knowledge/ecu-tuning-basics.md` cell-for-cell on a second
+  pass: `_MAX_TORQUE_CURVE` (20 RPM/Nm pairs, guide line 82), `_IGA_CELLS`/`_IGA_X`/
+  `_IGA_Y` (16×16, lines 238–255), `_PUT_SP_SPEC.last_row_values` and
+  `axis_target` 2698.97 (line 157), `_IAT_ROWMAP` rows + `zero_below`=30 (lines
+  265–276), and the limiter scalars 300 / 220000 / 3000 / 350000 / 2700 / 257.49
+  (lines 345/349/363/367/353/401). No transcription error found.
+- **The float-bug and ceiling guards behave as the guide demands.**
+  `C_PRS_IM_SP_MAX → 350000` correctly returns `guard_blocked` (float-bug flagged,
+  over declared max) and leaves the table stock; `C_PRS_IM_SP_LIM → 2700`
+  correctly `guarded_skip`s (stock ~271695 > target, "if already >2700 don't
+  touch"). Both are byte-identical after the run — asserted by the acceptance
+  suite.
+- **By-design, recorded so it isn't mistaken for a defect:** the Overboost limit
+  (P0234, the guide's single most safety-relevant limiter) is *not* actually
+  landed by the recipe — `C_PRS_IM_SP_LIM` is an unconfirmed offset-to-baro
+  candidate whose stock value trips the ceiling guard, so it stays stock and is
+  reported `guarded_skip` with a "flagged for manual confirmation before flashing"
+  reason. This is the intended fail-safe (the plan flags the symbol as a
+  candidate only), but it means overboost must be set by hand. The report line +
+  the revision-0 iteration model cover it.
+- **By-design:** the coherence gate raises DO NOT FLASH on every run against
+  *this* bin, because the lambda tables can never resolve (their stock axes differ
+  from the guide's example bin → `axis_mismatch`), so the lean-risk rule always
+  fires. Correct and safe — the recipe genuinely cannot apply enrichment here —
+  but the "coherence passed" state is unreachable via the recipe alone on this
+  bin; the human gate is the only path, exactly as designed and tested
+  (`test_full_report_accounts_for_every_instruction` asserts `do_not_flash() is
+  True`).
+- All `simoscal` API usage in the new module and tests matches the source
+  (`CalFile.get`/`search`, `TableView.set`/`set_cell`/`axis_values`/`values`/
+  `shape`/`units`, the `AmbiguousTableError`/`FloatBugGuardError`/`RawRangeError`/
+  `EditRangeWarning` classes, `render_table`/`compare_tables`/`TableMismatchError`).
+- AE1–AE5 are each exercised end-to-end against the real bin (value match,
+  guard behaviour, checksum-clean save, complete accounting, PNG coverage), and
+  every guide instruction — in-scope and explicitly-skipped — has exactly one
+  `SYMBOL_MAP` entry (`report_sections == map_sections`).
+- No applicable CLAUDE.md convention violations (no project-level CLAUDE.md; the
+  user-level rules are MATLAB-specific and don't bind this Python module).
