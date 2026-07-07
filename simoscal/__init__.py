@@ -45,6 +45,14 @@ from .plot import (
     plot_table,
     plot_tables,
 )
+from .sop_recipe import (
+    RecipeReport,
+    SYMBOL_MAP,
+    TableOutcome,
+    apply_basics_sop,
+    format_report,
+    resolve_symbol_map,
+)
 from .checksum import (
     ChecksumReport,
     StaleChecksumWarning,
@@ -103,6 +111,12 @@ __all__ = [
     "plot_tables",
     "compare_bins",
     "TableMismatchError",
+    "apply_basics_sop",
+    "resolve_symbol_map",
+    "RecipeReport",
+    "TableOutcome",
+    "format_report",
+    "SYMBOL_MAP",
     "ChecksumReport",
     "StaleChecksumWarning",
     "verify_checksums",
