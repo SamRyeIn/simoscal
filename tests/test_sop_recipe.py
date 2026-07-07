@@ -498,3 +498,129 @@ class TestGuardedCeilingReal:
         outs = _apply_one(real_cal, _find("Limiters — Turbo shaft"))
         assert all(o.outcome == OUTCOME_APPLIED for o in outs)
         assert real_cal.get("C_N_TCHA_MAX").values[0, 0] == pytest.approx(220000, abs=5)
+
+
+# --------------------------------------------------------------------------- #
+# U4 — TTA/ATT proportional build-out
+# --------------------------------------------------------------------------- #
+from simoscal.sop_recipe import (  # noqa: E402
+    OUTCOME_APPLIED_BUILDOUT,
+    OUTCOME_POOR_FIT,
+    BuildoutSpec,
+    _apply_tta_att_buildout,
+    _column_linear_fit,
+)
+
+
+class _FakeView:
+    """Minimal TableView stand-in for build-out unit tests (no bin needed)."""
+
+    def __init__(self, y, values) -> None:
+        self._y = np.asarray(y, dtype=np.float64)
+        self._values = np.asarray(values, dtype=np.float64)
+        self.symbol = "FAKE"
+        self.written = None
+
+    @property
+    def shape(self):
+        return self._values.shape
+
+    @property
+    def values(self):
+        return self._values
+
+    def axis_values(self, which):
+        return self._y if which == "y" else None
+
+    def set(self, arr, **kw) -> None:
+        self.written = np.array(arr, dtype=np.float64)
+        self._values = np.array(arr, dtype=np.float64)
+
+
+class TestColumnFit:
+    def test_perfect_line_r2_one(self) -> None:
+        y = np.array([0.0, 1, 2, 3, 4])
+        m, b, r2 = _column_linear_fit(y, 3 * y + 1)
+        assert m == pytest.approx(3.0) and b == pytest.approx(1.0)
+        assert r2 == pytest.approx(1.0)
+
+    def test_nonlinear_r2_below_one(self) -> None:
+        y = np.array([0.0, 1, 2, 3, 4])
+        _, _, r2 = _column_linear_fit(y, y ** 2)
+        assert r2 < 0.98
+
+
+class TestBuildout:
+    def _linear_table(self, below_trend: bool):
+        # y = torque; cells = 2*y along each of 3 columns.
+        y = [0.0, 100, 200, 300, 400, 500, 600]
+        base = np.array([[2 * v + col for col in range(3)] for v in y])
+        if below_trend:
+            base[[5, 6], :] -= 50  # rows 500, 600 sag below the line
+        return _FakeView(y, base)
+
+    def test_raises_sagging_rows_to_trend(self) -> None:
+        view = self._linear_table(below_trend=True)
+        stock = view.values.copy()
+        out = _apply_tta_att_buildout(view, "test", BuildoutSpec(threshold=400, axis="y"))
+        assert out.outcome == OUTCOME_APPLIED_BUILDOUT
+        # rows <= 400 (indices 0..4) byte-identical.
+        assert np.array_equal(view.written[:5], stock[:5])
+        # rows above 400 raised back onto the 2*y + col line.
+        y = np.array([0.0, 100, 200, 300, 400, 500, 600])
+        for col in range(3):
+            assert view.written[5:, col] == pytest.approx(2 * y[5:] + col, abs=1e-6)
+
+    def test_already_built_out_is_no_write(self) -> None:
+        # Rows above 400 already on/above the trend → nothing raised.
+        view = self._linear_table(below_trend=False)
+        out = _apply_tta_att_buildout(view, "test", BuildoutSpec(threshold=400, axis="y"))
+        assert out.outcome == OUTCOME_ALREADY_SATISFIED
+        assert view.written is None
+
+    def test_never_lowers_a_row_above_trend(self) -> None:
+        y = [0.0, 100, 200, 300, 400, 500, 600]
+        vals = np.array([[2.0 * v] for v in y])
+        vals[5, 0] = 500.0    # 500-row sags below trend (1000) → will be raised
+        vals[6, 0] = 5000.0   # 600-row far above trend (1200) → must be kept as-is
+        view = _FakeView(y, vals)
+        out = _apply_tta_att_buildout(view, "test", BuildoutSpec(threshold=400, axis="y"))
+        assert out.outcome == OUTCOME_APPLIED_BUILDOUT
+        assert view.written[5, 0] == pytest.approx(1000.0)  # sag raised to the line
+        assert view.written[6, 0] == 5000.0                 # above-trend row not lowered
+
+    def test_poor_fit_is_reported_not_written(self) -> None:
+        # Strongly nonlinear sub-threshold rows → poor_fit, no write.
+        y = [0.0, 100, 200, 300, 400, 500, 600]
+        vals = np.array([[v ** 2] for v in y])  # quadratic, not a line
+        view = _FakeView(y, vals)
+        out = _apply_tta_att_buildout(view, "test", BuildoutSpec(threshold=400, axis="y"))
+        assert out.outcome == OUTCOME_POOR_FIT
+        assert view.written is None
+
+
+class TestBuildoutReal:
+    def test_tta_att_buildout_applied_rows_below_threshold_unchanged(
+        self, real_cal: CalFile
+    ) -> None:
+        for section in ("2. Torque → Airflow", "3. Airflow → Torque"):
+            entry = _find(section)
+            [rentry] = resolve_symbol_map(real_cal, (entry,))
+            # snapshot every table's sub-400 rows before applying.
+            snaps = {}
+            for res in rentry.resolutions:
+                v = res.view
+                y = np.asarray(v.axis_values("y")).ravel()
+                snaps[res.symbol] = (y, v.values.copy())
+            outs = _apply_one(real_cal, entry)
+            assert all(
+                o.outcome in (OUTCOME_APPLIED_BUILDOUT, OUTCOME_ALREADY_SATISFIED)
+                for o in outs
+            )
+            # rows at/below 400 stayed byte-identical; nothing was lowered.
+            for res in rentry.resolutions:
+                y, before = snaps[res.symbol]
+                after = real_cal.get(res.symbol).values
+                keep = y <= 400
+                assert np.array_equal(after[keep], before[keep])
+                assert np.all(after >= before - 1e-6)

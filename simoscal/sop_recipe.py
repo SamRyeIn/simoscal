@@ -81,6 +81,7 @@ __all__ = [
     "OUTCOME_GUARDED_SKIP",
     "OUTCOME_GUARD_BLOCKED",
     "OUTCOME_AXIS_MISMATCH",
+    "OUTCOME_POOR_FIT",
     "OUTCOME_UNRESOLVED",
     "OUTCOME_SKIPPED",
     "TableOutcome",
@@ -700,6 +701,7 @@ OUTCOME_ALREADY_SATISFIED = "already_satisfied"  # target already met — nothin
 OUTCOME_GUARDED_SKIP = "guarded_skip"          # ceiling guard: current already past target (U3)
 OUTCOME_GUARD_BLOCKED = "guard_blocked"        # FloatBugGuard/RawRange rejected the write
 OUTCOME_AXIS_MISMATCH = "axis_mismatch"        # table axes differ from the guide's — not written
+OUTCOME_POOR_FIT = "poor_fit"                  # TTA/ATT sub-threshold rows not linear (U4) — not written
 OUTCOME_UNRESOLVED = "unresolved"              # symbol not found/ambiguous in this bin
 OUTCOME_SKIPPED = "skipped"                    # documented skip (log-dependent / vague / out-of-scope)
 
@@ -1042,9 +1044,95 @@ def _guarded_ceiling_write(view: TableView, section: str, target: float) -> Tabl
                         old=current, new=target, warning=text)
 
 
+# ---- U4: TTA/ATT proportional build-out ------------------------------------ #
+# Minimum per-column linear fit quality (R²) over the sub-threshold rows before
+# a table's build-out is trusted. A column below this is a "not well-approximated
+# by a line" case — the whole table is reported (poor_fit) rather than written
+# with a poor fit (plan U4 test scenarios / verification).
+_BUILDOUT_MIN_R2 = 0.95
+
+
+def _column_linear_fit(y: np.ndarray, z: np.ndarray) -> tuple[float, float, float]:
+    """Least-squares line ``z ≈ m·y + b`` plus its R². Degenerate → R²=1.0."""
+    m, b = np.polyfit(y, z, 1)
+    resid = z - (m * y + b)
+    ss_res = float(np.sum(resid ** 2))
+    ss_tot = float(np.sum((z - z.mean()) ** 2))
+    r2 = 1.0 if ss_tot < 1e-12 else 1.0 - ss_res / ss_tot
+    return float(m), float(b), r2
+
+
+def _apply_tta_att_buildout(
+    view: TableView, section: str, spec: "BuildoutSpec"
+) -> TableOutcome:
+    """Extend a TTA/ATT table's linear torque↔airmass trend above the threshold.
+
+    For every column, fit a line to the rows at/below ``spec.threshold`` (left
+    untouched per the guide's "only modify above 400") and *raise* any higher row
+    that sits below the fitted trend up to it — never lowering a row that already
+    meets or exceeds the trend. This "fill up to the line" rule matches the
+    guide's "build it out" intent, keeps TTA and its paired ATT consistent (both
+    extend their own linear physics), and never reduces an airmass/torque target.
+
+    A table whose sub-threshold rows are not well-approximated by a line
+    (any column R² < :data:`_BUILDOUT_MIN_R2`) is reported ``poor_fit`` and left
+    byte-identical rather than written with a bad extrapolation.
+    """
+    yv = view.axis_values(spec.axis)
+    if yv is None:
+        return TableOutcome(view.symbol, section, OUTCOME_AXIS_MISMATCH,
+                            detail=f"no decodable {spec.axis} axis — build-out not attempted")
+    y = np.asarray(yv, dtype=np.float64).ravel()
+    vals = view.values.astype(np.float64)
+    rows, cols = view.shape
+    fit_mask = y <= spec.threshold
+    build_mask = ~fit_mask
+    if int(fit_mask.sum()) < 3:
+        return TableOutcome(
+            view.symbol, section, OUTCOME_AXIS_MISMATCH,
+            detail=f"only {int(fit_mask.sum())} rows ≤ {_fmt(spec.threshold)} — too few to fit",
+        )
+    if int(build_mask.sum()) == 0:
+        return TableOutcome(view.symbol, section, OUTCOME_ALREADY_SATISFIED,
+                            detail=f"no rows above {_fmt(spec.threshold)} to build out")
+
+    new = vals.copy()
+    worst_r2 = 1.0
+    raised = 0
+    yb = y[build_mask]
+    for c in range(cols):
+        m, b, r2 = _column_linear_fit(y[fit_mask], vals[fit_mask, c])
+        worst_r2 = min(worst_r2, r2)
+        line = m * yb + b
+        cur = vals[build_mask, c]
+        filled = np.maximum(cur, line)
+        raised += int(np.sum(filled > cur + 1e-6))
+        new[build_mask, c] = filled
+
+    if worst_r2 < _BUILDOUT_MIN_R2:
+        return TableOutcome(
+            view.symbol, section, OUTCOME_POOR_FIT,
+            detail=(f"sub-{_fmt(spec.threshold)} rows are not linear (min column "
+                    f"R²={worst_r2:.3f} < {_BUILDOUT_MIN_R2}) — not written; needs manual build-out"),
+        )
+    if raised == 0:
+        return TableOutcome(
+            view.symbol, section, OUTCOME_ALREADY_SATISFIED,
+            detail=f"already built out above {_fmt(spec.threshold)} (min R²={worst_r2:.3f})",
+        )
+    status, text = _run_write(lambda: view.set(new))
+    if status == "guard_blocked":
+        return TableOutcome(view.symbol, section, OUTCOME_GUARD_BLOCKED, detail=text)
+    return TableOutcome(
+        view.symbol, section, OUTCOME_APPLIED_BUILDOUT,
+        detail=(f"raised {raised} cells above {_fmt(spec.threshold)} to the linear "
+                f"trend (min column R²={worst_r2:.3f})"),
+        warning=text,
+    )
+
+
 # ---- entry dispatch -------------------------------------------------------- #
-# Per-view writers keyed by kind. U4 (tta_att_buildout) registers its writer into
-# this table when it lands.
+# Per-view writers keyed by kind.
 _PER_VIEW_WRITERS: dict[str, Callable[[TableView, str, object], TableOutcome]] = {
     KIND_LITERAL_SCALAR: lambda v, s, t: _apply_literal_scalar(v, s, float(t)),
     KIND_LITERAL_BROADCAST: lambda v, s, t: _apply_literal_broadcast(v, s, float(t)),
@@ -1053,6 +1141,7 @@ _PER_VIEW_WRITERS: dict[str, Callable[[TableView, str, object], TableOutcome]] =
     KIND_CUT_TRANSFORM: _apply_cut_transform,
     KIND_IAT_ROWMAP: _apply_iat_rowmap,
     KIND_GUARDED_CEILING: lambda v, s, t: _guarded_ceiling_write(v, s, float(t)),
+    KIND_TTA_ATT_BUILDOUT: _apply_tta_att_buildout,
 }
 
 
