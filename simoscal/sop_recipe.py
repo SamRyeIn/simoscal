@@ -86,6 +86,12 @@ __all__ = [
     "OUTCOME_SKIPPED",
     "TableOutcome",
     "apply_entry",
+    # report + coherence
+    "CoherenceRule",
+    "CoherenceFinding",
+    "COHERENCE_RULES",
+    "RecipeReport",
+    "format_report",
 ]
 
 # --------------------------------------------------------------------------- #
@@ -1186,3 +1192,174 @@ def apply_entry(cal: CalFile, resolved: ResolvedEntry) -> list[TableOutcome]:
             continue
         outcomes.append(writer(res.view, section, entry.target))
     return outcomes
+
+
+# =========================================================================== #
+# U5 — report + coherence
+# =========================================================================== #
+# Outcomes that mean "the guide's target state is in place for this entry"
+# (whether we wrote it or found it already correct). Used by the coherence
+# check, which reasons about *state*, not about whether a byte changed.
+_IN_PLACE = frozenset({OUTCOME_APPLIED, OUTCOME_APPLIED_BUILDOUT, OUTCOME_ALREADY_SATISFIED})
+
+# Human ordering for the grouped report (most-actionable first).
+_OUTCOME_ORDER = (
+    OUTCOME_APPLIED,
+    OUTCOME_APPLIED_BUILDOUT,
+    OUTCOME_ALREADY_SATISFIED,
+    OUTCOME_GUARDED_SKIP,
+    OUTCOME_GUARD_BLOCKED,
+    OUTCOME_AXIS_MISMATCH,
+    OUTCOME_POOR_FIT,
+    OUTCOME_UNRESOLVED,
+    OUTCOME_SKIPPED,
+)
+
+
+@dataclass(frozen=True)
+class CoherenceRule:
+    """A declared coupling: if ``when_section`` is in place, ``needs_section`` must be too.
+
+    The tune is a coupled system but the recipe applies entries independently, so
+    these rules catch dangerous divergences (e.g. boost without fueling) and mark
+    the report **DO NOT FLASH**. ``severity`` is ``"DO NOT FLASH"`` or ``"note"``.
+    """
+
+    when_section: str
+    needs_section: str
+    severity: str
+    message: str
+
+
+@dataclass(frozen=True)
+class CoherenceFinding:
+    severity: str
+    message: str
+
+
+# The coherence rules live here, alongside the symbol map — a small declared
+# list, not logic scattered across the writer (plan U5).
+COHERENCE_RULES: tuple[CoherenceRule, ...] = (
+    CoherenceRule(
+        "Boost — Option 2", "Fueling — Basic lambda", "DO NOT FLASH",
+        "boost curve applied without lambda enrichment — LEAN RISK at full load",
+    ),
+    CoherenceRule(
+        "Boost — Option 2", "Boost — Max PR flatten", "DO NOT FLASH",
+        "boost curve applied without flattening Max PR — the PR cap may defeat the curve",
+    ),
+    CoherenceRule(
+        "Boost — Option 2", "Boost — Option 3 torque-tune selector", "DO NOT FLASH",
+        "boost curve applied without the torque-tune selector — Option 2 not activated",
+    ),
+    CoherenceRule(
+        "Fueling — Basic lambda", "Boost — Option 2", "note",
+        "lambda enrichment applied without the boost curve — harmless, but the "
+        "fuelling assumes the higher load",
+    ),
+)
+
+
+@dataclass(frozen=True)
+class RecipeReport:
+    """Every table's outcome from one recipe run, plus derived views.
+
+    A frozen wrapper over a tuple of :class:`TableOutcome`. No new file format —
+    :func:`format_report` renders it to Markdown for the demo to write to disk.
+    """
+
+    outcomes: tuple[TableOutcome, ...]
+
+    def by_outcome(self) -> dict[str, list[TableOutcome]]:
+        groups: dict[str, list[TableOutcome]] = {}
+        for o in self.outcomes:
+            groups.setdefault(o.outcome, []).append(o)
+        return groups
+
+    def counts(self) -> dict[str, int]:
+        return {k: len(v) for k, v in self.by_outcome().items()}
+
+    def _sections_in_place(self) -> set[str]:
+        return {o.guide_section for o in self.outcomes if o.outcome in _IN_PLACE}
+
+    def coherence(self) -> list[CoherenceFinding]:
+        """Evaluate :data:`COHERENCE_RULES` against this run's outcomes."""
+        in_place = self._sections_in_place()
+
+        def any_startswith(prefix: str) -> bool:
+            return any(s.startswith(prefix) for s in in_place)
+
+        findings: list[CoherenceFinding] = []
+        for rule in COHERENCE_RULES:
+            if any_startswith(rule.when_section) and not any_startswith(rule.needs_section):
+                findings.append(CoherenceFinding(rule.severity, rule.message))
+        return findings
+
+    def do_not_flash(self) -> bool:
+        return any(f.severity == "DO NOT FLASH" for f in self.coherence())
+
+
+def _md_table(headers: list[str], rows: list[list[str]]) -> str:
+    """Render an aligned GitHub-Markdown table (padded columns, like the docs)."""
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(cell))
+    def fmt(cells: list[str]) -> str:
+        return "| " + " | ".join(c.ljust(widths[i]) for i, c in enumerate(cells)) + " |"
+    sep = "|-" + "-|-".join("-" * w for w in widths) + "-|"
+    return "\n".join([fmt(headers), sep, *(fmt(r) for r in rows)])
+
+
+def _oldnew(o: TableOutcome) -> str:
+    if o.old is None and o.new is None:
+        return ""
+    return f"{_fmt(o.old) if o.old is not None else '—'} → {_fmt(o.new) if o.new is not None else '—'}"
+
+
+def format_report(report: RecipeReport, *, title: str = "SOP Tune Recipe — Report") -> str:
+    """Render a :class:`RecipeReport` to a human-readable Markdown string.
+
+    Opens with the coherence check: any **DO NOT FLASH** finding is the first
+    thing shown (the bin still saved — the human gate decides). Then a per-outcome
+    count summary, then one grouped table per outcome. For applied scalar entries
+    the old→new column *is* the review artifact (no PNG exists for a single cell,
+    Key Decision 6), so it is always shown.
+    """
+    lines: list[str] = [f"# {title}", ""]
+
+    findings = report.coherence()
+    dnf = [f for f in findings if f.severity == "DO NOT FLASH"]
+    notes = [f for f in findings if f.severity != "DO NOT FLASH"]
+    if dnf:
+        lines += ["## ⛔ DO NOT FLASH", ""]
+        lines += [f"- **{f.message}**" for f in dnf]
+        lines.append("")
+    else:
+        lines += ["## ✅ Coherence check passed", "",
+                  "No dependent-entry divergence detected. (Still pass the human "
+                  "review gate + checksum verify before flashing.)", ""]
+    if notes:
+        lines += ["### Notes", ""] + [f"- {f.message}" for f in notes] + [""]
+
+    counts = report.counts()
+    lines += ["## Summary", ""]
+    summary_rows = [[k, str(counts[k])] for k in _OUTCOME_ORDER if k in counts]
+    # any outcome not in the canonical order (future-proofing) still appears.
+    summary_rows += [[k, str(v)] for k, v in counts.items() if k not in _OUTCOME_ORDER]
+    lines += [_md_table(["Outcome", "Tables"], summary_rows), ""]
+
+    groups = report.by_outcome()
+    ordered = [k for k in _OUTCOME_ORDER if k in groups]
+    ordered += [k for k in groups if k not in _OUTCOME_ORDER]
+    for key in ordered:
+        outs = groups[key]
+        lines += [f"## {key} ({len(outs)})", ""]
+        rows = [
+            [o.symbol or "—", o.guide_section, _oldnew(o),
+             (o.detail + (f" ⚠ {o.warning}" if o.warning else "")).strip()]
+            for o in outs
+        ]
+        lines += [_md_table(["Symbol", "Guide section", "Old → New", "Detail"], rows), ""]
+
+    return "\n".join(lines).rstrip() + "\n"

@@ -624,3 +624,98 @@ class TestBuildoutReal:
                 keep = y <= 400
                 assert np.array_equal(after[keep], before[keep])
                 assert np.all(after >= before - 1e-6)
+
+
+# --------------------------------------------------------------------------- #
+# U5 — RecipeReport + formatting + coherence
+# --------------------------------------------------------------------------- #
+from simoscal.sop_recipe import (  # noqa: E402
+    OUTCOME_GUARD_BLOCKED,
+    RecipeReport,
+    TableOutcome,
+    format_report,
+)
+
+
+def _o(section: str, outcome: str, **kw) -> TableOutcome:
+    return TableOutcome(kw.pop("symbol", "SYM"), section, outcome, **kw)
+
+
+class TestReport:
+    def test_counts_and_grouping(self) -> None:
+        rep = RecipeReport((
+            _o("A", OUTCOME_APPLIED),
+            _o("B", OUTCOME_APPLIED),
+            _o("C", OUTCOME_SKIPPED, detail="x"),
+        ))
+        assert rep.counts() == {OUTCOME_APPLIED: 2, OUTCOME_SKIPPED: 1}
+        assert len(rep.by_outcome()[OUTCOME_APPLIED]) == 2
+
+    def test_format_shows_scalar_old_new(self) -> None:
+        rep = RecipeReport((
+            _o("Limiters — Speed", OUTCOME_APPLIED, symbol="SPD", old=200.0, new=257.49),
+        ))
+        text = format_report(rep)
+        assert "200" in text and "257.49" in text
+        assert "→" in text
+
+    def test_format_has_do_not_flash_banner(self) -> None:
+        rep = RecipeReport((
+            _o("Boost — Option 2: PUT setpoint curve", OUTCOME_APPLIED),
+        ))
+        text = format_report(rep)
+        assert "DO NOT FLASH" in text
+        assert "LEAN RISK" in text
+
+
+class TestCoherence:
+    def test_boost_without_fueling_is_do_not_flash(self) -> None:
+        rep = RecipeReport((
+            _o("Boost — Option 2: PUT setpoint curve", OUTCOME_APPLIED),
+            _o("Boost — Max PR flatten (Option 2)", OUTCOME_APPLIED),
+            _o("Boost — Option 3 torque-tune selector", OUTCOME_APPLIED),
+            _o("Fueling — Basic lambda setpoint (HPDI + MPI)", OUTCOME_AXIS_MISMATCH),
+        ))
+        assert rep.do_not_flash() is True
+        msgs = [f.message for f in rep.coherence()]
+        assert any("LEAN RISK" in m for m in msgs)
+        # Max PR + selector ARE in place → those two rules must NOT fire.
+        assert not any("Max PR" in m for m in msgs)
+        assert not any("selector" in m for m in msgs)
+
+    def test_all_boost_deps_in_place_passes(self) -> None:
+        rep = RecipeReport((
+            _o("Boost — Option 2: PUT setpoint curve", OUTCOME_APPLIED),
+            _o("Boost — Max PR flatten (Option 2)", OUTCOME_APPLIED),
+            _o("Boost — Option 3 torque-tune selector", OUTCOME_ALREADY_SATISFIED),
+            _o("Fueling — Basic lambda setpoint (HPDI + MPI)", OUTCOME_APPLIED),
+        ))
+        assert rep.do_not_flash() is False
+        assert rep.coherence() == []
+
+    def test_fueling_without_boost_is_note_not_block(self) -> None:
+        rep = RecipeReport((
+            _o("Fueling — Basic lambda setpoint (HPDI + MPI)", OUTCOME_APPLIED),
+        ))
+        findings = rep.coherence()
+        assert rep.do_not_flash() is False
+        assert any(f.severity == "note" for f in findings)
+
+
+class TestReportReal:
+    def test_full_report_accounts_for_every_instruction(self, real_cal: CalFile) -> None:
+        outs = []
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for r in resolve_symbol_map(real_cal):
+                outs.extend(apply_entry(real_cal, r))
+        rep = RecipeReport(tuple(outs))
+        # AE4: every guide instruction (section) is represented in the report.
+        report_sections = {o.guide_section for o in rep.outcomes}
+        map_sections = {e.guide_section for e in SYMBOL_MAP}
+        assert report_sections == map_sections
+        # This bin cannot apply lambda (axis mismatch) → DO NOT FLASH is correct.
+        assert rep.do_not_flash() is True
+        # format_report renders without error and contains the summary.
+        text = format_report(rep)
+        assert "## Summary" in text and "applied" in text
