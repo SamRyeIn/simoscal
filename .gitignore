@@ -22,3 +22,4 @@ venv/
 demos/*.csv
 demos/*.xlsx
 demos/plots/
+demos/apply_sop_recipe_out/

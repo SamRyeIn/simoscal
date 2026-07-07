@@ -92,6 +92,7 @@ __all__ = [
     "COHERENCE_RULES",
     "RecipeReport",
     "format_report",
+    "apply_basics_sop",
 ]
 
 # --------------------------------------------------------------------------- #
@@ -1363,3 +1364,33 @@ def format_report(report: RecipeReport, *, title: str = "SOP Tune Recipe — Rep
         lines += [_md_table(["Symbol", "Guide section", "Old → New", "Detail"], rows), ""]
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+# =========================================================================== #
+# U6 — top-level orchestration
+# =========================================================================== #
+def apply_basics_sop(
+    cal: CalFile, symbol_map: tuple[RecipeEntry, ...] = SYMBOL_MAP
+) -> RecipeReport:
+    """Apply the whole ``ecu-tuning-basics`` SOP to an open ``CalFile``.
+
+    Resolves the symbol map (U1) against ``cal``, then applies every entry in the
+    order the guide presents it (torque request → TTA/ATT → boost → timing →
+    fueling → cooling → limiters — the map's own order), collecting one
+    :class:`TableOutcome` per table into a :class:`RecipeReport` (U5).
+
+    **Pure with respect to the filesystem:** it stages edits into the
+    ``CalFile``'s in-memory buffer via the existing ``TableView`` API and returns
+    the report — it does not save, verify checksums, or write PNGs. That is the
+    caller's job (see ``demos/apply_sop_recipe.py``), keeping the library function
+    testable and side-effect-free and letting the human gate decide what to do
+    with a **DO NOT FLASH** report before anything touches disk or a flasher.
+
+    Deterministic and re-runnable: it always starts from whatever ``cal`` was
+    opened against (the stock bin) and applies the full map, so re-running after a
+    map tweak regenerates the whole result rather than layering edits.
+    """
+    outcomes: list[TableOutcome] = []
+    for resolved in resolve_symbol_map(cal, symbol_map):
+        outcomes.extend(apply_entry(cal, resolved))
+    return RecipeReport(tuple(outcomes))

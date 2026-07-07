@@ -175,6 +175,62 @@ are `<name>__<kind>.png` where `name` = symbol → title → uniqueid and `kind`
 (e.g. `value_cmap="turbo"` for a TunerPro-like look); surfaces bake in a fixed
 camera (`elev=30, azim=-120`, tunable) since the PNG is non-interactive.
 
+### SOP tune recipe — `apply_basics_sop`
+
+Scripts the concrete, log-independent instructions from
+`knowledge/ecu-tuning-basics.md` onto the stock bin via the read/edit/write API
+above — no new safety, checksum, or plotting logic, and **no flashing**. It
+produces **revision 0 of a tune: a starting point, not a finished calibration**
+(the intended loop is recipe → review → flash → log → review → iterate).
+
+The one source of truth is `SYMBOL_MAP`: one reviewable entry per guide
+instruction (in-scope *and* explicitly-skipped), each mapping a guide section to
+its XDF symbol(s), a target value/curve/rule, and a *treatment*. `apply_basics_sop`
+resolves the map against a live `CalFile`, applies each entry in guide order, and
+returns a `RecipeReport` — it **stages edits in memory and does not touch disk**
+(saving, verifying, and PNG generation are the caller's job; see
+`demos/apply_sop_recipe.py`).
+
+```python
+from simoscal import CalFile, apply_basics_sop, format_report
+
+cal = CalFile.open("xdf/SC8S50.V1.0.xdf", "bin/5G0906259L__0002.bin")
+report = apply_basics_sop(cal)                 # stages edits, returns the report
+print(format_report(report))                   # DO NOT FLASH banner first, if any
+cal.save("tuned.bin", correct_checksums=True)  # then verify + review before flashing
+```
+
+Fail-loud, per the library mandate — the recipe never guesses:
+
+- **axis-matched literal writes** — a literal grid is written only when the
+  table's own axis breakpoints match the guide's; a bin whose axes differ (e.g.
+  the lambda tables, whose stock breakpoints differ from the guide's example bin)
+  is reported `axis_mismatch` and left byte-identical, never written to the wrong
+  cells;
+- **guarded ceiling raises** never write a lower value over a higher one
+  (`guarded_skip`), and float-bug-flagged limiter writes that trip the existing
+  `FloatBugGuardError` are caught per-entry as `guard_blocked` — the table stays
+  byte-identical and the recipe continues;
+- **unresolved / vague / out-of-scope** instructions are reported, never guessed;
+- a **coherence check** opens the report with **DO NOT FLASH** when dependent
+  entries diverge (e.g. boost curve applied without lambda enrichment → lean
+  risk). The bin still saves — the human review gate decides.
+
+| Member | Description |
+|--------|-------------|
+| `apply_basics_sop(cal, symbol_map=SYMBOL_MAP)` → `RecipeReport` | Resolve + apply the whole SOP to an open `CalFile`, staging edits in memory. Deterministic and re-runnable from the stock bin. |
+| `resolve_symbol_map(cal, symbol_map=SYMBOL_MAP)` → `list[ResolvedEntry]` | Resolve every entry's symbol(s) against the bin; failures are data (`resolved=False` + reason), never exceptions. |
+| `RecipeReport` | Frozen wrapper over per-table `TableOutcome`s; `.by_outcome()`, `.counts()`, `.coherence()`, `.do_not_flash()`. |
+| `format_report(report)` → `str` | Aligned Markdown grouped by outcome; DO NOT FLASH coherence section first; scalar old→new always shown. |
+| `SYMBOL_MAP` | The reviewable guide-instruction → symbol(s) → target/treatment table. |
+
+Outcomes: `applied` · `applied_buildout` (TTA/ATT linear build-out) ·
+`already_satisfied` · `guarded_skip` · `guard_blocked` · `axis_mismatch` ·
+`poor_fit` · `unresolved` · `skipped`. Scalar `(1,1)` edits produce no
+comparison PNG by design (Phase 3 `compare_tables`) — they are reviewed via the
+report's old→new values instead; every changed non-scalar table gets a
+before/after PNG from the demo.
+
 ### Checksums — `ChecksumReport`
 `name` · `can_verify` · `is_stale` · `stored` · `computed` · `covered` (half-open
 full-bin byte ranges) · `detail`. Two checksums are reported: **`CAL_CRC`**
@@ -241,6 +297,7 @@ cd Code
 ./.venv/bin/python -m pytest tests/test_acceptance.py -v          # AE1–AE5 (Phase 1)
 ./.venv/bin/python -m pytest tests/test_acceptance_export.py -v   # AE1–AE7 (Phase 2 export)
 ./.venv/bin/python -m pytest tests/test_acceptance_plot.py -v     # AE1–AE9 (Phase 3 viz)
+./.venv/bin/python -m pytest tests/test_acceptance_sop.py -v      # AE1–AE5 (SOP tune recipe)
 ```
 
 The acceptance suite (`tests/test_acceptance.py`) encodes the AE1–AE5 examples:
