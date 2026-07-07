@@ -4,7 +4,8 @@ Phase 1 substrate: parse a TunerPro ``.xdf``, map its tables against a 4 MB
 ``.bin``, read/edit values in physical units, and write a minimal-diff,
 flashable ``.bin``. Flashing and checksum *recomputation* are out of scope — the
 library verifies-and-warns only. Phase 2 adds read-only CSV/xlsx export
-(``simoscal.export``) on top of this substrate.
+(``simoscal.export``) and Phase 3 adds read-only PNG visualization
+(``simoscal.plot``) on top of this substrate.
 
 Operating principle: *fail loud, change nothing silently, keep every modified
 bin verifiable before it is flashed.*
@@ -37,6 +38,13 @@ from .codec import (
 from .calfile import CalFile, TableView
 from .render import RenderedTable, render_table
 from .export import export_tables, select_tables, write_csv, write_xlsx
+from .plot import (
+    TableMismatchError,
+    compare_bins,
+    compare_tables,
+    plot_table,
+    plot_tables,
+)
 from .checksum import (
     ChecksumReport,
     StaleChecksumWarning,
@@ -90,6 +98,11 @@ __all__ = [
     "write_csv",
     "write_xlsx",
     "export_tables",
+    "plot_table",
+    "compare_tables",
+    "plot_tables",
+    "compare_bins",
+    "TableMismatchError",
     "ChecksumReport",
     "StaleChecksumWarning",
     "verify_checksums",

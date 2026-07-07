@@ -6,8 +6,10 @@ Simos18 `.bin`, reads and edits table values **in physical units**, and writes a
 TunerPro dependency for day-to-day work.
 
 Phase 1 is the read/edit/write substrate; Phase 2 adds CSV/xlsx export (see
-[Export](#export-phase-2--csv--xlsx-physical-units-read-only) below). Later
-phases (visualization, datalog-driven auto-tuning) consume this library
+[Export](#export-phase-2--csv--xlsx-physical-units-read-only) below) and Phase 3
+adds static-PNG visualization (see
+[Visualization](#visualization-phase-3--surface--heatmap--line-pngs--comparison)
+below). Later phases (datalog-driven auto-tuning) consume this library
 read-only. It **does not flash** and it **does not recompute** checksums by
 default — it *verifies and reports* them so a stale bin is caught before it
 reaches the flasher.
@@ -23,11 +25,11 @@ reaches the flasher.
 ```bash
 cd Code
 python -m venv .venv
-./.venv/bin/pip install -e ".[dev]"     # numpy + openpyxl runtime, pytest dev
+./.venv/bin/pip install -e ".[dev]"     # numpy + openpyxl + matplotlib runtime, pytest dev
 ```
 
-Requires Python ≥ 3.11. Runtime dependencies: `numpy` and `openpyxl` (the
-latter for xlsx export, Phase 2).
+Requires Python ≥ 3.11. Runtime dependencies: `numpy`, `openpyxl` (xlsx export,
+Phase 2), and `matplotlib` (PNG visualization, Phase 3).
 
 ## Quick start
 
@@ -122,6 +124,57 @@ export_tables(cal, "full_dump.xlsx", all_tables=True)  # one sheet per category
 | `write_csv(tables, path)` | All tables in **one file**, stacked as labeled grid blocks. |
 | `write_xlsx(tables, path)` | Tables grouped onto sheets **by XDF category**; a multi-category table is written onto every one of its categories' sheets. |
 
+### Visualization (Phase 3) — surface / heatmap / line PNGs + comparison
+
+Render any selection of tables to **static PNGs** so a map can be *seen* without
+TunerPro. Read-only and additive (no bin-mutation path), built on the same
+`RenderedTable`/`render_table()` layer and `select_tables()` selection model as
+export. matplotlib is used headless via the object API (no `pyplot`), so import
+has no window/backend side effects.
+
+- **2D** table → a 3D **surface** *and* a value-overlaid **heatmap** (every cell
+  labeled, TunerPro-style).
+- **1D** table → a **line** plot. **Scalar** (1×1) → nothing produced.
+- **`compare_tables(a, b)`** is provenance-agnostic — two `.bin`s *or*
+  before/after one edit. Delta is `b − a`. 2D → a 3-panel composite (A and B on
+  a shared scale, delta on its own zero-centered diverging scale); 1D → a 2-panel
+  composite (overlay + delta). Mismatched shapes/axes **hard-fail** with
+  `TableMismatchError` naming both tables — never a misleading plot.
+
+```python
+from simoscal import CalFile, plot_tables, compare_bins, compare_tables, render_table
+
+cal = CalFile.open("xdf/SC8S50.V1.0.xdf", "bin/5G0906259L__0002.bin")
+plot_tables(cal, "plots/", category="Boost Control")   # PNGs under plots/Boost Control/
+
+# Compare the same tables across two bins (stock vs tuned):
+stock = CalFile.open("xdf/SC8S50.V1.0.xdf", "bin/stock.bin")
+tuned = CalFile.open("xdf/SC8S50.V1.0.xdf", "bin/tuned.bin")
+compare_bins(stock, tuned, "diffs/", category="Boost Control")
+
+# Before/after one in-session edit — no second bin (render_table snapshots):
+view = cal.get("ID_PORT_SP")
+before = render_table(view)          # holds the pre-edit values
+view.set_cell(0, 0, 12.5)
+compare_tables(before, view, "review/")
+```
+
+| Member | Description |
+|--------|-------------|
+| `plot_table(source, out_dir, *, surface=True, heatmap=True, value_cmap="viridis", fmt="{:.4g}", elev=30, azim=-120)` | Render one table (`TableView` or `RenderedTable`) to PNG(s), flat into `out_dir`. Returns written paths. |
+| `compare_tables(a, b, out_dir, *, surface=True, heatmap=True, value_cmap="viridis", delta_cmap="RdBu_r", ...)` | Composite comparison of two views of one table (`b − a`). Raises `TableMismatchError` on shape/axis mismatch. |
+| `plot_tables(cal, out_dir, *, symbols=None, category=None, all_tables=False, ...)` | Batch-plot a selection into per-category subfolders (`_uncategorized/` for a category-less table). |
+| `compare_bins(cal_a, cal_b, out_dir, *, symbols=None, category=None, all_tables=False, ...)` | Batch-compare a selection across two bins, matched by `uniqueid` (fails loud if `cal_b` lacks a match). |
+| `TableMismatchError` | Raised by the compare path when two tables are not comparable. |
+
+Output model: one PNG set per table under `out_dir/<category>/`; a multi-category
+table is duplicated under each of its categories (mirroring Phase 2 xlsx). Files
+are `<name>__<kind>.png` where `name` = symbol → title → uniqueid and `kind` ∈
+{`surface`, `heatmap`, `line`, `compare_surface`, `compare_heatmap`,
+`compare_line`}. Defaults: `viridis` values / `RdBu_r` delta, both overridable
+(e.g. `value_cmap="turbo"` for a TunerPro-like look); surfaces bake in a fixed
+camera (`elev=30, azim=-120`, tunable) since the PNG is non-interactive.
+
 ### Checksums — `ChecksumReport`
 `name` · `can_verify` · `is_stale` · `stored` · `computed` · `covered` (half-open
 full-bin byte ranges) · `detail`. Two checksums are reported: **`CAL_CRC`**
@@ -187,6 +240,7 @@ cd Code
 ./.venv/bin/python -m pytest tests -q            # full suite
 ./.venv/bin/python -m pytest tests/test_acceptance.py -v          # AE1–AE5 (Phase 1)
 ./.venv/bin/python -m pytest tests/test_acceptance_export.py -v   # AE1–AE7 (Phase 2 export)
+./.venv/bin/python -m pytest tests/test_acceptance_plot.py -v     # AE1–AE9 (Phase 3 viz)
 ```
 
 The acceptance suite (`tests/test_acceptance.py`) encodes the AE1–AE5 examples:
@@ -213,10 +267,12 @@ from a checkout.
 **In:** XDF parse, bin read/edit/write in physical units, minimal-diff save,
 checksum verify/report, acceptance suite (Phase 1); CSV/xlsx export of any
 table selection in physical units, a public `RenderedTable` rendering layer
-(Phase 2).
+(Phase 2); static-PNG visualization (surface/heatmap/line) and provenance-
+agnostic comparison composites (Phase 3).
 **Out:** flashing (SimosTools/VW_Flash), checksum *recompute* beyond the
 optional correction path, CBOOT/ASW editing, bin patching, FRF→BIN extraction,
-GUI/CLI, import/round-trip from an exported file back into a `.bin`.
-Visualization (Phase 3) and datalog-driven auto-tuning (Phase 4) are later
-phases that consume this library read-only (Phase 4 writes *through* this
-writer, inheriting its guards).
+GUI/CLI, import/round-trip from an exported file back into a `.bin`;
+interactive/on-screen viewing, vector (SVG/PDF) output, >2-bin comparison
+(Phase 3 out-of-scope). Datalog-driven auto-tuning (Phase 4) is a later phase
+that consumes this library read-only and writes *through* this writer,
+inheriting its guards.
