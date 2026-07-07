@@ -5,10 +5,12 @@ Simos18 `.bin`, reads and edits table values **in physical units**, and writes a
 **minimal-diff, flashable** `.bin`. It runs entirely on the Mac — no Windows, no
 TunerPro dependency for day-to-day work.
 
-This is Phase 1: the substrate every later phase (export, visualization,
-datalog-driven auto-tuning) consumes read-only. It **does not flash** and it
-**does not recompute** checksums by default — it *verifies and reports* them so a
-stale bin is caught before it reaches the flasher.
+Phase 1 is the read/edit/write substrate; Phase 2 adds CSV/xlsx export (see
+[Export](#export-phase-2--csv--xlsx-physical-units-read-only) below). Later
+phases (visualization, datalog-driven auto-tuning) consume this library
+read-only. It **does not flash** and it **does not recompute** checksums by
+default — it *verifies and reports* them so a stale bin is caught before it
+reaches the flasher.
 
 > **⚠ This is not a sandbox.** The output of this pipeline is a calibration that
 > gets flashed to the engine controller of a real, driven car. A wrong byte can
@@ -21,10 +23,11 @@ stale bin is caught before it reaches the flasher.
 ```bash
 cd Code
 python -m venv .venv
-./.venv/bin/pip install -e ".[dev]"     # numpy runtime + pytest dev
+./.venv/bin/pip install -e ".[dev]"     # numpy + openpyxl runtime, pytest dev
 ```
 
-Requires Python ≥ 3.11. The only runtime dependency is `numpy`.
+Requires Python ≥ 3.11. Runtime dependencies: `numpy` and `openpyxl` (the
+latter for xlsx export, Phase 2).
 
 ## Quick start
 
@@ -96,6 +99,29 @@ for r in reports:
 | `.set_cell(r, c, value, *, override=False)` | Write one cell in physical units. |
 | `.set_raw(arr)` / `.set_raw_cell(r, c, v)` | Write raw integers directly (the only write path for non-linear tables). |
 
+### Export (Phase 2) — CSV / xlsx, physical units, read-only
+
+Turns any selection of tables into flat-file output — archiving, cross-tune
+diffing, or handing values to another tool. Grid-shaped like TunerPro (X
+across, Y down, Z fills the matrix); 1D tables and scalars degrade naturally.
+One-way (no import back into a `.bin`) and library-only (no CLI).
+
+```python
+from simoscal import CalFile, export_tables
+
+cal = CalFile.open("xdf/SC8S50.V1.0.xdf", "bin/5G0906259L__0002.bin")
+export_tables(cal, "boost.csv", category="Boost Control")
+export_tables(cal, "full_dump.xlsx", all_tables=True)  # one sheet per category
+```
+
+| Member | Description |
+|--------|-------------|
+| `export_tables(cal, path, *, symbols=None, category=None, all_tables=False)` | Select, render, and write in one call. Dispatches to CSV/xlsx by `path`'s suffix. |
+| `select_tables(cal, *, symbols=None, category=None, all_tables=False)` | Resolve a selection spec into a deduplicated `list[TableView]`, unioned by `uniqueid`. |
+| `render_table(view)` → `RenderedTable` | The shared table→grid rendering layer (`symbol`, `title`, `units`, `categories`, `x_labels`, `y_labels`, `x_units`, `y_units`, `values`). Public so Phase 3 (visualization) can reuse it directly. |
+| `write_csv(tables, path)` | All tables in **one file**, stacked as labeled grid blocks. |
+| `write_xlsx(tables, path)` | Tables grouped onto sheets **by XDF category**; a multi-category table is written onto every one of its categories' sheets. |
+
 ### Checksums — `ChecksumReport`
 `name` · `can_verify` · `is_stale` · `stored` · `computed` · `covered` (half-open
 full-bin byte ranges) · `detail`. Two checksums are reported: **`CAL_CRC`**
@@ -159,7 +185,8 @@ Phase 1.
 ```bash
 cd Code
 ./.venv/bin/python -m pytest tests -q            # full suite
-./.venv/bin/python -m pytest tests/test_acceptance.py -v   # AE1–AE5
+./.venv/bin/python -m pytest tests/test_acceptance.py -v          # AE1–AE5 (Phase 1)
+./.venv/bin/python -m pytest tests/test_acceptance_export.py -v   # AE1–AE7 (Phase 2 export)
 ```
 
 The acceptance suite (`tests/test_acceptance.py`) encodes the AE1–AE5 examples:
@@ -184,9 +211,12 @@ from a checkout.
 ## Scope
 
 **In:** XDF parse, bin read/edit/write in physical units, minimal-diff save,
-checksum verify/report, acceptance suite.
+checksum verify/report, acceptance suite (Phase 1); CSV/xlsx export of any
+table selection in physical units, a public `RenderedTable` rendering layer
+(Phase 2).
 **Out:** flashing (SimosTools/VW_Flash), checksum *recompute* beyond the
 optional correction path, CBOOT/ASW editing, bin patching, FRF→BIN extraction,
-GUI/CLI. Export (Phase 2), visualization (Phase 3), and datalog-driven
-auto-tuning (Phase 4) are later phases that consume this library read-only
-(Phase 4 writes *through* this writer, inheriting its guards).
+GUI/CLI, import/round-trip from an exported file back into a `.bin`.
+Visualization (Phase 3) and datalog-driven auto-tuning (Phase 4) are later
+phases that consume this library read-only (Phase 4 writes *through* this
+writer, inheriting its guards).

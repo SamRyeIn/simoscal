@@ -3,13 +3,11 @@
 Phase 1 substrate: parse a TunerPro ``.xdf``, map its tables against a 4 MB
 ``.bin``, read/edit values in physical units, and write a minimal-diff,
 flashable ``.bin``. Flashing and checksum *recomputation* are out of scope — the
-library verifies-and-warns only.
+library verifies-and-warns only. Phase 2 adds read-only CSV/xlsx export
+(``simoscal.export``) on top of this substrate.
 
 Operating principle: *fail loud, change nothing silently, keep every modified
 bin verifiable before it is flashed.*
-
-This ``__init__`` re-exports the core data model (U1). Parser, codec, writer, and
-checksum modules (U2–U5) attach in later units.
 """
 
 from __future__ import annotations
@@ -37,6 +35,8 @@ from .codec import (
     numpy_dtype_for,
 )
 from .calfile import CalFile, TableView
+from .render import RenderedTable, render_table
+from .export import export_tables, select_tables, write_csv, write_xlsx
 from .checksum import (
     ChecksumReport,
     StaleChecksumWarning,
@@ -84,6 +84,12 @@ __all__ = [
     "numpy_dtype_for",
     "CalFile",
     "TableView",
+    "RenderedTable",
+    "render_table",
+    "select_tables",
+    "write_csv",
+    "write_xlsx",
+    "export_tables",
     "ChecksumReport",
     "StaleChecksumWarning",
     "verify_checksums",

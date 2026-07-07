@@ -152,7 +152,7 @@ def test_categories_lists_populated_names(mini: XdfModel):
 
 
 def test_len(mini: XdfModel):
-    assert len(mini) == 4
+    assert len(mini) == 5
 
 
 # --------------------------------------------------------------------------- #
