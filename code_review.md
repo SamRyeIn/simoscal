@@ -21,32 +21,35 @@ in place as they are fixed or dismissed.
 
 ## Findings index
 
-| ID             | Severity | Verdict   | File                     | Summary                                                                    | Status |
-|----------------|----------|-----------|--------------------------|----------------------------------------------------------------------------|--------|
-| CR-20260706-01 | High     | CONFIRMED | tests/test_acceptance.py | AE3 diff blind to appended bytes; no length assert on edited save          | Open   |
-| CR-20260706-02 | High     | CONFIRMED | tests/conftest.py        | Safety suite is skip-if-absent with no way to force a non-skipped run      | Open   |
-| CR-20260706-03 | High     | CONFIRMED | tests/test_acceptance.py | AE3 offset math ignores `base_subtract`                                    | Open   |
-| CR-20260706-04 | High     | CONFIRMED | tests/test_acceptance.py | AE1 tolerance is unbounded and controlled by the capture under test        | Open   |
-| CR-20260706-05 | Medium   | CONFIRMED | tests/test_acceptance.py | AE4 precondition unsound for declared max in [120, 127)                    | Open   |
-| CR-20260706-06 | High     | CONFIRMED | README.md                | Quick-start paths do not resolve from the documented cwd                   | Open   |
-| CR-20260706-07 | Medium   | CONFIRMED | README.md                | Quick-start example writes out-of-range value, fires EditRangeWarning      | Open   |
-| CR-20260706-08 | Medium   | CONFIRMED | tests/conftest.py        | `real_cal` fixture silently shadowed by test_read.py module fixture        | Open   |
-| CR-20260706-09 | Medium   | CONFIRMED | tests/test_acceptance.py | AE2/AE3/AE5 duplicate pre-existing tests near-verbatim                     | Open   |
-| CR-20260706-10 | Medium   | PLAUSIBLE | tests/test_acceptance.py | int8 wraparound in AE3 whole-table `+1` before clip                        | Open   |
-| CR-20260706-11 | Low      | PLAUSIBLE | tests/test_acceptance.py | AE4 asserts on `rec[0]` without filtering warning category                 | Open   |
-| CR-20260706-12 | Low      | PLAUSIBLE | tests/conftest.py        | Oracle JSON read without `utf-8-sig`; Windows BOM fails a valid capture    | Open   |
-| CR-20260706-13 | Low      | CONFIRMED | tests/fixtures/README.md | mini.xdf documented as 3 tables; it contains 4                             | Open   |
-| CR-20260706-14 | Low      | CONFIRMED | tests/conftest.py        | `requires_real_files` marker is dead code (fifth copy of the guard)        | Open   |
-| CR-20260706-15 | Low      | CONFIRMED | tests/test_acceptance.py | No guard pins ORACLE_ID identity/shape/dtype                               | Open   |
-| CR-20260706-16 | Low      | CONFIRMED | tests/ (multiple)        | Oracle JSON schema exists in three uncoordinated copies                    | Open   |
-| CR-20260706-17 | Low      | CONFIRMED | tests/test_acceptance.py | Redundant `checked` counter duplicates fixture guard                       | Open   |
-| CR-20260706-18 | Low      | CONFIRMED | README.md                | AE gating story told in three prose locations                              | Open   |
-| CR-20260706-19 | Low      | CONFIRMED | tests/ (multiple)        | ~2.5 s/run avoidable XDF re-parsing and slow Python byte-diff loops        | Open   |
-| CR-20260706-20 | Low      | CONFIRMED | tests/fixtures/README.md | AE1 capture procedure relies on error-prone hand transcription             | Open   |
-| CR-20260706-21 | High     | CONFIRMED | simoscal/codec.py        | 2D table decode uses row-major reshape against column-major on-bin data    | Fixed (2026-07-06) |
-| CR-20260706-22 | High     | CONFIRMED | simoscal/xdf.py          | mmedtypeflags sign bit inverted for at least three real int16/int32 tables | Fixed (2026-07-06) |
-| CR-20260707-01 | Medium   | PLAUSIBLE | simoscal/sop_recipe.py   | Multi-cell writers leave a table partly written if a guard trips mid-loop  | Fixed (2026-07-07) |
-| CR-20260707-02 | Low      | CONFIRMED | simoscal/sop_recipe.py   | Vestigial row_idx/col_idx locals only None-checked in _apply_literal_table | Fixed (2026-07-07) |
+| ID             | Severity | Verdict   | File                                            | Summary                                                                    | Status             |
+|----------------|----------|-----------|-------------------------------------------------|----------------------------------------------------------------------------|--------------------|
+| CR-20260706-01 | High     | CONFIRMED | tests/test_acceptance.py                        | AE3 diff blind to appended bytes; no length assert on edited save          | Open               |
+| CR-20260706-02 | High     | CONFIRMED | tests/conftest.py                               | Safety suite is skip-if-absent with no way to force a non-skipped run      | Open               |
+| CR-20260706-03 | High     | CONFIRMED | tests/test_acceptance.py                        | AE3 offset math ignores `base_subtract`                                    | Open               |
+| CR-20260706-04 | High     | CONFIRMED | tests/test_acceptance.py                        | AE1 tolerance is unbounded and controlled by the capture under test        | Open               |
+| CR-20260706-05 | Medium   | CONFIRMED | tests/test_acceptance.py                        | AE4 precondition unsound for declared max in [120, 127)                    | Open               |
+| CR-20260706-06 | High     | CONFIRMED | README.md                                       | Quick-start paths do not resolve from the documented cwd                   | Open               |
+| CR-20260706-07 | Medium   | CONFIRMED | README.md                                       | Quick-start example writes out-of-range value, fires EditRangeWarning      | Open               |
+| CR-20260706-08 | Medium   | CONFIRMED | tests/conftest.py                               | `real_cal` fixture silently shadowed by test_read.py module fixture        | Open               |
+| CR-20260706-09 | Medium   | CONFIRMED | tests/test_acceptance.py                        | AE2/AE3/AE5 duplicate pre-existing tests near-verbatim                     | Open               |
+| CR-20260706-10 | Medium   | PLAUSIBLE | tests/test_acceptance.py                        | int8 wraparound in AE3 whole-table `+1` before clip                        | Open               |
+| CR-20260706-11 | Low      | PLAUSIBLE | tests/test_acceptance.py                        | AE4 asserts on `rec[0]` without filtering warning category                 | Open               |
+| CR-20260706-12 | Low      | PLAUSIBLE | tests/conftest.py                               | Oracle JSON read without `utf-8-sig`; Windows BOM fails a valid capture    | Open               |
+| CR-20260706-13 | Low      | CONFIRMED | tests/fixtures/README.md                        | mini.xdf documented as 3 tables; it contains 4                             | Open               |
+| CR-20260706-14 | Low      | CONFIRMED | tests/conftest.py                               | `requires_real_files` marker is dead code (fifth copy of the guard)        | Open               |
+| CR-20260706-15 | Low      | CONFIRMED | tests/test_acceptance.py                        | No guard pins ORACLE_ID identity/shape/dtype                               | Open               |
+| CR-20260706-16 | Low      | CONFIRMED | tests/ (multiple)                               | Oracle JSON schema exists in three uncoordinated copies                    | Open               |
+| CR-20260706-17 | Low      | CONFIRMED | tests/test_acceptance.py                        | Redundant `checked` counter duplicates fixture guard                       | Open               |
+| CR-20260706-18 | Low      | CONFIRMED | README.md                                       | AE gating story told in three prose locations                              | Open               |
+| CR-20260706-19 | Low      | CONFIRMED | tests/ (multiple)                               | ~2.5 s/run avoidable XDF re-parsing and slow Python byte-diff loops        | Open               |
+| CR-20260706-20 | Low      | CONFIRMED | tests/fixtures/README.md                        | AE1 capture procedure relies on error-prone hand transcription             | Open               |
+| CR-20260706-21 | High     | CONFIRMED | simoscal/codec.py                               | 2D table decode uses row-major reshape against column-major on-bin data    | Fixed (2026-07-06) |
+| CR-20260706-22 | High     | CONFIRMED | simoscal/xdf.py                                 | mmedtypeflags sign bit inverted for at least three real int16/int32 tables | Fixed (2026-07-06) |
+| CR-20260707-01 | Medium   | PLAUSIBLE | simoscal/sop_recipe.py                          | Multi-cell writers leave a table partly written if a guard trips mid-loop  | Fixed (2026-07-07) |
+| CR-20260707-02 | Low      | CONFIRMED | simoscal/sop_recipe.py                          | Vestigial row_idx/col_idx locals only None-checked in _apply_literal_table | Fixed (2026-07-07) |
+| CR-20260707-03 | High     | CONFIRMED | Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R01.py | Max allowed airmass written as TunerPro workaround value, not physical 2000 | Dismissed (invalid) |
+| CR-20260707-04 | Medium   | CONFIRMED | Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R01.py | Merged report shows R01-covered guide items as both applied and skipped    | Fixed (2026-07-07) |
+| CR-20260707-05 | Medium   | CONFIRMED | Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R01.py | Coherence-passed banner hides unresolved in-scope guide fueling items      | Open               |
 
 ---
 
@@ -589,3 +592,201 @@ noting that a non-`None` match is always the identity index list, so the
   `SYMBOL_MAP` entry (`report_sections == map_sections`).
 - No applicable CLAUDE.md convention violations (no project-level CLAUDE.md; the
   user-level rules are MATLAB-specific and don't bind this Python module).
+
+---
+
+## Review 2026-07-07 — TuningBasicsGuide R01 tune script + generated output
+
+- **Scope:** `Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R01.py`, its R00 lineage
+  script, `Tunes/TuningBasicsGuide/REV_LOG.md`, existing and freshly-generated
+  R01 output under `Tunes/TuningBasicsGuide/TUNE_Basics_Guide_out/`, the source
+  guide docs (`knowledge/ecu-tuning-basics.md`, `knowledge/tuning-getting-started.md`,
+  and `Docs/3. ECU Tuning - Basics.docx` converted to text), and the live
+  `simoscal` code/XDF path used by the tune script.
+- **Method:** code review performed with **GPT-5.5**. Read the script against the
+  guide, XDF metadata, and library contracts (`calfile.py`, `writer.py`, `codec.py`,
+  `safety.py`, `model.py`, `sop_recipe.py`); ran the script end-to-end with
+  `PYTHONPATH="/Users/sam/SimosTools/Code"`; inspected the fresh report at
+  `Tunes/TuningBasicsGuide/TUNE_Basics_Guide_out/R01_20260707-201402/report.md`;
+  and re-opened the saved bin through `CalFile` to confirm the six R01-added
+  decoded values.
+- **Headline:** the script runs successfully, saves a checksum-clean bin (CAL_CRC
+  + ECM3), writes the intended bytes for five of the six R01-added targets, and
+  generates reports/PNGs. One high-severity calibration/value-contract issue was
+  confirmed on `C_M_AIR_CYL_SP_MAX` — Maximum allowed M_AIR_CYL_SP: the saved bin
+  decodes to `0.002`, while the Python/XDF documentation says non-TunerPro tools
+  should write the intended physical value (`2000`) rather than the TunerPro
+  workaround literal. Two medium findings are report-gate issues: R01-covered
+  guide items still appear as skipped, and the top-level coherence banner can be
+  read as broader SOP completeness than it actually proves.
+
+### CR-20260707-03 — Max allowed airmass written as TunerPro workaround value — High, OVERTURNED — Dismissed (2026-07-07, invalid)
+
+> **RESOLUTION (2026-07-07) — Dismissed, finding invalid. No code change; the
+> script was correct as written.**
+>
+> The finding assumed the XDF's identity/`mg/stk` scaling for `C_M_AIR_CYL_SP_MAX`
+> — Maximum allowed M_AIR_CYL_SP is literal. It is not. The stock bin decodes this
+> symbol to `0.001389`, and a stock airmass-request ceiling of 0.0014 mg/stk is
+> impossible when the engine breathes 515–1275 mg/stk — so the label is wrong. The
+> ECU stores this value in **kg/stk**; the XDF (both `SC8S50.V1.0.xdf` and
+> `SC8S50.ALL.xdf`) mislabels it identity `mg/stk`. The correct raw value for a
+> 2000 mg/stk ceiling is therefore `0.002` kg/stk — exactly what the script writes.
+> Stock `0.001389` (= 1389 mg/stk) → R01 `0.002` (= 2000 mg/stk) is a ~1.44× raise,
+> in line with the intake-air tables. Confirmed by exporting the R01 bin: the symbol
+> decodes `0.002`.
+>
+> The **suggested fix below is dangerous and must not be applied**: writing `2000.0`
+> raw = 2000 kg/stk = 2,000,000 mg/stk (~1.44M× stock), effectively removing the
+> limiter. See `knowledge/ecu-tuning-basics.md` note (2) and the memory
+> `air-cyl-sp-max-kg-not-mg`. Original finding text retained below for the record.
+
+`Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R01.py:151-154` sets
+`C_M_AIR_CYL_SP_MAX` — Maximum allowed M_AIR_CYL_SP to `0.002` through the normal
+physical-unit `.set(...)` path:
+
+```python
+AIR_CYL_SP_MAX_SYMBOL = "C_M_AIR_CYL_SP_MAX"
+AIR_CYL_SP_MAX_VALUE = 0.002
+```
+
+The script's comment treats `0.002` as the correct stored value because the guide
+says to type `0.002` if TunerPro displays the value wrong. That conflicts with
+the project documentation at `knowledge/ecu-tuning-basics.md:367-369`, which says
+the float-bug is a TunerPro editor artifact and tools that write raw float bytes
+directly, like this Python library, should write the intended physical value and
+ignore the TunerPro workaround. The XDF entry confirms the library's decoded
+contract for `C_M_AIR_CYL_SP_MAX` — Maximum allowed M_AIR_CYL_SP is identity
+scaling with units `mg/stk` and display max `20000` (`SC8S50.V1.0.xdf:2117-2148`),
+so `2000` is in range and should not trip the float-bug guard.
+
+The fresh run confirms the saved output follows the script rather than the guide
+contract: re-opening `R01_20260707-201402/5G0906259L_0002_BasicsGuide_R01.bin`
+decodes `C_M_AIR_CYL_SP_MAX` — Maximum allowed M_AIR_CYL_SP as
+`0.0020000000949949026`, and the report records `0.001389 → 0.002`.
+
+**Failure scenario:** the tune leaves the maximum allowed requested airmass
+ceiling effectively at the TunerPro workaround literal as interpreted by
+`simoscal`, not at the guide's intended `2000 mg/stk`. Since the rest of R01
+raises boost, torque, and intake-air ceilings, this is a real limiter/intervention
+risk and a direct contradiction between the tune script and the codebase's stated
+Python-library float-bug policy.
+
+**Suggested fix:** change `AIR_CYL_SP_MAX_VALUE` to `2000.0` and write
+`C_M_AIR_CYL_SP_MAX` — Maximum allowed M_AIR_CYL_SP in physical units through
+`.set(...)` / `.set_cell(...)`. If the project intentionally wants the raw/stored
+literal `0.002` here, update `knowledge/ecu-tuning-basics.md`, `simoscal`'s
+float-bug policy comments, and the report wording together, because they
+currently say the opposite.
+
+### CR-20260707-04 — Report shows R01-covered guide items as both applied and skipped — Medium, CONFIRMED — Fixed (2026-07-07)
+
+`Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R01.py:156-159` defines
+`R01_SUPERSEDES` only by concrete symbol:
+
+```python
+R01_SUPERSEDES = frozenset({PRS_MAX_SYMBOL, TQ_REF_MAX_SYMBOL, AIR_CYL_SP_MAX_SYMBOL})
+```
+
+That is sufficient to replace recipe rows for `C_PRS_IM_SP_MAX` — Maximum allowed
+PRS_IM_SP, `IP_TQI_REF_MAX_MON` — Maximum reference indicated engine torque, and
+`C_M_AIR_CYL_SP_MAX` — Maximum allowed M_AIR_CYL_SP. It cannot replace the
+placeholder `skip_vague` rows whose symbol is `—`, so the merged report lists two
+R01-covered guide requirements as both done and not done.
+
+Confirmed in the fresh report:
+
+- `ID_PV_AV_FL` — Pedal value threshold for the determination of LV_FL_RAW appears
+  as applied at `report.md:79`, but the guide row `Fueling — heavy-throttle table
+  ~70–75` still appears as skipped at `report.md:152`.
+- `IP_M_AIR_CYL_MAX_STND_VVL[STND]` — Maximum intake air of the engine at
+  standardized ambient pressure for different valve lifts and
+  `IP_M_AIR_CYL_MAX_STND_VVL[LFT_1]` — Maximum intake air of the engine at
+  standardized ambient pressure for different valve lifts appear as applied at
+  `report.md:81-82`, but `Limiters — two max intake air tables → 2000` still
+  appears as skipped at `report.md:155`.
+
+**Failure scenario:** a human review gate sees the same guide work in both the
+applied and skipped sections. That weakens trust in the report as the artifact
+deciding whether the generated bin is complete enough to flash or iterate.
+
+**Suggested fix:** supersede by guide section as well as symbol for R01-covered
+placeholder rows. For example, filter recipe skip outcomes with guide sections
+`Fueling — heavy-throttle table ~70–75` and `Limiters — two max intake air tables
+→ 2000` before merging the R01 outcomes.
+
+**Fixed (2026-07-07):** `simoscal/sop_recipe.py` reclassified all 7 `skip_vague`
+placeholder entries to a new `KIND_SKIP_STOCK` kind with real symbols and honest
+per-entry reasons, so the two guide sections above now carry concrete symbols
+instead of `—`. `Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R02.py` supersedes
+recipe rows by `guide_section` (`R02_SUPERSEDES_SECTIONS`) rather than by symbol
+alone, so a section is fully replaced by the script's applied outcome instead of
+leaving a stale skipped duplicate. Verified: R02 report shows 0 `skip_vague`
+occurrences and no guide section appears as both applied and skipped; the R02
+bin is byte-identical to R01 (report-honesty fix only, no calibration change).
+
+### CR-20260707-05 — Coherence-passed banner hides unresolved in-scope guide fueling items — Medium, CONFIRMED — Open
+
+`simoscal/sop_recipe.py:1223-1241` defines the coherence gate as a dependency
+check only: boost must be paired with basic lambda enrichment, Max PR flattening,
+and the Option 3 selector. It does not encode SOP completeness or unresolved
+in-scope guide work. Because R01 re-breakpoints lambda axes and writes the basic
+lambda family, the report starts with:
+
+```markdown
+## ✅ Coherence check passed
+
+No dependent-entry divergence detected. (Still pass the human review gate +
+checksum verify before flashing.)
+```
+
+That statement is locally true for the declared dependency rules, but the same
+report still lists unresolved in-scope fueling instructions from the guide,
+including `Fueling — fueling-influence tables → 0.80` and `Fueling — two tables
+set entirely to 1` (`report.md:151`, `report.md:153`). The source guide presents
+those as part of the fueling setup before the lambda curves (`knowledge/ecu-tuning-
+basics.md:280-316`).
+
+**Failure scenario:** a reviewer reads the green top banner as a broad flash-readiness
+signal and misses that in-scope fueling work remains unresolved/skipped lower in
+the report. The current wording is especially easy to over-read because the script
+also prints `Coherence check passed` on the terminal after saving a checksum-clean
+bin.
+
+**Suggested fix:** make the banner scope explicit, e.g. `Dependency coherence check
+passed`, and add an early `Incomplete guide items` / `Not full SOP complete`
+section whenever any in-scope `skip_vague` remains. If unresolved in-scope fueling
+items should block flashing, add a `DO NOT FLASH` or warning-level rule for those
+sections.
+
+**Partially addressed (2026-07-07), still Open:** the `skip_vague` reclassification
+in `simoscal/sop_recipe.py` (see CR-20260707-04's fix note) removed this finding's
+literal trigger — the entries it cites now carry real symbols and reasons, not the
+`skip_vague` placeholder. The banner-wording change itself (renaming to `Dependency
+coherence check passed` and adding an early `Incomplete guide items` section) was
+not done, so a green top banner can still coexist with unresolved in-scope guide
+items lower in the report. Left Open pending that wording/section change.
+
+### Not findings (checked and clean)
+
+- The script ran end-to-end with the existing `simoscal` package and generated
+  `Tunes/TuningBasicsGuide/TUNE_Basics_Guide_out/R01_20260707-201402/` with a
+  checksum-clean saved bin (`CAL_CRC`, `ECM3`), `report.md`, and 188 comparison
+  PNGs.
+- Re-opening the saved bin confirmed five R01-added decoded targets as expected:
+  `ID_PV_AV_FL` — Pedal value threshold for the determination of LV_FL_RAW at
+  `71.97265625%` flat from target `72`; `C_PRS_IM_SP_MAX` — Maximum allowed
+  PRS_IM_SP at `350000`; `IP_M_AIR_CYL_MAX_STND_VVL[STND]` — Maximum intake air
+  of the engine at standardized ambient pressure for different valve lifts and
+  `IP_M_AIR_CYL_MAX_STND_VVL[LFT_1]` — Maximum intake air of the engine at
+  standardized ambient pressure for different valve lifts at `1999.9819638361182`
+  flat from target `2000`; and `IP_TQI_REF_MAX_MON` — Maximum reference indicated
+  engine torque at `1000` flat.
+- `C_PRS_IM_SP_MAX` — Maximum allowed PRS_IM_SP uses `set_raw`, and that is
+  technically effective in this codebase: `TableView.set_raw(...)` bypasses the
+  display-range/float-bug guard and writes the float bytes directly; re-opening
+  the saved bin decodes `350000`.
+- The R00 lambda axis re-breakpoint still clears the base recipe's basic-lambda
+  axis mismatch for the recipe-targeted HPDI/MPI tables and writes the third
+  shared table, `IP_LAMB_BAS[1]` — Basic lambda setpoint, to keep the shared-axis
+  family coherent.
