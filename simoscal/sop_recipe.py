@@ -42,7 +42,7 @@ import numpy as np
 
 from .calfile import CalFile, TableView
 from .model import AmbiguousTableError, FloatBugGuardError, RawRangeError
-from .safety import EditRangeWarning
+from .safety import EditRangeWarning, is_float_bug_table
 
 __all__ = [
     # kinds
@@ -540,14 +540,18 @@ SYMBOL_MAP: tuple[RecipeEntry, ...] = (
     ),
     RecipeEntry(
         guide_section="Limiters — Overboost limit → 2700",
-        description="Raise the overboost (P0234) limit to 2700 hPa; never write over a higher value",
-        kind=KIND_GUARDED_CEILING,
-        symbols=("C_PRS_IM_SP_LIM",),  # candidate only — see reason; resolver will accept, U3 guards
+        description="Raise the overboost (P0234) limit to 2700 hPa across all cells; never lower a higher cell",
+        kind=KIND_GUARDED_CEILING,          # broadcasts across all cells, never-lower guarded
+        symbols=("IP_PUT_AMP_DIF_MAX_PRS_DIF_THR",),
         target=2700.0,
         reason=(
-            "C_PRS_IM_SP_LIM is an OFFSET-to-baro constant whose stock value does "
-            "not match the guide's overboost-limit screenshot; treated as a "
-            "guarded raise, but flagged for manual confirmation before flashing."
+            "IP_PUT_AMP_DIF_MAX_PRS_DIF_THR  — Overpressure upstream throttle "
+            "threshold for turbocharger overpressure diagnosis (P0234); 1x6 int16 "
+            "hPa, stock ~1800. XDF hard max is 2716.96 hPa, so 2700 is intentionally "
+            "just under the ceiling — do not exceed. (Corrected 2026-07-09 from "
+            "C_PRS_IM_SP_LIM  — Offset to the pressure behind air cleaner for the "
+            "limitation of the manifold setpoint, which is a manifold-setpoint "
+            "limit, not the overboost threshold.)"
         ),
     ),
     RecipeEntry(
@@ -1019,33 +1023,74 @@ def _apply_axis_write(cal: CalFile, view: TableView, section: str,
 
 # ---- U3: guarded ceiling write --------------------------------------------- #
 def _guarded_ceiling_write(view: TableView, section: str, target: float) -> TableOutcome:
-    """Raise a limiter to ``target`` — but never write a lower value over a higher.
+    """Raise every cell of a limiter to ``target`` — but never lower a higher cell.
 
-    Reads the current value first (per the guide's "if already >2700, don't
-    touch"): writes ``target`` only when ``current < target``; records
-    ``guarded_skip`` (no write staged, table byte-identical) when the limiter is
-    already at or above the target; ``already_satisfied`` when it is exactly the
-    target. A write that trips :class:`FloatBugGuardError` (the float-bug limiter
-    constants) is caught as ``guard_blocked`` — the table stays byte-identical
-    and the recipe continues (plan Key Decision 3 / AE2).
+    Reads each cell first (per the guide's "if already >2700, don't touch"):
+    stages ``target`` only in cells below ``target`` and leaves cells at or above
+    it untouched (never lowered). The whole grid is staged in one range-checked
+    write, so a guard trip leaves the table byte-identical. Outcomes:
+
+    * ``applied``           — at least one cell was below target and got raised;
+    * ``already_satisfied`` — every cell already equals the target (nothing staged);
+    * ``guarded_skip``      — every cell already at/above target, none equal it
+      (byte-identical — the never-lower guard, plan Key Decision 3 / AE2);
+    * ``guard_blocked``     — the write would exceed the table's declared upper
+      limit (float-bug tables raise :class:`FloatBugGuardError` inside the staged
+      write; any other table is rejected here rather than warn-and-overflow) —
+      table byte-identical, recipe continues.
+
+    Works for both 1x1 limiter constants (compressor temp, turbo speed, ...) and
+    multi-cell limiter maps: ``IP_PUT_AMP_DIF_MAX_PRS_DIF_THR``  — Overpressure
+    upstream throttle threshold for turbocharger overpressure diagnosis (P0234),
+    1x6 hPa, is broadcast across all six cells.
     """
-    current = float(view.values.ravel()[0])
+    current = view.values.astype(np.float64)
     tol = 1e-6 * (abs(target) + 1.0)
-    if current > target + tol:
+
+    # Never write above the table's declared ceiling. Float-bug tables raise
+    # FloatBugGuardError inside the staged write below (kept for their specific
+    # message + guard_blocked). Any other table would only warn-and-write, so
+    # reject it here — fail loud, never overflow a limiter's element width (2b).
+    zmax = view.table.z.max if view.table.z is not None else None
+    if zmax is not None and target > zmax + tol and not is_float_bug_table(view.table):
         return TableOutcome(
-            view.symbol, section, OUTCOME_GUARDED_SKIP, old=current, new=target,
-            detail=(f"current {_fmt(current)} already exceeds target "
-                    f"{_fmt(target)} — left unchanged (never lowered)"),
+            view.symbol, section, OUTCOME_GUARD_BLOCKED,
+            old=float(current.min()), new=target,
+            detail=(f"target {_fmt(target)} exceeds the table's declared upper "
+                    f"limit {_fmt(zmax)} — refusing to write (never overflow a "
+                    "limiter ceiling); table left byte-identical."),
         )
-    if abs(current - target) <= tol:
-        return TableOutcome(view.symbol, section, OUTCOME_ALREADY_SATISFIED,
-                            old=current, new=target)
-    status, text = _run_write(lambda: view.set_cell(0, 0, target))
+
+    below = current < target - tol
+    if not below.any():
+        # Nothing to raise: either every cell is exactly at target, or one or more
+        # sit above it (never lowered). Report the extreme cell so it is auditable.
+        if float(np.abs(current - target).max()) <= tol:
+            return TableOutcome(view.symbol, section, OUTCOME_ALREADY_SATISFIED,
+                                old=float(current.min()), new=target)
+        return TableOutcome(
+            view.symbol, section, OUTCOME_GUARDED_SKIP,
+            old=float(current.max()), new=target,
+            detail=(f"all {current.size} cell(s) already at/above target "
+                    f"{_fmt(target)} (max {_fmt(float(current.max()))}) — left "
+                    "unchanged (never lowered)"),
+        )
+
+    staged = current.copy()
+    staged[below] = target
+    old_min = float(current[below].min())
+    raised = int(below.sum())
+    status, text = _run_write(lambda: view.set(staged))
     if status == "guard_blocked":
         return TableOutcome(view.symbol, section, OUTCOME_GUARD_BLOCKED,
-                            detail=text, old=current, new=target)
+                            detail=text, old=old_min, new=target)
+    detail = ""
+    if current.size > 1:
+        detail = (f"raised {raised} of {current.size} cell(s) below target to "
+                  f"{_fmt(target)} (min {_fmt(old_min)} -> {_fmt(target)}); any "
+                  "cell already at/above target left unchanged (never lowered)")
     return TableOutcome(view.symbol, section, OUTCOME_APPLIED,
-                        old=current, new=target, warning=text)
+                        old=old_min, new=target, warning=text, detail=detail)
 
 
 # ---- U4: TTA/ATT proportional build-out ------------------------------------ #

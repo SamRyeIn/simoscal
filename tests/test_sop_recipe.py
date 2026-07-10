@@ -225,7 +225,6 @@ from simoscal.sop_recipe import (  # noqa: E402
     CutRule,
     LiteralGrid,
     TorqueCurve,
-    _key_column_match,
     _positional_axis_match,
     _run_write,
     apply_entry,
@@ -255,12 +254,6 @@ class TestAxisMatching:
 
     def test_positional_match_none_axis(self) -> None:
         assert _positional_axis_match(None, (1, 2)) is None
-
-    def test_key_column_match_exact_and_nearmiss(self) -> None:
-        # 4200 must NOT snap to the 4250 key (near-miss guard), 4000 must match.
-        axis = np.array([4000.0, 4200.0, 4250.0])
-        m = _key_column_match(axis, (4000, 4250, 4360), tol=10.0)
-        assert m == {0: 0, 2: 1}  # col1 (4200) unmatched
 
 
 class TestRunWrite:
@@ -422,17 +415,28 @@ class TestWriteReal:
         assert all(o.outcome == OUTCOME_AXIS_MISMATCH for o in outs)
         assert np.array_equal(real_cal.get("IP_LAMB_BAS_HPDI[1]").values, stock)
 
-    def test_torque_curve_full_on_at_partial_on_eco(self, real_cal: CalFile) -> None:
+    def test_torque_curve_interpolates_all_columns(self, real_cal: CalFile) -> None:
         outs = _apply_one(real_cal, _find("1. Torque request — Max Torque"))
         assert len(outs) == 30
         assert all(o.outcome == OUTCOME_APPLIED for o in outs)
         at = next(o for o in outs if "IP_TQ_POW_MAX_AT" in o.symbol)
         eco = next(o for o in outs if "IP_TQ_POW_MAX_ECO" in o.symbol)
+        # Every column is now filled — AT's 20 and ECO's 12 — none left stock,
+        # since all fall within the curve's 1200-7000 rpm span.
         assert "20/20" in at.detail
-        assert "left stock" in eco.detail  # ECO has 2 columns with no curve key
+        assert "12/12" in eco.detail
+        assert "left stock" not in eco.detail
         # AT peak row cell at 2500 rpm == 440 (guide), broadcast across gears.
         atv = real_cal.get("IP_TQ_POW_MAX_AT[POW_1][0]").values
         assert np.allclose(atv[:, 5], 440.0, atol=0.5)  # col 5 == 2500 rpm
+        # ECO's off-key interior columns (4200, 4600 rpm) — previously left at
+        # stock, carving a ~140 Nm trough — are now interpolated onto the plateau.
+        ecov = real_cal.get("IP_TQ_POW_MAX_ECO[0]").values
+        ecox = np.asarray(real_cal.get("IP_TQ_POW_MAX_ECO[0]").axis_values("x")).ravel()
+        c4200 = int(np.argmin(np.abs(ecox - 4200)))
+        c4600 = int(np.argmin(np.abs(ecox - 4600)))
+        assert np.allclose(ecov[:, c4200], 440.0, atol=1.0)   # between 4000/4250 keys (both 440)
+        assert np.allclose(ecov[:, c4600], 439.0, atol=1.0)   # between 4500(440)/5000(435)
 
     def test_cut_transform_real_cyl_head(self, real_cal: CalFile) -> None:
         before = real_cal.get("CoTE_tHdCtlSp_M_VW").values.copy()
@@ -477,14 +481,62 @@ class TestGuardedCeiling:
         assert mini_cal.edited is False
 
 
+    def test_multi_cell_broadcasts_below_target(self, mini_cal: CalFile) -> None:
+        # SYM_10X10 stock cells sit near 0 (well under target 50) — all raised.
+        view = mini_cal.get("SYM_10X10")
+        out = _guarded_ceiling_write(view, "test", 50.0)
+        assert out.outcome == OUTCOME_APPLIED
+        assert np.allclose(mini_cal.get("SYM_10X10").values, 50.0, atol=0.01)
+
+    def test_multi_cell_never_lowers_a_higher_cell(self, mini_cal: CalFile) -> None:
+        # Synthetic never-lower: pre-set one cell above target, the rest below.
+        view = mini_cal.get("SYM_10X10")
+        view.set_cell(0, 0, 80.0)           # above the 50 target (within ±100 range)
+        out = _guarded_ceiling_write(view, "test", 50.0)
+        after = mini_cal.get("SYM_10X10").values
+        assert out.outcome == OUTCOME_APPLIED       # cells below were raised
+        assert after[0, 0] == pytest.approx(80.0, abs=0.01)  # higher cell untouched
+        assert np.allclose(after.ravel()[1:], 50.0, atol=0.01)  # rest raised
+
+
 class TestGuardedCeilingReal:
-    def test_overboost_candidate_guarded_skip(self, real_cal: CalFile) -> None:
-        # C_PRS_IM_SP_LIM stock (~271695) already exceeds the 2700 target — the
-        # guard must never lower it (AE2), and it stays byte-identical.
-        stock = real_cal.get("C_PRS_IM_SP_LIM").values.copy()
+    def test_overboost_applies_2700_across_all_six_cells(self, real_cal: CalFile) -> None:
+        # `IP_PUT_AMP_DIF_MAX_PRS_DIF_THR`  — Overpressure upstream throttle
+        # threshold for turbocharger overpressure diagnosis (P0234): stock ~1800
+        # across a 1x6 hPa map. The overboost entry now targets it (corrected from
+        # `C_PRS_IM_SP_LIM`) and must raise ALL six cells to 2700.
+        outs = _apply_one(real_cal, _find("Limiters — Overboost"))
+        assert len(outs) == 1
+        assert outs[0].symbol == "IP_PUT_AMP_DIF_MAX_PRS_DIF_THR"
+        assert outs[0].outcome == OUTCOME_APPLIED
+        vals = real_cal.get("IP_PUT_AMP_DIF_MAX_PRS_DIF_THR").values
+        assert vals.shape == (1, 6)
+        assert np.allclose(vals, 2700.0, atol=0.05)  # every cell, quantized
+
+    def test_overboost_never_lowers_a_higher_cell(self, real_cal: CalFile) -> None:
+        # AE2 never-lower guard, kept alive with a synthetic setup: stock is below
+        # target, so pre-raise one cell above 2700, then confirm the guard leaves
+        # that cell alone while raising the rest.
+        view = real_cal.get("IP_PUT_AMP_DIF_MAX_PRS_DIF_THR")
+        staged = view.values.astype(float).copy()
+        staged[0, 3] = 2710.0               # above the 2700 target, under XDF max
+        view.set(staged)
+        outs = _apply_one(real_cal, _find("Limiters — Overboost"))
+        assert outs[0].outcome == OUTCOME_APPLIED
+        after = real_cal.get("IP_PUT_AMP_DIF_MAX_PRS_DIF_THR").values
+        assert after[0, 3] == pytest.approx(2710.0, abs=0.05)  # untouched (never lowered)
+        others = [after[0, c] for c in range(6) if c != 3]
+        assert np.allclose(others, 2700.0, atol=0.05)          # rest raised
+
+    def test_overboost_all_above_target_guarded_skip(self, real_cal: CalFile) -> None:
+        # If every cell is already above target the guard writes nothing (AE2).
+        view = real_cal.get("IP_PUT_AMP_DIF_MAX_PRS_DIF_THR")
+        staged = np.full(view.values.shape, 2710.0)
+        view.set(staged)
+        stock = real_cal.get("IP_PUT_AMP_DIF_MAX_PRS_DIF_THR").values.copy()
         outs = _apply_one(real_cal, _find("Limiters — Overboost"))
         assert outs[0].outcome == OUTCOME_GUARDED_SKIP
-        assert np.array_equal(real_cal.get("C_PRS_IM_SP_LIM").values, stock)
+        assert np.array_equal(real_cal.get("IP_PUT_AMP_DIF_MAX_PRS_DIF_THR").values, stock)
 
     def test_float_bug_limiter_guard_blocked(self, real_cal: CalFile) -> None:
         # C_PRS_IM_SP_MAX → 350000 exceeds the declared upper limit and is
