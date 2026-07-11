@@ -27,15 +27,56 @@ import pytest
 
 # Repo root is one level above Code/tests/.
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# Project root (holds Code/ and the vendored BinToolz-main/) is one level above that.
+PROJECT_ROOT = REPO_ROOT.parent
 REAL_XDF = REPO_ROOT / "xdf" / "SC8S50.V1.0.xdf"
 REAL_BIN = REPO_ROOT / "bin" / "5G0906259L__0002.bin"
 TUNERPRO_ORACLE = Path(__file__).resolve().parent / "fixtures" / "tunerpro_oracle.json"
+
+# Vendored BinToolz tree + the real switch patch / switch-patch XDF for the BTP
+# adapter tests (plan U6). All are gitignored / may be absent from a lean
+# checkout, so the fixtures below SKIP (never fail) when missing.
+BINTOOLZ_ROOT = PROJECT_ROOT / "BinToolz-main"
+REAL_PATCH = BINTOOLZ_ROOT / "patches" / "SL PATCH.29.33 - S50.btp"
+SWITCH_PATCH_XDF = BINTOOLZ_ROOT / "definitions" / "S50 Switch Patch.29.33.V2.xdf"
 
 # Reusable skip guard for the real-file acceptance tests.
 requires_real_files = pytest.mark.skipif(
     not (REAL_XDF.exists() and REAL_BIN.exists()),
     reason=f"real XDF/BIN not present ({REAL_XDF}, {REAL_BIN})",
 )
+
+# BinToolz is imported at runtime by the adapter; without its source tree the
+# adapter cannot run, so its tests skip rather than fail (AE7's failure mode is
+# covered separately by pointing the loader at a bogus path).
+requires_bintoolz = pytest.mark.skipif(
+    not (BINTOOLZ_ROOT / "source").is_dir(),
+    reason=f"BinToolz source not present ({BINTOOLZ_ROOT / 'source'})",
+)
+
+
+@pytest.fixture(scope="session")
+def bintoolz_root() -> Path:
+    """Path to the vendored BinToolz tree; skips the test if it is not present."""
+    if not (BINTOOLZ_ROOT / "source").is_dir():
+        pytest.skip(f"BinToolz source not present: {BINTOOLZ_ROOT / 'source'}")
+    return BINTOOLZ_ROOT
+
+
+@pytest.fixture(scope="session")
+def real_patch() -> Path:
+    """Path to the real ``SL PATCH.29.33 - S50.btp``; skips if it is not present."""
+    if not REAL_PATCH.is_file():
+        pytest.skip(f"real switch patch not present: {REAL_PATCH}")
+    return REAL_PATCH
+
+
+@pytest.fixture(scope="session")
+def switch_patch_xdf() -> Path:
+    """Path to BinToolz's S50 switch-patch XDF; skips if it is not present."""
+    if not SWITCH_PATCH_XDF.is_file():
+        pytest.skip(f"switch-patch XDF not present: {SWITCH_PATCH_XDF}")
+    return SWITCH_PATCH_XDF
 
 
 @pytest.fixture(scope="session")

@@ -231,6 +231,51 @@ comparison PNG by design (Phase 3 `compare_tables`) — they are reviewed via th
 report's old→new values instead; every changed non-scalar table gets a
 before/after PNG from the demo.
 
+### BTP patching — `simoscal.btp` (BinToolz `.btp` adapter)
+
+Applies BinToolz `.btp` patches (e.g. the 5-slot on-the-fly map **switch patch**)
+to a bin with the same fail-loud guarantees as every other bin operation. It
+**wraps** BinToolz's Qt-free byte layer (imported at runtime from
+`../BinToolz-main/source`, never ported — the license carries no derivation grant)
+and layers `simoscal` guards on top. **Never flashes; never patches in place** —
+the input bin is read-only and each apply/remove writes a *new* file.
+
+```python
+from simoscal import btp
+
+pre = btp.check("bin/5G0906259L__0002.bin", ".../SL PATCH.29.33 - S50.btp")
+print(pre.readiness)                       # READY_TO_ACCEPT / PATCH_FOUND / NOT_READY
+
+res = btp.apply(stock_bin, patch, "patched.bin")   # requires READY_TO_ACCEPT
+print(res.changed_bytes, res.confined)     # confined to the patch's declared blocks
+print(res.cal_crc.is_stale, res.ecm3.is_stale)     # checksum state, reported not assumed
+print(btp.format_change_report(res))       # markdown review report
+
+btp.remove("patched.bin", patch, "back.bin")       # round-trips to byte-identical stock
+```
+
+| Member | Description |
+|--------|-------------|
+| `check(bin, patch, *, bintoolz_root=None)` → `PatchCheckResult` | Read-only readiness + identity guards; never writes. |
+| `apply(bin, patch, out, *, bintoolz_root=None)` → `ChangeResult` | Apply on a copy (requires READY_TO_ACCEPT); post-verify confined diff + checksum report. |
+| `remove(bin, patch, out, *, bintoolz_root=None)` → `ChangeResult` | Remove on a copy (requires PATCH_FOUND); round-trips apply. |
+| `switch_patch_sanity(bin, *, xdf_path=None, stock_bin_path=None, ...)` → `SanityResult` | Load the patched bin against the switch-patch XDF; slot/switch tables resolve, decode, and differ from stock. |
+| `format_change_report(result)` → `str` | Markdown apply/remove report for the review gate. |
+
+Guarantees (fail loud, never guess): identity guards hard-fail on hardware /
+software-code / **file-size** mismatch (`PatchIdentityError`) before any write;
+the patch's own CRC32 self-check surfaces as `PatchIntegrityError`; apply/remove
+refuse a bin not in the required state (`PatchStateError`); a post-apply full-bin
+diff asserts every changed byte lies inside the patch's declared blocks
+(`PatchConfinementError`); and a missing / drifted BinToolz tree raises
+`BinToolzNotFound` (`AE7`). Applying the switch patch leaves **`CAL_CRC` stale**
+(the `.btp` carries no corrected CAL CRC — correct it before flashing) and
+**`ECM3` clean**; ASW/code block checksums are **not-verifiable** here (outside
+`simoscal`'s scope — SimosTools/VW_Flash compute them at full-flash time). All
+three states are reported explicitly, never assumed. See
+`demos/apply_btp_patch.py` for the canonical stock→patch→verify pipeline and
+`knowledge/bintoolz-btp-patching.md` "U1 findings" for the checksum/XDF evidence.
+
 ### Checksums — `ChecksumReport`
 `name` · `can_verify` · `is_stale` · `stored` · `computed` · `covered` (half-open
 full-bin byte ranges) · `detail`. Two checksums are reported: **`CAL_CRC`**
@@ -298,7 +343,12 @@ cd Code
 ./.venv/bin/python -m pytest tests/test_acceptance_export.py -v   # AE1–AE7 (Phase 2 export)
 ./.venv/bin/python -m pytest tests/test_acceptance_plot.py -v     # AE1–AE9 (Phase 3 viz)
 ./.venv/bin/python -m pytest tests/test_acceptance_sop.py -v      # AE1–AE5 (SOP tune recipe)
+./.venv/bin/python -m pytest tests/test_acceptance_btp.py -v      # AE1–AE7 (BTP patching)
 ```
+
+`test_btp.py` (synthetic fixtures) and `test_acceptance_btp.py` (real files) skip
+cleanly when the vendored `BinToolz-main/` tree, the real switch patch, or the
+stock bin are absent — the BTP adapter wraps BinToolz at runtime.
 
 The acceptance suite (`tests/test_acceptance.py`) encodes the AE1–AE5 examples:
 
@@ -325,9 +375,12 @@ from a checkout.
 checksum verify/report, acceptance suite (Phase 1); CSV/xlsx export of any
 table selection in physical units, a public `RenderedTable` rendering layer
 (Phase 2); static-PNG visualization (surface/heatmap/line) and provenance-
-agnostic comparison composites (Phase 3).
+agnostic comparison composites (Phase 3); check / apply / remove of BinToolz
+`.btp` patches with confined-diff post-verification and checksum reporting
+(`simoscal.btp`, wrapping BinToolz).
 **Out:** flashing (SimosTools/VW_Flash), checksum *recompute* beyond the
-optional correction path, CBOOT/ASW editing, bin patching, FRF→BIN extraction,
+optional correction path, CBOOT/ASW editing, `.btp` *creation* (`patchCreate`)
+and BinToolz's ignore-data CAL-skip mode, FRF→BIN extraction,
 GUI/CLI, import/round-trip from an exported file back into a `.bin`;
 interactive/on-screen viewing, vector (SVG/PDF) output, >2-bin comparison
 (Phase 3 out-of-scope). Datalog-driven auto-tuning (Phase 4) is a later phase

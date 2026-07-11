@@ -342,7 +342,15 @@ def _parse_axis(ax: ET.Element, defaults: Defaults, uniqueid: int) -> Axis:
             f"table {uniqueid:#x}: XDFAXIS has unexpected id {axis_id!r}"
         )
 
+    # A non-z axis whose EMBEDDEDDATA carries no ``mmedaddress`` is a TunerPro
+    # *label/static* axis: its breakpoints come from the ``<LABEL>`` elements, not
+    # the bin (commonly flagged with ``mmedmajorstridebits="-32"``). Treat it as a
+    # label axis (``embedded=None``) rather than an error — the switch-patch XDFs
+    # use these heavily. The z-axis must always have real data, so it is left to
+    # ``_parse_embedded`` to reject (and to the caller's z-embedded check).
     ed = ax.find("EMBEDDEDDATA")
+    if ed is not None and axis_id != "z" and ed.get("mmedaddress") is None:
+        ed = None
     embedded = _parse_embedded(ed, defaults, uniqueid) if ed is not None else None
 
     math = ax.find("MATH")

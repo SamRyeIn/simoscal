@@ -23,3 +23,4 @@ demos/*.csv
 demos/*.xlsx
 demos/plots/
 demos/apply_sop_recipe_out/
+demos/apply_btp_patch_out/
