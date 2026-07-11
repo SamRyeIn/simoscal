@@ -83,8 +83,45 @@ _SIDE_OFFSET = 45.0
 # Styling helpers (pure, no I/O)
 # --------------------------------------------------------------------------- #
 def _title_for(rt: RenderedTable) -> str:
-    """A human title for a figure: symbol, else title, else ``"(table)"``."""
+    """A single-line identifier for a table: symbol, else title, else ``"(table)"``.
+
+    Used where one line is required — error messages, file stems. Plot titles use
+    :func:`_title_lines` / :func:`_apply_fig_title` to show the description too.
+    """
     return rt.symbol or rt.title or "(table)"
+
+
+def _title_lines(rt: RenderedTable) -> tuple[str, str]:
+    """``(id_line, desc_line)`` — the parameter ID and its plain-English description.
+
+    When a symbol is present it is the ID line and the XDF title is the
+    description beneath it; with no symbol the title becomes the ID line and the
+    description is empty. The description is dropped when it would merely repeat
+    the ID line.
+    """
+    ident = rt.symbol or rt.title or "(table)"
+    desc = rt.title if rt.symbol else ""
+    if desc == ident:
+        desc = ""
+    return ident, desc or ""
+
+
+def _axes_title(rt: RenderedTable) -> str:
+    """Two-line axes title: parameter ID with its description on the line below."""
+    ident, desc = _title_lines(rt)
+    return f"{ident}\n{desc}" if desc else ident
+
+
+def _apply_fig_title(fig, rt: RenderedTable) -> None:
+    """Set a two-tier figure title: parameter ID (bold) over its description.
+
+    Falls back to a plain bold ID when there is no distinct description.
+    """
+    ident, desc = _title_lines(rt)
+    fig.suptitle(ident, fontweight="bold")
+    if desc:
+        fig.text(0.5, 0.945, desc, ha="center", va="top",
+                 fontsize=9, style="italic", color="0.35")
 
 
 def _text_color(rgba) -> str:
@@ -199,7 +236,7 @@ def _heatmap_figure(
     _axis_ticks(ax, rt.x_labels, rt.y_labels)
     ax.set_xlabel(rt.x_units or "", fontweight="bold")
     ax.set_ylabel(rt.y_units or "", fontweight="bold")
-    ax.set_title(_title_for(rt))
+    ax.set_title(_axes_title(rt))
 
     fontsize = _annotation_fontsize(rows, cols)
     for r in range(rows):
@@ -253,7 +290,7 @@ def _surface_figure(
     ax.set_xlabel(rt.x_units or "", fontweight="bold")
     ax.set_ylabel(rt.y_units or "", fontweight="bold")
     ax.set_zlabel(rt.units or "", fontweight="bold")
-    ax.set_title(_title_for(rt))
+    ax.set_title(_axes_title(rt))
     ax.view_init(elev=elev, azim=az)
     ax.set_box_aspect((1, 1, 0.6))
     return fig
@@ -273,7 +310,7 @@ def _line_figure(
     ax.plot(x, y, marker="o", color=color)
     ax.set_xlabel(rt.x_units or "", fontweight="bold")
     ax.set_ylabel(rt.units or "", fontweight="bold")
-    ax.set_title(_title_for(rt))
+    ax.set_title(_axes_title(rt))
     ax.grid(True, which="both", alpha=0.3)
     fig.tight_layout()
     return fig
@@ -495,7 +532,7 @@ def _compare_heatmap_figure(
 
     fig.colorbar(im_a, ax=[ax_a, ax_b], label=rt_a.units or "", shrink=0.7)
     fig.colorbar(im_d, ax=ax_d, label=rt_a.units or "", shrink=0.7)
-    fig.suptitle(_title_for(rt_a))
+    _apply_fig_title(fig, rt_a)
     return fig
 
 
@@ -542,7 +579,7 @@ def _compare_surface_figure(
         ax.view_init(elev=elev, azim=az)
         ax.set_box_aspect((1, 1, 0.6))
         fig.colorbar(surf, ax=ax, shrink=0.5)
-    fig.suptitle(_title_for(rt_a))
+    _apply_fig_title(fig, rt_a)
     return fig
 
 
@@ -562,7 +599,7 @@ def _compare_line_figure(
     ax_top.plot(x, rt_a.values[0], marker="o", label="A")
     ax_top.plot(x, rt_b.values[0], marker="s", label="B")
     ax_top.set_ylabel(rt_a.units or "", fontweight="bold")
-    ax_top.set_title(_title_for(rt_a))
+    ax_top.set_title(_axes_title(rt_a))
     ax_top.legend()
     ax_top.grid(True, which="both", alpha=0.3)
 

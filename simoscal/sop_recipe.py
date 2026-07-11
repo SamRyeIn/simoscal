@@ -42,7 +42,7 @@ import numpy as np
 
 from .calfile import CalFile, TableView
 from .model import AmbiguousTableError, FloatBugGuardError, RawRangeError
-from .safety import EditRangeWarning
+from .safety import EditRangeWarning, is_float_bug_table
 
 __all__ = [
     # kinds
@@ -58,6 +58,7 @@ __all__ = [
     "KIND_SKIP_LOG_DEPENDENT",
     "KIND_SKIP_VAGUE",
     "KIND_SKIP_OUT_OF_SCOPE",
+    "KIND_SKIP_STOCK",
     "WRITE_KINDS",
     "SKIP_KINDS",
     "is_write_kind",
@@ -114,6 +115,7 @@ KIND_TTA_ATT_BUILDOUT = "tta_att_buildout"  # linear build-out above a torque/ai
 KIND_SKIP_LOG_DEPENDENT = "skip_log_dependent"  # method is log-driven — out of a static recipe
 KIND_SKIP_VAGUE = "skip_vague"              # guide gives no usable number / value ambiguous
 KIND_SKIP_OUT_OF_SCOPE = "skip_out_of_scope"  # explicitly excluded variant (V30/LB6/ethanol/…)
+KIND_SKIP_STOCK = "skip_stock"              # known table, deliberately left at stock (documented choice, not an unknown)
 
 WRITE_KINDS = frozenset(
     {
@@ -129,7 +131,7 @@ WRITE_KINDS = frozenset(
     }
 )
 SKIP_KINDS = frozenset(
-    {KIND_SKIP_LOG_DEPENDENT, KIND_SKIP_VAGUE, KIND_SKIP_OUT_OF_SCOPE}
+    {KIND_SKIP_LOG_DEPENDENT, KIND_SKIP_VAGUE, KIND_SKIP_OUT_OF_SCOPE, KIND_SKIP_STOCK}
 )
 
 
@@ -179,15 +181,20 @@ class AxisWriteSpec:
 
 @dataclass(frozen=True)
 class TorqueCurve:
-    """An RPM → Nm curve, applied per column by matching each column's RPM.
+    """An RPM → Nm curve, linearly interpolated onto each column's RPM breakpoint.
 
-    Columns whose RPM breakpoint is not a key (within :data:`AXIS_MATCH_TOL`) are
-    left stock and reported — never interpolated. Every matched column is
-    broadcast identically across all of the table's rows (gears), per the guide's
+    The curve is a continuous function of RPM, so every column whose RPM falls
+    within the curve's span is filled by linear interpolation between the
+    bracketing points — not just columns that land exactly on a key. That avoids
+    leaving an interior breakpoint at stock, which carves a trough into the
+    surface (e.g. ECO's 4200/4600 rpm columns, absent from the key list, sitting
+    ~140 Nm below their 440-plateau neighbours). Columns whose RPM lies outside
+    the curve's span are left stock and reported (no extrapolation). Each written
+    column is broadcast identically across all rows (gears), per the guide's
     "set them all the same".
     """
 
-    points: tuple[tuple[float, float], ...]  # (rpm, nm) pairs
+    points: tuple[tuple[float, float], ...]  # (rpm, nm) pairs, ascending RPM
 
 
 @dataclass(frozen=True)
@@ -414,16 +421,25 @@ SYMBOL_MAP: tuple[RecipeEntry, ...] = (
     RecipeEntry(
         guide_section="1. Torque request — pedal-feel tables",
         description="Torque-request pedal-feel tables (DSG hi/lo speed) — tuner preference, no guide number",
-        kind=KIND_SKIP_VAGUE,
+        kind=KIND_SKIP_STOCK,
         symbols=("IP_FAC_TQ_REQ_DRIV_H_VS_DCT", "IP_FAC_TQ_REQ_DRIV_L_VS_DCT"),
-        reason="Pedal feel is subjective; guide gives no literal values. Resolvable for reporting only.",
+        reason=(
+            "Pedal map (factor 0-1 over RPM x pedal, hi/lo vehicle speed). Left at "
+            "stock: throttle-response feel is subjective, the guide gives no value, "
+            "and WOT is factor 1.0 either way — a preference tweak, not a power or "
+            "safety item."
+        ),
     ),
     RecipeEntry(
         guide_section="Limiters — Max reference indicated engine torque",
         description="Max reference indicated engine torque — 'move out of the way' (no number given)",
-        kind=KIND_SKIP_VAGUE,
+        kind=KIND_SKIP_STOCK,
         symbols=("IP_TQI_REF_MAX_MON",),
-        reason="Guide says 'move out of the way' but gives no target value.",
+        reason=(
+            "IP_TQI_REF_MAX_MON. Guide: 'move out of the way' (screenshot shows flat "
+            "1000, no stated number). The conservative base recipe leaves limiters at "
+            "stock; a tune revision raises this (R01+ writes flat 1000 Nm)."
+        ),
     ),
     # ===================== TTA / ATT (airflow model) ===================== #
     RecipeEntry(
@@ -493,21 +509,40 @@ SYMBOL_MAP: tuple[RecipeEntry, ...] = (
     ),
     RecipeEntry(
         guide_section="Fueling — fueling-influence tables → 0.80",
-        description="Three fueling-influence tables reduced to 0.80",
-        kind=KIND_SKIP_VAGUE,
-        reason="No symbol confirmed for the three fueling-influence tables this session; not guessed.",
+        description="Three lambda minimum-value floors (guide: reduce to 0.80)",
+        kind=KIND_SKIP_STOCK,
+        symbols=("C_LAMB_BAS_COR_MIN", "IP_LAMB_COP_MIN", "IP_LAMB_TUR_OHP_MIN"),
+        reason=(
+            "The 'fueling-influence' tables are lambda minimum-value floors "
+            "(min lambda setpoint; cat- and turbo-overheat-protection minimums). "
+            "The guide says reduce to 0.80, but that only fattens if stock is ABOVE "
+            "0.80. On 5G0906259L stock is 0.72-0.75 — already richer than 0.80 — so "
+            "writing 0.80 would RAISE these floors (leaner) under raised boost. Left "
+            "at stock; applying 0.80 is a per-bin tuner call. See ecu-tuning-basics.md."
+        ),
     ),
     RecipeEntry(
         guide_section="Fueling — heavy-throttle table ~70–75",
-        description="Heavy-throttle enrichment table set ~70–75 across",
-        kind=KIND_SKIP_VAGUE,
-        reason="No symbol confirmed for the heavy-throttle table this session; not guessed.",
+        description="Heavy-throttle full-load-lambda pedal threshold (~70–75 across)",
+        kind=KIND_SKIP_STOCK,
+        symbols=("ID_PV_AV_FL",),
+        reason=(
+            "ID_PV_AV_FL — pedal threshold for full-load lambda (screenshot 'Pedal "
+            "Threshold for Full Load Lambda'; 7x8, stock flat 99.9%). The conservative "
+            "base recipe leaves it at stock; a tune revision writes it (R01+ → flat 72%, "
+            "so full-load enrichment engages before WOT)."
+        ),
     ),
     RecipeEntry(
         guide_section="Fueling — two tables set entirely to 1",
-        description="Two fueling tables that must be entirely 1",
-        kind=KIND_SKIP_VAGUE,
-        reason="No symbol confirmed for the two 'set to 1' tables this session; not guessed.",
+        description="Two full-load lambda enrichment maps (guide: entirely 1)",
+        kind=KIND_SKIP_STOCK,
+        symbols=("IP_LAMB_FL_SP", "IP_LAMB_FL_SP_TIA"),
+        reason=(
+            "Full-load lambda enrichment maps (IP_LAMB_FL_SP and its IAT-dependent "
+            "sibling; X=RPM, Y=full-load timer). Guide: set entirely to 1. Stock "
+            "already reads all 1.0 on 5G0906259L — already compliant, nothing to write."
+        ),
     ),
     RecipeEntry(
         guide_section="Fueling — Ethanol / Flex Fuel",
@@ -540,14 +575,18 @@ SYMBOL_MAP: tuple[RecipeEntry, ...] = (
     ),
     RecipeEntry(
         guide_section="Limiters — Overboost limit → 2700",
-        description="Raise the overboost (P0234) limit to 2700 hPa; never write over a higher value",
-        kind=KIND_GUARDED_CEILING,
-        symbols=("C_PRS_IM_SP_LIM",),  # candidate only — see reason; resolver will accept, U3 guards
+        description="Raise the overboost (P0234) limit to 2700 hPa across all cells; never lower a higher cell",
+        kind=KIND_GUARDED_CEILING,          # broadcasts across all cells, never-lower guarded
+        symbols=("IP_PUT_AMP_DIF_MAX_PRS_DIF_THR",),
         target=2700.0,
         reason=(
-            "C_PRS_IM_SP_LIM is an OFFSET-to-baro constant whose stock value does "
-            "not match the guide's overboost-limit screenshot; treated as a "
-            "guarded raise, but flagged for manual confirmation before flashing."
+            "IP_PUT_AMP_DIF_MAX_PRS_DIF_THR  — Overpressure upstream throttle "
+            "threshold for turbocharger overpressure diagnosis (P0234); 1x6 int16 "
+            "hPa, stock ~1800. XDF hard max is 2716.96 hPa, so 2700 is intentionally "
+            "just under the ceiling — do not exceed. (Corrected 2026-07-09 from "
+            "C_PRS_IM_SP_LIM  — Offset to the pressure behind air cleaner for the "
+            "limitation of the manifold setpoint, which is a manifold-setpoint "
+            "limit, not the overboost threshold.)"
         ),
     ),
     RecipeEntry(
@@ -571,20 +610,28 @@ SYMBOL_MAP: tuple[RecipeEntry, ...] = (
     ),
     RecipeEntry(
         guide_section="Limiters — Max allowed airmass → 2000 (float-bug)",
-        description="Raise max allowed airmass limiter (guide: type 0.002 due to display bug)",
-        kind=KIND_SKIP_VAGUE,
+        description="Raise max allowed airmass limiter (guide: '2000', enter as 0.002)",
+        kind=KIND_SKIP_STOCK,
         symbols=("C_M_AIR_CYL_SP_MAX",),
         reason=(
-            "Float-bug display anomaly: stock reads 0.001 and the guide says to "
-            "type 0.002, not 2000 — the true target is ambiguous under this XDF's "
-            "scaling. Not written by the recipe; apply manually and verify by reopen."
+            "C_M_AIR_CYL_SP_MAX. NOT a display bug: the ECU stores this ceiling in "
+            "kg/stk while the XDF mislabels it identity mg/stk, so the raw value for a "
+            "2000 mg/stk ceiling is 0.002 (stock decodes 0.001389 = 1389 mg/stk). "
+            "Writing 2000 raw would be ~1e6x too high (limiter removed). The base "
+            "recipe leaves it at stock; a tune revision writes 0.002 (R01+). See "
+            "ecu-tuning-basics.md note (2)."
         ),
     ),
     RecipeEntry(
         guide_section="Limiters — two max intake air tables → 2000",
         description="Two 'max intake air' tables set to 2000 across",
-        kind=KIND_SKIP_VAGUE,
-        reason="No confident symbol found for the two max-intake-air tables; not guessed.",
+        kind=KIND_SKIP_STOCK,
+        symbols=("IP_M_AIR_CYL_MAX_STND_VVL[STND]", "IP_M_AIR_CYL_MAX_STND_VVL[LFT_1]"),
+        reason=(
+            "IP_M_AIR_CYL_MAX_STND_VVL[STND]/[LFT_1] — genuine mg/stk (stock 515-1275). "
+            "The conservative base recipe leaves limiters at stock; a tune revision "
+            "writes them (R01+ → flat 2000 mg/stk across)."
+        ),
     ),
     RecipeEntry(
         guide_section="Limiters — Speed limiter (four overall maximal velocity)",
@@ -773,35 +820,6 @@ def _positional_axis_match(
     return list(range(len(keys)))
 
 
-def _key_column_match(
-    axis_vals: Optional[np.ndarray],
-    keys: tuple[float, ...],
-    *,
-    tol: float = 10.0,
-) -> dict[int, int]:
-    """Map each table column index → the index of the ``keys`` entry it equals.
-
-    Used for the torque curve, where the guide's RPM keys are looked up per
-    column (unlike a full grid). A column whose axis value is not within ``tol``
-    of any key is simply absent from the result (left stock, reported). ``tol`` is
-    absolute and well under the smallest gap between distinct RPM keys (110), so
-    a near-miss (ECO's 4200 vs the curve's 4250) does not falsely match.
-    """
-    out: dict[int, int] = {}
-    if axis_vals is None:
-        return out
-    a = np.asarray(axis_vals, dtype=np.float64).ravel()
-    for c, av in enumerate(a):
-        best_j, best_d = None, tol
-        for j, k in enumerate(keys):
-            d = abs(av - k)
-            if d <= best_d:
-                best_j, best_d = j, d
-        if best_j is not None:
-            out[c] = best_j
-    return out
-
-
 # ---- staging wrapper: catch the existing guards, capture warnings ---------- #
 def _run_write(fn: Callable[[], None]) -> tuple[str, str]:
     """Run a staging closure; return ``(status, text)`` without ever raising.
@@ -879,26 +897,33 @@ def _apply_literal_table(view: TableView, section: str, grid: "LiteralGrid") -> 
 
 def _apply_torque_curve(view: TableView, section: str, curve: "TorqueCurve") -> TableOutcome:
     rows, cols = view.shape
-    keys = tuple(p[0] for p in curve.points)
-    vals = tuple(p[1] for p in curve.points)
-    col_to_key = _key_column_match(view.axis_values("x"), keys)
-    if not col_to_key:
+    keys = np.array([p[0] for p in curve.points], dtype=np.float64)
+    vals = np.array([p[1] for p in curve.points], dtype=np.float64)
+    axis = view.axis_values("x")
+    if axis is None:
         return TableOutcome(view.symbol, section, OUTCOME_AXIS_MISMATCH,
-                            detail="no RPM column matched the torque curve — not written")
+                            detail="table has no RPM axis — torque curve not written")
+    ax = np.asarray(axis, dtype=np.float64).ravel()
+    lo, hi = float(keys.min()), float(keys.max())
+    # In-span = RPM within the curve's key range (± tol for endpoint decode
+    # residue). np.interp clamps an endpoint-adjacent value to that endpoint, so
+    # an in-span column is never extrapolated; out-of-span columns are left stock.
+    in_span = (ax >= lo - AXIS_MATCH_TOL) & (ax <= hi + AXIS_MATCH_TOL)
+    if not in_span.any():
+        return TableOutcome(view.symbol, section, OUTCOME_AXIS_MISMATCH,
+                            detail="no RPM column within the torque curve span — not written")
     target = view.values.astype(np.float64).copy()
-    for c, j in col_to_key.items():
-        target[:, c] = vals[j]
+    # Linearly interpolate the curve onto every in-span column; broadcast the
+    # resulting value down all rows (gears) — "set them all the same".
+    target[:, in_span] = np.interp(ax[in_span], keys, vals)
     status, text = _run_write(lambda: view.set(target))
     if status == "guard_blocked":
         return TableOutcome(view.symbol, section, OUTCOME_GUARD_BLOCKED, detail=text)
-    matched = len(col_to_key)
-    detail = f"applied curve to {matched}/{cols} RPM columns × {rows} rows"
+    matched = int(in_span.sum())
+    detail = f"interpolated curve onto {matched}/{cols} RPM columns × {rows} rows"
     if matched < cols:
-        unmatched = sorted(
-            float(np.asarray(view.axis_values("x")).ravel()[c])
-            for c in range(cols) if c not in col_to_key
-        )
-        detail += f"; columns left stock (no curve key): {unmatched}"
+        outside = sorted(float(v) for v in ax[~in_span])
+        detail += f"; columns outside the curve span left stock: {outside}"
     return TableOutcome(view.symbol, section, OUTCOME_APPLIED, detail=detail, warning=text)
 
 
@@ -1019,33 +1044,74 @@ def _apply_axis_write(cal: CalFile, view: TableView, section: str,
 
 # ---- U3: guarded ceiling write --------------------------------------------- #
 def _guarded_ceiling_write(view: TableView, section: str, target: float) -> TableOutcome:
-    """Raise a limiter to ``target`` — but never write a lower value over a higher.
+    """Raise every cell of a limiter to ``target`` — but never lower a higher cell.
 
-    Reads the current value first (per the guide's "if already >2700, don't
-    touch"): writes ``target`` only when ``current < target``; records
-    ``guarded_skip`` (no write staged, table byte-identical) when the limiter is
-    already at or above the target; ``already_satisfied`` when it is exactly the
-    target. A write that trips :class:`FloatBugGuardError` (the float-bug limiter
-    constants) is caught as ``guard_blocked`` — the table stays byte-identical
-    and the recipe continues (plan Key Decision 3 / AE2).
+    Reads each cell first (per the guide's "if already >2700, don't touch"):
+    stages ``target`` only in cells below ``target`` and leaves cells at or above
+    it untouched (never lowered). The whole grid is staged in one range-checked
+    write, so a guard trip leaves the table byte-identical. Outcomes:
+
+    * ``applied``           — at least one cell was below target and got raised;
+    * ``already_satisfied`` — every cell already equals the target (nothing staged);
+    * ``guarded_skip``      — every cell already at/above target, none equal it
+      (byte-identical — the never-lower guard, plan Key Decision 3 / AE2);
+    * ``guard_blocked``     — the write would exceed the table's declared upper
+      limit (float-bug tables raise :class:`FloatBugGuardError` inside the staged
+      write; any other table is rejected here rather than warn-and-overflow) —
+      table byte-identical, recipe continues.
+
+    Works for both 1x1 limiter constants (compressor temp, turbo speed, ...) and
+    multi-cell limiter maps: ``IP_PUT_AMP_DIF_MAX_PRS_DIF_THR``  — Overpressure
+    upstream throttle threshold for turbocharger overpressure diagnosis (P0234),
+    1x6 hPa, is broadcast across all six cells.
     """
-    current = float(view.values.ravel()[0])
+    current = view.values.astype(np.float64)
     tol = 1e-6 * (abs(target) + 1.0)
-    if current > target + tol:
+
+    # Never write above the table's declared ceiling. Float-bug tables raise
+    # FloatBugGuardError inside the staged write below (kept for their specific
+    # message + guard_blocked). Any other table would only warn-and-write, so
+    # reject it here — fail loud, never overflow a limiter's element width (2b).
+    zmax = view.table.z.max if view.table.z is not None else None
+    if zmax is not None and target > zmax + tol and not is_float_bug_table(view.table):
         return TableOutcome(
-            view.symbol, section, OUTCOME_GUARDED_SKIP, old=current, new=target,
-            detail=(f"current {_fmt(current)} already exceeds target "
-                    f"{_fmt(target)} — left unchanged (never lowered)"),
+            view.symbol, section, OUTCOME_GUARD_BLOCKED,
+            old=float(current.min()), new=target,
+            detail=(f"target {_fmt(target)} exceeds the table's declared upper "
+                    f"limit {_fmt(zmax)} — refusing to write (never overflow a "
+                    "limiter ceiling); table left byte-identical."),
         )
-    if abs(current - target) <= tol:
-        return TableOutcome(view.symbol, section, OUTCOME_ALREADY_SATISFIED,
-                            old=current, new=target)
-    status, text = _run_write(lambda: view.set_cell(0, 0, target))
+
+    below = current < target - tol
+    if not below.any():
+        # Nothing to raise: either every cell is exactly at target, or one or more
+        # sit above it (never lowered). Report the extreme cell so it is auditable.
+        if float(np.abs(current - target).max()) <= tol:
+            return TableOutcome(view.symbol, section, OUTCOME_ALREADY_SATISFIED,
+                                old=float(current.min()), new=target)
+        return TableOutcome(
+            view.symbol, section, OUTCOME_GUARDED_SKIP,
+            old=float(current.max()), new=target,
+            detail=(f"all {current.size} cell(s) already at/above target "
+                    f"{_fmt(target)} (max {_fmt(float(current.max()))}) — left "
+                    "unchanged (never lowered)"),
+        )
+
+    staged = current.copy()
+    staged[below] = target
+    old_min = float(current[below].min())
+    raised = int(below.sum())
+    status, text = _run_write(lambda: view.set(staged))
     if status == "guard_blocked":
         return TableOutcome(view.symbol, section, OUTCOME_GUARD_BLOCKED,
-                            detail=text, old=current, new=target)
+                            detail=text, old=old_min, new=target)
+    detail = ""
+    if current.size > 1:
+        detail = (f"raised {raised} of {current.size} cell(s) below target to "
+                  f"{_fmt(target)} (min {_fmt(old_min)} -> {_fmt(target)}); any "
+                  "cell already at/above target left unchanged (never lowered)")
     return TableOutcome(view.symbol, section, OUTCOME_APPLIED,
-                        old=current, new=target, warning=text)
+                        old=old_min, new=target, warning=text, detail=detail)
 
 
 # ---- U4: TTA/ATT proportional build-out ------------------------------------ #

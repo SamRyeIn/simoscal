@@ -121,14 +121,43 @@ class TestAE1FullValueMatch:
 # AE2 — guard behaviour (Overboost ceiling never lowered)
 # --------------------------------------------------------------------------- #
 class TestAE2Guard:
-    def test_overboost_guarded_skip_byte_identical(self, applied) -> None:
+    def test_overboost_applies_2700_across_all_cells(self, applied) -> None:
+        # `IP_PUT_AMP_DIF_MAX_PRS_DIF_THR`  — Overpressure upstream throttle
+        # threshold for turbocharger overpressure diagnosis (P0234): stock ~1800,
+        # raised to 2700 across all 6 cells (corrected from `C_PRS_IM_SP_LIM`).
         stock, tuned, report, _ = applied
-        over = [o for o in report.outcomes if o.symbol == "C_PRS_IM_SP_LIM"]
+        over = [o for o in report.outcomes if o.symbol == "IP_PUT_AMP_DIF_MAX_PRS_DIF_THR"]
         assert len(over) == 1
-        assert over[0].outcome == OUTCOME_GUARDED_SKIP  # current (~271695) > 2700
+        assert over[0].outcome == OUTCOME_APPLIED
+        assert np.allclose(tuned.get("IP_PUT_AMP_DIF_MAX_PRS_DIF_THR").values, 2700.0, atol=0.05)
+        # `C_PRS_IM_SP_LIM`  — Offset for the manifold-setpoint limitation: the
+        # overboost entry no longer targets it, so it stays byte-identical to stock.
+        assert not [o for o in report.outcomes if o.symbol == "C_PRS_IM_SP_LIM"]
         assert np.array_equal(
             tuned.get("C_PRS_IM_SP_LIM").values, stock.get("C_PRS_IM_SP_LIM").values
         )
+
+    def test_overboost_never_lowers_a_higher_cell(self, applied) -> None:
+        # Keep AE2's never-lower guarantee alive independent of stock values:
+        # a synthetic cell pre-set above target must be left untouched while the
+        # rest are raised. Uses a fresh cal so the module-scoped `applied` is intact.
+        from .conftest import REAL_XDF, REAL_BIN
+        from simoscal.sop_recipe import SYMBOL_MAP, apply_entry
+
+        cal = CalFile.open(str(REAL_XDF), str(REAL_BIN))
+        view = cal.get("IP_PUT_AMP_DIF_MAX_PRS_DIF_THR")
+        staged = view.values.astype(float).copy()
+        staged[0, 2] = 2710.0  # above the 2700 target, under the XDF max (2716.96)
+        view.set(staged)
+        entry = next(e for e in SYMBOL_MAP if e.guide_section.startswith("Limiters — Overboost"))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            outs = apply_entry(cal, resolve_symbol_map(cal, (entry,))[0])
+        assert outs[0].outcome == OUTCOME_APPLIED
+        after = cal.get("IP_PUT_AMP_DIF_MAX_PRS_DIF_THR").values
+        assert after[0, 2] == pytest.approx(2710.0, abs=0.05)  # never lowered
+        others = [after[0, c] for c in range(6) if c != 2]
+        assert np.allclose(others, 2700.0, atol=0.05)
 
     def test_float_bug_limiter_guard_blocked_byte_identical(self, applied) -> None:
         stock, tuned, report, _ = applied
