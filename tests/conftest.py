@@ -79,6 +79,39 @@ def switch_patch_xdf() -> Path:
     return SWITCH_PATCH_XDF
 
 
+# Golden multi-patch oracle: a bin Sam produced with the BinToolz Windows GUI by
+# applying CBRICK → HSL → switch-patch 29.33 to the R04 BasicsGuide tune. Applying
+# the same patches in the same order through the adapter must reproduce it byte for
+# byte. All inputs are gitignored / may be absent → the fixture skips.
+GOLDEN_MULTIPATCH_BASE = (
+    PROJECT_ROOT
+    / "Tunes/TuningBasicsGuide/TUNE_Basics_Guide_out"
+    / "R04_20260709-140100/5G0906259L_0002_BasicsGuide_R04.bin"
+)
+GOLDEN_MULTIPATCH_RESULT = (
+    PROJECT_ROOT / "References/CB_HSL_SP2933_5G0906259L_0002_BasicsGuide_R04.bin"
+)
+GOLDEN_MULTIPATCH_PATCHES = (
+    BINTOOLZ_ROOT / "patches" / "SL CBRICK v1.2 - S50.btp",
+    BINTOOLZ_ROOT / "patches" / "SL HSL v1.1 - S50.btp",
+    BINTOOLZ_ROOT / "patches" / "SL PATCH.29.33 - S50.btp",
+)
+
+
+@pytest.fixture(scope="session")
+def golden_multipatch() -> dict:
+    """``{base, result, patches}`` for the GUI-parity oracle; skips if any absent."""
+    needed = [GOLDEN_MULTIPATCH_BASE, GOLDEN_MULTIPATCH_RESULT, *GOLDEN_MULTIPATCH_PATCHES]
+    missing = [p for p in needed if not p.is_file()]
+    if missing:
+        pytest.skip(f"golden multipatch inputs absent: {missing}")
+    return {
+        "base": GOLDEN_MULTIPATCH_BASE,
+        "result": GOLDEN_MULTIPATCH_RESULT,
+        "patches": list(GOLDEN_MULTIPATCH_PATCHES),
+    }
+
+
 @pytest.fixture(scope="session")
 def real_xdf() -> Path:
     """Path to the real SC8S50 XDF; skips the test if it is not present."""

@@ -154,3 +154,20 @@ class TestAE7MissingDependency:
         with pytest.raises(btp.BinToolzNotFound) as exc:
             btp.check(REAL_BIN, real_patch, bintoolz_root=bogus)
         assert str(bogus) in str(exc.value)
+
+
+# --------------------------------------------------------------------------- #
+# Golden parity — reproduce a BinToolz Windows-GUI multi-patch bin byte-for-byte
+# --------------------------------------------------------------------------- #
+class TestGoldenGuiParity:
+    def test_sequential_patches_match_gui_output(self, golden_multipatch, tmp_path):
+        # Applying CBRICK → HSL → switch-patch 29.33 in order to the R04 tune must
+        # reproduce the bin Sam made with the BinToolz GUI, byte for byte.
+        cur = golden_multipatch["base"]
+        for i, patch in enumerate(golden_multipatch["patches"]):
+            assert btp.check(cur, patch).readiness == btp.READY_TO_ACCEPT
+            out = tmp_path / f"step{i}.bin"
+            res = btp.apply(cur, patch, out)
+            assert res.confined
+            cur = out
+        assert Path(cur).read_bytes() == golden_multipatch["result"].read_bytes()
