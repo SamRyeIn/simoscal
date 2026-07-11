@@ -72,6 +72,19 @@ from .safety import (
     is_float_bug_table,
 )
 from . import writer
+from . import btp
+from .btp import (
+    BtpError,
+    BinToolzNotFound,
+    PatchIdentityError,
+    PatchIntegrityError,
+    PatchStateError,
+    PatchConfinementError,
+    PatchCheckResult,
+    ChangeResult,
+    SanityResult,
+    format_change_report,
+)
 
 __version__ = "0.1.0"
 
@@ -132,4 +145,15 @@ __all__ = [
     "check_raw_fits",
     "is_float_bug_table",
     "writer",
+    "btp",
+    "BtpError",
+    "BinToolzNotFound",
+    "PatchIdentityError",
+    "PatchIntegrityError",
+    "PatchStateError",
+    "PatchConfinementError",
+    "PatchCheckResult",
+    "ChangeResult",
+    "SanityResult",
+    "format_change_report",
 ]
