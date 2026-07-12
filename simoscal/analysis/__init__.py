@@ -66,6 +66,7 @@ from .report import (
     write_findings,
 )
 from .checks import default_battery
+from .evidence import AnalyzeResult, analyze_folder, resolve_bin, resolve_xdf
 
 __all__ = [
     "AnalysisError",
@@ -97,4 +98,8 @@ __all__ = [
     "render_markdown",
     "write_findings",
     "default_battery",
+    "AnalyzeResult",
+    "analyze_folder",
+    "resolve_bin",
+    "resolve_xdf",
 ]
