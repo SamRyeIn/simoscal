@@ -112,6 +112,29 @@ def golden_multipatch() -> dict:
     }
 
 
+# Human-reviewed log folders for the analysis acceptance replay (plan U6). They
+# live in the root repo (not the Code/ checkout) and may be absent, so the
+# fixtures SKIP rather than fail.
+ANALYSIS_R01_DIR = PROJECT_ROOT / "Logs" / "BasicsGuide_R01"
+ANALYSIS_R04_DIR = PROJECT_ROOT / "Logs" / "BasicsGuide_R04"
+
+
+@pytest.fixture(scope="session")
+def r01_log_dir() -> Path:
+    """The human-reviewed R01 log folder; skips if absent from a lean checkout."""
+    if not ANALYSIS_R01_DIR.is_dir():
+        pytest.skip(f"R01 log folder not present: {ANALYSIS_R01_DIR}")
+    return ANALYSIS_R01_DIR
+
+
+@pytest.fixture(scope="session")
+def r04_log_dir() -> Path:
+    """The human-reviewed R04 log folder; skips if absent from a lean checkout."""
+    if not ANALYSIS_R04_DIR.is_dir():
+        pytest.skip(f"R04 log folder not present: {ANALYSIS_R04_DIR}")
+    return ANALYSIS_R04_DIR
+
+
 @pytest.fixture(scope="session")
 def real_xdf() -> Path:
     """Path to the real SC8S50 XDF; skips the test if it is not present."""

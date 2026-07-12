@@ -276,6 +276,51 @@ three states are reported explicitly, never assumed. See
 `demos/apply_btp_patch.py` for the canonical stock→patch→verify pipeline and
 `knowledge/bintoolz-btp-patching.md` "U1 findings" for the checksum/XDF evidence.
 
+### Log analysis battery — `simoscal.analysis`
+
+Runs an identical, enumerable battery of checks against a `Logs/<Tune>_R<NN>/`
+folder of SimosTools datalog CSVs and writes a machine-readable findings file, a
+rendered Markdown summary, an explicit SKIPPED list, evidence plots, and
+per-table coverage maps into that folder. It is **findings-only and read-only**:
+Claude consumes the output to write `log_review.md` — the tool **never writes
+`log_review.md` and never proposes or writes a calibration change**. It consumes
+the rest of `simoscal` read-only (opening the flashed bin via `CalFile` for the
+calibration-aware checks) and inherits the fail-loud mandate: a channel it cannot
+confidently resolve is reported unmapped rather than mis-scaled, and a check
+whose required channels (or bin) are absent lands in SKIPPED rather than firing
+on wrong data.
+
+```python
+from simoscal.analysis import analyze_folder
+
+out = analyze_folder("Logs/BasicsGuide_R04")   # autolocates the flashed bin
+print(out.result.high_findings)                # ranked findings
+print(out.json_path, out.md_path)              # written into the folder
+```
+
+```bash
+python -m simoscal.analysis Logs/BasicsGuide_R04     # writes findings + plots
+python -m simoscal.analysis --print-battery          # enumerate the battery, run nothing
+```
+
+| Member | Description |
+|--------|-------------|
+| `analyze_folder(folder, *, xdf_path=None, bin_path=None, make_plots=True)` → `AnalyzeResult` | Load CSVs, detect pulls, autolocate the bin, run the battery + coverage, write `analysis_findings.{json,md}` and `plots/analysis_*.png` into the folder. |
+| `load_logset(folder)` → `LogSet` | Parse `simostools-*.csv` into canonical, unit-normalized channels (airmass→mg/stk, rail→bar) with header-rule gear resolution and a non-mutating quality preflight; dedups trimmed re-exports of one capture. |
+| `detect_pulls(logset)` → `list[Pull]` | Segment WOT pulls + per-pull summary with environment context. |
+| `default_battery()` → `list[Check]` · `run_battery(checks, ctx)` → `BatteryResult` | The v1 battery (knock, boost, wastegate, lambda, rail, timing, turbo/heat, torque limiter, data quality, + a `needs_cal` boost-ceiling check) and its runner. |
+| `compute_coverage(ctx)` → `(results, skipped)` | Per-cell hit-count maps (whole-log + WOT-only) for the primary tuning tables via ECU-lookup simulation. |
+| `format_battery(checks)` → `str` | Print the enumerable battery (ids, channels, thresholds) without running it. |
+
+Output contract per folder: `analysis_findings.json` (sorted keys, fixed float
+formatting — byte-identical across identical reruns), `analysis_findings.md`
+(findings by severity, SKIPPED, aligned pull table + environment, coverage,
+battery enumeration), and `plots/analysis_*.png` referenced from findings.
+Thresholds are seeded from the R01/R04 reviews and live as inspectable registry
+data. Acceptance replay (`tests/test_acceptance_analysis.py`) reproduces the
+R01/R04 headline findings with **no false High** — every High the tool emits is
+one the human review also called High.
+
 ### Checksums — `ChecksumReport`
 `name` · `can_verify` · `is_stale` · `stored` · `computed` · `covered` (half-open
 full-bin byte ranges) · `detail`. Two checksums are reported: **`CAL_CRC`**
@@ -344,11 +389,18 @@ cd Code
 ./.venv/bin/python -m pytest tests/test_acceptance_plot.py -v     # AE1–AE9 (Phase 3 viz)
 ./.venv/bin/python -m pytest tests/test_acceptance_sop.py -v      # AE1–AE5 (SOP tune recipe)
 ./.venv/bin/python -m pytest tests/test_acceptance_btp.py -v      # AE1–AE7 (BTP patching)
+./.venv/bin/python -m pytest tests/test_acceptance_analysis.py -v # R01/R04 log-analysis replay
 ```
 
 `test_btp.py` (synthetic fixtures) and `test_acceptance_btp.py` (real files) skip
 cleanly when the vendored `BinToolz-main/` tree, the real switch patch, or the
 stock bin are absent — the BTP adapter wraps BinToolz at runtime.
+
+The `simoscal.analysis` unit tests (`test_analysis_*.py`) run entirely on
+synthetic logs built by `tests/faultinject.py` (fault injection) and
+`tests/synthlog.py`. `test_acceptance_analysis.py` replays the real
+human-reviewed `Logs/BasicsGuide_R01`/`_R04` folders and skips cleanly when they
+are absent from a lean `Code/` checkout.
 
 The acceptance suite (`tests/test_acceptance.py`) encodes the AE1–AE5 examples:
 
@@ -377,12 +429,16 @@ table selection in physical units, a public `RenderedTable` rendering layer
 (Phase 2); static-PNG visualization (surface/heatmap/line) and provenance-
 agnostic comparison composites (Phase 3); check / apply / remove of BinToolz
 `.btp` patches with confined-diff post-verification and checksum reporting
-(`simoscal.btp`, wrapping BinToolz).
+(`simoscal.btp`, wrapping BinToolz); a read-only, findings-only log-analysis
+battery over SimosTools datalog folders with evidence plots and per-table
+coverage maps (`simoscal.analysis`).
 **Out:** flashing (SimosTools/VW_Flash), checksum *recompute* beyond the
 optional correction path, CBOOT/ASW editing, `.btp` *creation* (`patchCreate`)
 and BinToolz's ignore-data CAL-skip mode, FRF→BIN extraction,
 GUI/CLI, import/round-trip from an exported file back into a `.bin`;
 interactive/on-screen viewing, vector (SVG/PDF) output, >2-bin comparison
-(Phase 3 out-of-scope). Datalog-driven auto-tuning (Phase 4) is a later phase
+(Phase 3 out-of-scope); for `simoscal.analysis`, authoring `log_review.md`
+(Claude's job) and any calibration proposer/orchestration/bin-writing
+(deferred). Datalog-driven auto-tuning (Phase 4) is a later phase
 that consumes this library read-only and writes *through* this writer,
 inheriting its guards.
