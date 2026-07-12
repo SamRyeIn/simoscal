@@ -43,6 +43,12 @@ from .log import (
     load_logfile,
     load_logset,
 )
+from .pulls import (
+    PULL_DETECTION_CONSTANTS,
+    Pull,
+    PullEnvironment,
+    detect_pulls,
+)
 
 __all__ = [
     "AnalysisError",
@@ -57,4 +63,8 @@ __all__ = [
     "LogSet",
     "load_logfile",
     "load_logset",
+    "PULL_DETECTION_CONSTANTS",
+    "Pull",
+    "PullEnvironment",
+    "detect_pulls",
 ]
