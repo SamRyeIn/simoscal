@@ -49,6 +49,22 @@ from .pulls import (
     PullEnvironment,
     detect_pulls,
 )
+from .registry import (
+    BatteryResult,
+    Check,
+    CheckContext,
+    Finding,
+    Severity,
+    Skipped,
+    format_battery,
+    run_battery,
+)
+from .report import (
+    findings_to_dict,
+    md_table,
+    render_markdown,
+    write_findings,
+)
 
 __all__ = [
     "AnalysisError",
@@ -67,4 +83,16 @@ __all__ = [
     "Pull",
     "PullEnvironment",
     "detect_pulls",
+    "BatteryResult",
+    "Check",
+    "CheckContext",
+    "Finding",
+    "Severity",
+    "Skipped",
+    "format_battery",
+    "run_battery",
+    "findings_to_dict",
+    "md_table",
+    "render_markdown",
+    "write_findings",
 ]
