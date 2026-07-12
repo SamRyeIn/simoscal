@@ -153,10 +153,11 @@ def test_empty_folder_fails_loud(tmp_path):
 def test_logset_channels_union_and_has(tmp_path):
     write_log(tmp_path / "simostools-1.csv",
               clean_pull_columns(airmass_header="Airmass (mg/stk)"))
-    # Second file lacks the knock channels.
+    # Second file lacks the knock channels. Distinct time base (a separate
+    # capture) so the duplicate-capture dedup does not fold it into file 1.
     n = 10
     write_log(tmp_path / "simostools-2.csv", {
-        "Time": ramp(0.0, 0.5, n),
+        "Time": ramp(100.0, 100.5, n),
         "Engine Speed (rpm)": ramp(3000.0, 5000.0, n),
         "Gear (gear)": const(3.0, n),
         "PUT (kpa)": const(240.0, n),
@@ -168,3 +169,24 @@ def test_logset_channels_union_and_has(tmp_path):
     assert "knock_3" in ls.channels()      # union: present in file 1
     assert ls.has("put")                   # in every file
     assert not ls.has("knock_3")           # not in file 2
+
+
+def test_duplicate_trim_pair_deduped_with_note(tmp_path):
+    """A capture and its trimmed re-export (overlapping time) count once."""
+    full = clean_pull_columns(n=60, t0=500.0)           # t = 500 .. 502.95
+    trim = clean_pull_columns(n=30, t0=500.0)           # a subset re-export
+    write_log(tmp_path / "simostools-2026_07_07-22_50_43.csv", full)
+    write_log(tmp_path / "simostools-2026_07_07-22_50_43_trim.csv", trim)
+    ls = load_logset(tmp_path)
+    assert len(ls) == 1                                 # the trim was dropped
+    assert ls.files[0].n_rows == 60                     # the larger file survived
+    assert ls.notes and "trim" in ls.notes[0]
+
+
+def test_dedup_keeps_distinct_captures(tmp_path):
+    """Two genuinely separate captures (non-overlapping time) are both kept."""
+    write_log(tmp_path / "simostools-a.csv", clean_pull_columns(n=60, t0=100.0))
+    write_log(tmp_path / "simostools-b.csv", clean_pull_columns(n=60, t0=900.0))
+    ls = load_logset(tmp_path)
+    assert len(ls) == 2
+    assert ls.notes == ()

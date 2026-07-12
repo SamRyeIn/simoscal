@@ -261,10 +261,15 @@ class LogFile:
 
 @dataclass(frozen=True)
 class LogSet:
-    """A folder of parsed logs plus the folder path they came from."""
+    """A folder of parsed logs plus the folder path they came from.
+
+    ``notes`` records load-time decisions the report must surface — chiefly the
+    duplicate/trimmed-capture dedup (see :func:`_dedup_overlapping`).
+    """
 
     folder: Path
     files: tuple[LogFile, ...]
+    notes: tuple[str, ...] = ()
 
     def __iter__(self):
         return iter(self.files)
@@ -458,12 +463,73 @@ def load_logfile(path: Path) -> LogFile:
     )
 
 
-def load_logset(folder: str | Path, *, glob: str = CSV_GLOB) -> LogSet:
+def _time_interval(lf: LogFile) -> Optional[tuple[float, float]]:
+    """The file's ``[t_min, t_max]`` from finite timestamps, or ``None``."""
+    t = lf.time
+    if t is None:
+        return None
+    finite = t[np.isfinite(t)]
+    if not finite.size:
+        return None
+    return float(np.min(finite)), float(np.max(finite))
+
+
+# A capture and its trimmed re-export share the same absolute time base; two
+# genuinely-distinct captures never do (one device logs one file at a time), so
+# any substantial time-range overlap means "same capture, counted twice".
+DEDUP_OVERLAP_FRACTION = 0.5
+
+
+def _dedup_overlapping(files: tuple[LogFile, ...]) -> tuple[tuple[LogFile, ...], list[str]]:
+    """Drop duplicate/trimmed re-exports of the same capture, with a note.
+
+    Two files whose time ranges overlap by at least
+    :data:`DEDUP_OVERLAP_FRACTION` of the shorter range are the same underlying
+    capture (e.g. R01's ``..._22_50_43.csv`` and ``..._22_50_43_trim.csv``).
+    Naive globbing would double-count that pull in every summary, recurrence,
+    and coverage count, so we keep the file with more rows (the superset) and
+    record an explicit note — never silently counting twice.
+    """
+    intervals = [_time_interval(f) for f in files]
+    notes: list[str] = []
+
+    # Prefer the larger file as the survivor of any overlapping group.
+    order = sorted(range(len(files)), key=lambda i: (-files[i].n_rows, files[i].name))
+    dropped: set[int] = set()
+    for i in order:
+        if i in dropped:
+            continue
+        iv_i = intervals[i]
+        if iv_i is None:
+            continue
+        for j in order:
+            if j == i or j in dropped:
+                continue
+            iv_j = intervals[j]
+            if iv_j is None:
+                continue
+            overlap = max(0.0, min(iv_i[1], iv_j[1]) - max(iv_i[0], iv_j[0]))
+            shorter = min(iv_i[1] - iv_i[0], iv_j[1] - iv_j[0])
+            if shorter > 0 and overlap >= DEDUP_OVERLAP_FRACTION * shorter:
+                dropped.add(j)
+                notes.append(
+                    f"dropped '{files[j].name}' ({files[j].n_rows} rows): its time range overlaps "
+                    f"'{files[i].name}' ({files[i].n_rows} rows) — same capture counted twice; "
+                    "kept the larger file"
+                )
+
+    kept = tuple(f for idx, f in enumerate(files) if idx not in dropped)
+    return kept, notes
+
+
+def load_logset(folder: str | Path, *, glob: str = CSV_GLOB, dedup: bool = True) -> LogSet:
     """Load every ``simostools-*.csv`` under ``folder`` into a :class:`LogSet`.
 
     Files are loaded in sorted (deterministic) filename order. Raises
     :class:`AnalysisError` — naming the glob — if the folder holds no matching
     CSV, so an empty log folder fails loud rather than producing empty output.
+    When ``dedup`` is set (default), duplicate/trimmed re-exports of the same
+    capture are dropped with a note (see :func:`_dedup_overlapping`).
     """
     folder = Path(folder)
     if not folder.is_dir():
@@ -472,4 +538,7 @@ def load_logset(folder: str | Path, *, glob: str = CSV_GLOB) -> LogSet:
     if not paths:
         raise AnalysisError(f"no {glob} files found under {folder}")
     files = tuple(load_logfile(p) for p in paths)
-    return LogSet(folder=folder, files=files)
+    notes: list[str] = []
+    if dedup:
+        files, notes = _dedup_overlapping(files)
+    return LogSet(folder=folder, files=files, notes=tuple(notes))

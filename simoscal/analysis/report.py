@@ -311,6 +311,13 @@ def render_markdown(result: BatteryResult, *, extra_sections: list[str] | None =
     ))
     L.append("")
 
+    if result.logset.notes:
+        L.append("### Load notes")
+        L.append("")
+        for note in result.logset.notes:
+            L.append(f"- {note}")
+        L.append("")
+
     return "\n".join(L)
 
 

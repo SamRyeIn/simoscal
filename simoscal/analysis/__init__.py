@@ -65,6 +65,7 @@ from .report import (
     render_markdown,
     write_findings,
 )
+from .checks import default_battery
 
 __all__ = [
     "AnalysisError",
@@ -95,4 +96,5 @@ __all__ = [
     "md_table",
     "render_markdown",
     "write_findings",
+    "default_battery",
 ]
