@@ -66,6 +66,13 @@ from .report import (
     write_findings,
 )
 from .checks import default_battery
+from .coverage import (
+    CoverageAxis,
+    CoverageResult,
+    CoverageSpec,
+    DEFAULT_COVERAGE_SPECS,
+    compute_coverage,
+)
 from .evidence import AnalyzeResult, analyze_folder, resolve_bin, resolve_xdf
 
 __all__ = [
@@ -102,4 +109,9 @@ __all__ = [
     "analyze_folder",
     "resolve_bin",
     "resolve_xdf",
+    "CoverageAxis",
+    "CoverageResult",
+    "CoverageSpec",
+    "DEFAULT_COVERAGE_SPECS",
+    "compute_coverage",
 ]

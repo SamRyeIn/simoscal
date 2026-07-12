@@ -37,10 +37,11 @@ from .checks import (
     _settled_mask,
     default_battery,
 )
+from .coverage import CoverageResult, compute_coverage
 from .log import load_logset
 from .pulls import detect_pulls
 from .registry import BatteryResult, CheckContext, run_battery
-from .report import write_findings
+from .report import md_table, write_findings
 
 __all__ = ["AnalyzeResult", "analyze_folder", "resolve_bin", "resolve_xdf"]
 
@@ -278,6 +279,40 @@ def _plot_wastegate(ctx, path) -> bool:
     return True
 
 
+def _sanitize(name: str) -> str:
+    return "".join("_" if c in "[]/\\:*?<>| " else c for c in name).strip("_") or "table"
+
+
+def _plot_coverage(cov: CoverageResult, path: Path) -> bool:
+    """Side-by-side whole-log vs WOT-only hit-count heatmaps for one table."""
+    if not cov.y_channel:
+        return False   # 1D coverage heatmaps not rendered in v1
+    whole = np.array(cov.counts_whole, dtype=float)
+    wot = np.array(cov.counts_wot, dtype=float)
+    fig = Figure(figsize=(12, 5))
+    vmax = max(whole.max(), 1.0)
+    for pos, (grid, name) in enumerate(((whole, "Whole log"), (wot, "WOT pulls")), start=1):
+        ax = fig.add_subplot(1, 2, pos)
+        im = ax.imshow(grid, origin="lower", aspect="auto", cmap="viridis", vmin=0, vmax=vmax)
+        ax.set_title(f"{name}", fontweight="bold")
+        ax.set_xlabel(f"{cov.x_channel} (axis idx)", fontweight="bold")
+        ax.set_ylabel(f"{cov.y_channel} (axis idx)", fontweight="bold")
+        # Breakpoint tick labels (thinned if dense).
+        xs = cov.x_breakpoints
+        ys = cov.y_breakpoints
+        xstep = max(1, len(xs) // 8)
+        ystep = max(1, len(ys) // 8)
+        ax.set_xticks(range(0, len(xs), xstep))
+        ax.set_xticklabels([f"{xs[i]:.0f}" for i in range(0, len(xs), xstep)], fontsize=7, rotation=45)
+        ax.set_yticks(range(0, len(ys), ystep))
+        ax.set_yticklabels([f"{ys[i]:.0f}" for i in range(0, len(ys), ystep)], fontsize=7)
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="hit count")
+    fig.suptitle(cov.symbol, fontweight="bold")
+    fig.tight_layout()
+    fig.savefig(path, format="png", dpi=_DPI)
+    return True
+
+
 # check id -> plotter. A plotter that finds no data returns False (no file).
 _PLOTTERS: dict[str, Callable] = {
     "boost": _plot_boost,
@@ -301,6 +336,82 @@ def _make_plots(ctx: CheckContext, folder: Path) -> dict[str, Path]:
         except Exception:  # a plotting failure must never sink the analysis
             continue
     return out
+
+
+def _cells_hit(counts) -> int:
+    return int(np.count_nonzero(np.array(counts)))
+
+
+def _coverage_section(ctx, cov_results, cov_skipped, folder, plot_paths, make_plots) -> dict:
+    """Build the JSON ``coverage`` section, rendering a heatmap per table."""
+    plot_dir = folder / _PLOTS_SUBDIR
+    if make_plots and cov_results:
+        plot_dir.mkdir(parents=True, exist_ok=True)
+    out_results = []
+    for cov in cov_results:
+        entry = {
+            "symbol": cov.symbol,
+            "description": cov.description,
+            "shape": list(cov.shape),
+            "x_channel": cov.x_channel,
+            "y_channel": cov.y_channel,
+            "x_breakpoints": cov.x_breakpoints,
+            "y_breakpoints": cov.y_breakpoints,
+            "counts_whole": cov.counts_whole,
+            "counts_wot": cov.counts_wot,
+            "total_whole": cov.total_whole,
+            "total_wot": cov.total_wot,
+            "cells_hit_whole": _cells_hit(cov.counts_whole),
+            "cells_hit_wot": _cells_hit(cov.counts_wot),
+        }
+        if make_plots:
+            path = plot_dir / f"analysis_coverage_{_sanitize(cov.symbol)}.png"
+            try:
+                if _plot_coverage(cov, path):
+                    entry["plot"] = f"{_PLOTS_SUBDIR}/{path.name}"
+            except Exception:
+                pass
+        out_results.append(entry)
+    return {
+        "results": out_results,
+        "skipped": [
+            {"symbol": s.check_id.removeprefix("coverage:"), "reason": s.reason,
+             "missing_channels": list(s.missing_channels)}
+            for s in cov_skipped
+        ],
+    }
+
+
+def _coverage_markdown(cov_results, cov_skipped) -> list[str]:
+    L = ["## Table coverage", ""]
+    if cov_results:
+        rows = []
+        for cov in cov_results:
+            n_cells = int(np.prod(cov.shape))
+            rows.append([
+                cov.symbol,
+                f"{_cells_hit(cov.counts_whole)}/{n_cells}",
+                f"{_cells_hit(cov.counts_wot)}/{n_cells}",
+                str(cov.total_whole),
+                str(cov.total_wot),
+            ])
+        L.append(md_table(
+            ["Table", "Cells hit (whole)", "Cells hit (WOT)", "Samples (whole)", "Samples (WOT)"],
+            rows,
+        ))
+        L.append("")
+    if cov_skipped:
+        L.append("Skipped coverage:")
+        L.append("")
+        L.append(md_table(
+            ["Table", "Reason"],
+            [[s.check_id.removeprefix("coverage:"), s.reason] for s in cov_skipped],
+        ))
+        L.append("")
+    if not cov_results and not cov_skipped:
+        L.append("_No coverage specs configured._")
+        L.append("")
+    return L
 
 
 def _attach_plot_refs(result: BatteryResult, plot_paths: dict[str, Path]) -> BatteryResult:
@@ -345,12 +456,21 @@ def analyze_folder(
         plot_paths = _make_plots(ctx, folder)
         result = _attach_plot_refs(result, plot_paths)
 
-    # Surface any calibration-load note as an extra Markdown line and JSON field.
-    extra_json = {"cal_notes": cal_notes} if cal_notes else None
-    extra_sections = (["## Calibration notes", "", *[f"- {n}" for n in cal_notes], ""]
-                      if cal_notes else None)
+    # Table coverage maps (U7): needs the resolved calibration.
+    cov_results, cov_skipped = compute_coverage(ctx)
+    coverage_json = _coverage_section(ctx, cov_results, cov_skipped, folder, plot_paths, make_plots)
+
+    # Assemble extra JSON sections and Markdown.
+    extra_json: dict = {"coverage": coverage_json}
+    if cal_notes:
+        extra_json["cal_notes"] = cal_notes
+    extra_sections: list[str] = []
+    if cal_notes:
+        extra_sections += ["## Calibration notes", "", *[f"- {n}" for n in cal_notes], ""]
+    extra_sections += _coverage_markdown(cov_results, cov_skipped)
+
     json_path, md_path = write_findings(
-        result, folder, extra_json=extra_json, extra_sections=extra_sections
+        result, folder, extra_json=extra_json, extra_sections=extra_sections or None
     )
 
     return AnalyzeResult(
