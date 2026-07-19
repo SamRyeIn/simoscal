@@ -29,6 +29,9 @@ loud, never silently clamp, never flash. See ``Code/README.md`` § Safety.
 
 from __future__ import annotations
 
+from .audit import Allowance, RawDiffAudit, RawDiffError, raw_diff_audit
+from .journal import EditEntry, Journal
+from .pipeline import BuildFailed, BuildResult, build
 from .profile import (
     Profile,
     ProfileResolutionError,
@@ -38,15 +41,34 @@ from .profile import (
     resolve,
 )
 from .profiles import PROFILES, SC8S50, SWITCH_PATCH_2933
+from .project import BASE_SPACE, PatchSpec, TableSpace, Tune, TuneError
 
 __all__ = [
-    "Profile",
-    "ProfileResolutionError",
-    "ResolvedProfile",
-    "ResolvedTable",
-    "TableSpec",
-    "resolve",
+    # authoring
+    "Tune",
+    "PatchSpec",
+    "build",
+    "BuildResult",
+    "BuildFailed",
+    # profiles
     "PROFILES",
     "SC8S50",
     "SWITCH_PATCH_2933",
+    "Profile",
+    "TableSpec",
+    "resolve",
+    "ResolvedProfile",
+    "ResolvedTable",
+    "ProfileResolutionError",
+    # journal + audit
+    "Journal",
+    "EditEntry",
+    "Allowance",
+    "RawDiffAudit",
+    "raw_diff_audit",
+    # plumbing
+    "BASE_SPACE",
+    "TableSpace",
+    "TuneError",
+    "RawDiffError",
 ]

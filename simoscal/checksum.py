@@ -47,6 +47,7 @@ __all__ = [
     "correct",
     "correction_patches",
     "ranges_overlap",
+    "stored_checksum_ranges",
     "CAL_FILE_OFFSET",
     "CAL_BASE_ADDRESS",
     "CAL_BLOCK_LENGTH",
@@ -263,6 +264,23 @@ def _ecm3_stored_location(data) -> int:
     if data[CAL_FILE_OFFSET + ecm3 + 56] > 0:
         return ecm3 + 56
     return ecm3
+
+
+def stored_checksum_ranges(
+    data: Union[bytes, bytearray],
+) -> list[tuple[str, int, int]]:
+    """Where each checksum's *stored value* lives: ``(name, offset, length)``.
+
+    Full-bin offsets. A byte-level diff of two revisions always finds these
+    changed — they are computed over the calibration, so any real edit moves
+    them — and a consumer needs to say so explicitly rather than treat them as
+    a mystery. Their *correctness* is a separate question, answered by
+    :func:`verify`.
+    """
+    return [
+        ("CAL_CRC", CAL_FILE_OFFSET + CAL_CRC_HEADER + 4, 4),
+        ("ECM3", CAL_FILE_OFFSET + _ecm3_stored_location(data), 8),
+    ]
 
 
 def verify_ecm3(
