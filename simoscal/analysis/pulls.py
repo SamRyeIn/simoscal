@@ -37,6 +37,8 @@ BRIDGE_SAMPLES = 3          # non-WOT samples bridged inside a pull (e.g. a DSG 
 MIN_PULL_DURATION_S = 0.8   # a shorter segment is rejected (blip, not a pull)
 MIN_PULL_SAMPLES = 15       # duration fallback when no time channel is present
 MIN_RPM_SPAN = 800.0        # rpm the pull must sweep to qualify (rejects steady WOT)
+RPM_TAIL_TRIM = 250.0       # trailing samples this far below the pull's peak rpm are
+                            # a shift/lift-out and get trimmed from the window end
 
 PULL_DETECTION_CONSTANTS: dict[str, float] = {
     "pedal_wot_min_pct": PEDAL_WOT_MIN,
@@ -45,6 +47,7 @@ PULL_DETECTION_CONSTANTS: dict[str, float] = {
     "min_pull_duration_s": MIN_PULL_DURATION_S,
     "min_pull_samples": float(MIN_PULL_SAMPLES),
     "min_rpm_span": MIN_RPM_SPAN,
+    "rpm_tail_trim": RPM_TAIL_TRIM,
 }
 
 # The four per-cylinder knock channels, in order.
@@ -216,6 +219,29 @@ def _raw_segments(wot_mask: np.ndarray) -> list[tuple[int, int]]:
 # --------------------------------------------------------------------------- #
 # Detection
 # --------------------------------------------------------------------------- #
+def _trim_shift_tail(lf: LogFile, lo: int, hi: int) -> int:
+    """Pull the window end back past a shift/lift-out at the top of the sweep.
+
+    A WOT pull is a monotonic rpm rise to a redline plateau; when the driver
+    shifts or lifts, rpm collapses while pedal can stay pinned, so the pedal
+    threshold keeps those trailing samples even though they are no longer part
+    of the sweep. (And because the evidence plots sort each pull by rpm, that
+    collapsing tail folds back into the middle of the x-axis as false spikes.)
+    We cut everything after the last sample within :data:`RPM_TAIL_TRIM` of the
+    pull's peak rpm — trimming only the trailing drop, never a mid-sweep dip.
+    """
+    rpm = _slice(lf, "rpm", lo, hi)
+    if rpm is None:
+        return hi
+    finite = np.isfinite(rpm)
+    if not np.any(finite):
+        return hi
+    peak = float(np.max(rpm[finite]))
+    keep = finite & (rpm >= peak - RPM_TAIL_TRIM)
+    idxs = np.flatnonzero(keep)
+    return lo + int(idxs[-1]) if idxs.size else hi
+
+
 def _qualifies(lf: LogFile, lo: int, hi: int) -> bool:
     """Duration and rpm-sweep gate separating a pull from a blip/steady WOT."""
     rpm = _slice(lf, "rpm", lo, hi)
@@ -247,6 +273,7 @@ def detect_pulls(logset: LogSet) -> list[Pull]:
             continue
         wot_mask = np.isfinite(signal) & (signal >= PEDAL_WOT_MIN) & np.isfinite(rpm) & (rpm >= RPM_WOT_MIN)
         for lo, hi in _raw_segments(wot_mask):
+            hi = _trim_shift_tail(lf, lo, hi)   # drop a shift/lift-out at the sweep top
             if not _qualifies(lf, lo, hi):
                 continue
             index += 1

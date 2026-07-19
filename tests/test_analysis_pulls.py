@@ -44,6 +44,44 @@ def _two_pull_columns() -> dict[str, list[float]]:
     return _concat(p1, gap1, p2, gap2)
 
 
+def test_shift_tail_trimmed(tmp_path):
+    """A shift/lift-out (rpm collapsing while pedal stays pinned) is cut off."""
+    n_rise = 50
+    rpm = ramp(3000.0, 6500.0, n_rise) + [6000.0, 5400.0, 4800.0, 4400.0]
+    n = len(rpm)
+    cols = {
+        "Time": [i * 0.05 for i in range(n)],
+        "Engine Speed (rpm)": rpm,
+        "Gear (gear)": const(3.0, n),
+        "Pedal Pos (%)": const(100.0, n),   # pedal stays pinned through the shift
+        "TPS (%)": const(85.0, n),
+    }
+    write_log(tmp_path / "simostools-shift.csv", cols)
+    pulls = detect_pulls(load_logset(tmp_path))
+    assert len(pulls) == 1
+    p = pulls[0]
+    assert p.rpm_max == pytest.approx(6500.0)   # peak retained
+    assert p.n_samples == n_rise                # the 4 collapsing samples trimmed
+    assert p.end_row == n_rise - 1
+
+
+def test_midsweep_dip_preserved(tmp_path):
+    """A dip in the middle of the sweep is real data — only the trailing drop is cut."""
+    rpm = ramp(3000.0, 4500.0, 20) + [4200.0, 4250.0] + ramp(4600.0, 6500.0, 20)
+    n = len(rpm)
+    cols = {
+        "Time": [i * 0.05 for i in range(n)],
+        "Engine Speed (rpm)": rpm,
+        "Gear (gear)": const(3.0, n),
+        "Pedal Pos (%)": const(100.0, n),
+        "TPS (%)": const(85.0, n),
+    }
+    write_log(tmp_path / "simostools-dip.csv", cols)
+    pulls = detect_pulls(load_logset(tmp_path))
+    assert len(pulls) == 1
+    assert pulls[0].n_samples == n               # nothing trimmed; peak is at the end
+
+
 def test_two_clean_pulls_detected(tmp_path):
     cols = _two_pull_columns()
     write_log(tmp_path / "simostools-two.csv", cols)

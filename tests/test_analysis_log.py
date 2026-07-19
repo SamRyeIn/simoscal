@@ -171,6 +171,44 @@ def test_logset_channels_union_and_has(tmp_path):
     assert not ls.has("knock_3")           # not in file 2
 
 
+def test_wheel_speed_channels_load(tmp_path):
+    """The four `Wheel Speed FL/FR/RL/RR (km/h)` columns load unscaled."""
+    cols = clean_pull_columns(wheel_speeds=True)
+    lf = load_logfile(write_log(tmp_path / "simostools-wheels.csv", cols))
+    for cid in ("wheel_fl", "wheel_fr", "wheel_rl", "wheel_rr"):
+        assert lf.has(cid), cid
+    # Unscaled: first-row value matches the km/h ramp start (60.0).
+    assert lf.channel("wheel_fl")[0] == pytest.approx(60.0)
+    assert lf.channel("wheel_rr")[0] == pytest.approx(60.0)
+
+
+def test_wheel_speed_km_per_hr_spelling(tmp_path):
+    """`km/hr` maps with factor 1.0, mirroring vehicle_speed."""
+    n = 5
+    cols = {
+        "Time": ramp(0.0, 0.2, n),
+        "Engine Speed (rpm)": const(3000.0, n),
+        "Wheel Speed FL (km/hr)": const(80.0, n),
+    }
+    lf = load_logfile(write_log(tmp_path / "simostools-kmhr.csv", cols))
+    assert lf.has("wheel_fl")
+    np.testing.assert_allclose(lf.channel("wheel_fl"), 80.0)
+
+
+def test_wheel_speed_unrecognized_unit_left_unmapped(tmp_path):
+    """A wheel-speed column with an unrecognized unit is reported, not guessed."""
+    n = 5
+    cols = {
+        "Time": ramp(0.0, 0.2, n),
+        "Engine Speed (rpm)": const(3000.0, n),
+        "Wheel Speed FL (mph)": const(50.0, n),     # mph not a recognized unit
+    }
+    lf = load_logfile(write_log(tmp_path / "simostools-mph.csv", cols))
+    assert not lf.has("wheel_fl")
+    assert "Wheel Speed FL (mph)" in lf.unmapped_headers
+    assert ("Wheel Speed FL (mph)", "wheel_fl") in lf.quality.unit_unrecognized
+
+
 def test_duplicate_trim_pair_deduped_with_note(tmp_path):
     """A capture and its trimmed re-export (overlapping time) count once."""
     full = clean_pull_columns(n=60, t0=500.0)           # t = 500 .. 502.95

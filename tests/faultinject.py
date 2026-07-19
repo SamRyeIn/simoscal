@@ -30,8 +30,9 @@ class PullSpec:
     freeze: dict[str, float] = field(default_factory=dict)  # exact CSV header -> frozen value
 
 
-def _idle_cols(n: int, t0: float, gear_header: str, dt: float) -> dict[str, list[float]]:
-    cols = clean_pull_columns(n=n, t0=t0, gear_header=gear_header, dt=dt)
+def _idle_cols(n: int, t0: float, gear_header: str, dt: float,
+               extra: dict | None = None) -> dict[str, list[float]]:
+    cols = clean_pull_columns(n=n, t0=t0, gear_header=gear_header, dt=dt, **(extra or {}))
     for k in list(cols):
         if k == "Time":
             continue
@@ -43,11 +44,12 @@ def _idle_cols(n: int, t0: float, gear_header: str, dt: float) -> dict[str, list
 
 
 def _pull_cols(spec: PullSpec, t0: float, *, gear_header: str, airmass_header: str,
-               dt: float) -> dict[str, list[float]]:
+               dt: float, extra: dict | None = None) -> dict[str, list[float]]:
     cols = clean_pull_columns(
         n=spec.n, t0=t0, gear_header=gear_header, gear_value=spec.gear,
         airmass_header=airmass_header, dt=dt,
         put_overshoot=spec.put_overshoot, lambda_error=spec.lambda_error,
+        **(extra or {}),
     )
     for cyl, deg in spec.knock.items():
         cols[f"Knock Cyl {cyl} (°)"] = const(deg, spec.n)
@@ -85,26 +87,35 @@ def build_folder(
     gap_before_pull: int | None = None,
     gap_seconds: float = 2.0,
     filename: str = "simostools-fault.csv",
+    wheel_speeds: bool = False,
+    wastegate: bool = False,
+    ign_table: bool = False,
+    torque_lim: bool = False,
 ) -> InjectedLog:
     """Write a single-CSV folder of ``specs`` pulls separated by idle stretches.
 
     ``gap_before_pull`` (1-based) injects a ``gap_seconds`` time discontinuity
     just before that pull, so a data-quality check can be tested for a gap that
-    overlaps (or precedes) a pull.
+    overlaps (or precedes) a pull. ``wheel_speeds`` / ``wastegate`` / ``ign_table``
+    add the corresponding opt-in channels (see :func:`clean_pull_columns`) to
+    every segment, so the new evidence plots have data to draw.
     """
+    extra = {"wheel_speeds": wheel_speeds, "wastegate": wastegate, "ign_table": ign_table,
+             "torque_lim": torque_lim}
     segments: list[dict[str, list[float]]] = []
     pull_rows: list[tuple[int, int]] = []
     row = 0
     t = 0.0
     for i, spec in enumerate(specs, start=1):
         if i > 1:
-            idle = _idle_cols(idle_between, t, gear_header, dt)
+            idle = _idle_cols(idle_between, t, gear_header, dt, extra)
             segments.append(idle)
             row += idle_between
             t += idle_between * dt
         if gap_before_pull == i:
             t += gap_seconds        # discontinuity in the Time column
-        pull = _pull_cols(spec, t, gear_header=gear_header, airmass_header=airmass_header, dt=dt)
+        pull = _pull_cols(spec, t, gear_header=gear_header, airmass_header=airmass_header,
+                          dt=dt, extra=extra)
         segments.append(pull)
         pull_rows.append((row, row + spec.n - 1))
         row += spec.n

@@ -72,12 +72,24 @@ def clean_pull_columns(
     put_overshoot: float = 0.0,
     knock_cyl3: float = 0.0,
     lambda_error: float = 0.0,
+    wheel_speeds: bool = False,
+    ign_table: bool = False,
+    wastegate: bool = False,
+    torque_lim: bool = False,
 ) -> dict[str, list[float]]:
     """A clean 3rd-gear WOT pull: rpm sweep 3000->6500 with tracking channels.
 
     Optional injections let a check test add a defect on top of the clean base:
     ``put_overshoot`` kPa added to actual PUT, ``knock_cyl3`` deg retard on
     cylinder 3, and ``lambda_error`` added to actual lambda.
+
+    ``wheel_speeds`` adds the four per-wheel channels modeling a mild front-slip
+    event in the middle third of the pull (front-driven, so FL/FR overrun RL/RR),
+    giving the TC-activity plot a visible slip bump to draw. ``ign_table`` adds
+    an ``Ign Table (°)`` reference channel a few degrees above delivered timing.
+    ``wastegate`` adds ``WG Pos Final``/``WG Pos Base`` (final a touch above base)
+    plus ``WG I Value``/``WG P-D Value`` (closed-loop trim terms; the integral sits
+    near zero by default and is driven to a clamp via ``freeze`` in tests).
     """
     time = [t0 + i * dt for i in range(n)]
     rpm = ramp(3000.0, 6500.0, n)
@@ -116,6 +128,30 @@ def clean_pull_columns(
         "Ambient Press (kpa)": const(101.0, n),
         "Eth Content (%)": const(0.0, n),
     }
+    if ign_table:
+        # Table timing sits a few degrees above the delivered average.
+        cols["Ign Table (°)"] = const(11.0, n)
+    if wastegate:
+        cols["WG Pos Base (%)"] = ramp(40.0, 70.0, n)
+        cols["WG Pos Final (%)"] = ramp(45.0, 78.0, n)
+        # A healthy integral sits near zero (small trim); a clamped one is driven
+        # strongly negative. Tests inject the clamp via ``freeze``.
+        cols["WG I Value (%)"] = const(-2.0, n)
+        cols["WG P-D Value (%)"] = const(0.0, n)
+    if torque_lim:
+        # No limiter active by default (code 0); tests inject a code via ``freeze``.
+        cols["Torque Lim ()"] = const(0.0, n)
+    if wheel_speeds:
+        speed = ramp(60.0, 120.0, n)                 # rough vehicle speed over the pull
+        slip = [0.0] * n
+        lo, hi = n // 3, (2 * n) // 3
+        for i in range(lo, hi):
+            slip[i] = 4.0                            # km/h of front over-speed (mild slip)
+        front = [s + sl for s, sl in zip(speed, slip)]
+        cols["Wheel Speed FL (km/h)"] = list(front)
+        cols["Wheel Speed FR (km/h)"] = list(front)
+        cols["Wheel Speed RL (km/h)"] = list(speed)
+        cols["Wheel Speed RR (km/h)"] = list(speed)
     return cols
 
 

@@ -315,7 +315,16 @@ python -m simoscal.analysis --print-battery          # enumerate the battery, ru
 Output contract per folder: `analysis_findings.json` (sorted keys, fixed float
 formatting — byte-identical across identical reruns), `analysis_findings.md`
 (findings by severity, SKIPPED, aligned pull table + environment, coverage,
-battery enumeration), and `plots/analysis_*.png` referenced from findings.
+battery enumeration), and `plots/analysis_*.png`. Evidence plots follow one
+encoding rule — **quantity = line style, pull = color** (each pull an
+RPM-sorted solid line, setpoint/base/table dashed dark gray). The six per-check
+plots (`boost`, `knock`, `lambda`, `rail_pressure`, `turbo_heat`, `wastegate`)
+are referenced from their findings; three standalone plots are additive:
+`ignition` (delivered vs table timing vs RPM), `overview_<log>` (one whole-log
+panel-stack per CSV vs time with detected pull windows shaded), and
+`tc_activity_<log>` (per CSV, inferring the switch-patch slip-based TC — wheel
+slip, ignition, wastegate, torque — skipped when no wheel-speed channel is
+present).
 Thresholds are seeded from the R01/R04 reviews and live as inspectable registry
 data. Acceptance replay (`tests/test_acceptance_analysis.py`) reproduces the
 R01/R04 headline findings with **no false High** — every High the tool emits is

@@ -162,6 +162,15 @@ CHANNEL_SPECS: tuple[ChannelSpec, ...] = (
     _spec("calc_hp", "Calc HP", "hp", {"hp": 1.0}, "Calculated power"),
     _spec("vehicle_speed", "Vehicle Speed", "km/h",
           {"km/h": 1.0, "km/hr": 1.0}, "Vehicle speed"),
+    # Per-wheel speeds — the switch-patch slip-based TC inputs (FWD: front driven).
+    _spec("wheel_fl", "Wheel Speed FL", "km/h",
+          {"km/h": 1.0, "km/hr": 1.0}, "Wheel speed front-left"),
+    _spec("wheel_fr", "Wheel Speed FR", "km/h",
+          {"km/h": 1.0, "km/hr": 1.0}, "Wheel speed front-right"),
+    _spec("wheel_rl", "Wheel Speed RL", "km/h",
+          {"km/h": 1.0, "km/hr": 1.0}, "Wheel speed rear-left"),
+    _spec("wheel_rr", "Wheel Speed RR", "km/h",
+          {"km/h": 1.0, "km/hr": 1.0}, "Wheel speed rear-right"),
 )
 
 # Name (lowercased) -> spec, for header matching.

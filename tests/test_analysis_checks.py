@@ -62,6 +62,7 @@ def test_knock_high_recurs_across_two_pulls(tmp_path):
     assert knock[0].severity == Severity.HIGH
     assert knock[0].evidence["worst_retard_deg"] == pytest.approx(-3.0)
     assert sorted(knock[0].evidence["recurrence_pulls"]) == [1, 2]
+    assert knock[0].evidence["channel_moved"] is True
     # False-alarm: boost stays clean on the same log.
     assert _sev(result, "boost") == Severity.LOW
 
@@ -69,6 +70,14 @@ def test_knock_high_recurs_across_two_pulls(tmp_path):
 def test_knock_watch_band_is_medium(tmp_path):
     result = _run(tmp_path, [PullSpec(knock={2: -2.0})])
     assert _sev(result, "knock") == Severity.MEDIUM
+
+
+def test_knock_flat_zero_carries_liveness_caveat(tmp_path):
+    """All-zero knock across the log is Low but flagged for a PID-liveness check."""
+    result = _run(tmp_path, [PullSpec(), PullSpec()])
+    knock = _by_id(result, "knock")[0]
+    assert knock.severity == Severity.LOW
+    assert knock.evidence["channel_moved"] is False
 
 
 def test_knock_only_on_injected_cylinder(tmp_path):
@@ -107,6 +116,72 @@ def test_boost_high_only_in_injected_pull(tmp_path):
     boost = _by_id(result, "boost")[0]
     assert boost.severity == Severity.HIGH
     assert boost.evidence["high_pulls"] == [2]
+
+
+def test_boost_reports_overshoot_zones(tmp_path):
+    """A sustained overshoot is surfaced as a zone with duration, not just a peak."""
+    result = _run(tmp_path, [PullSpec(put_overshoot=25.0)])
+    boost = _by_id(result, "boost")[0]
+    zones = boost.evidence["zones"]
+    assert zones and zones[0]["sustained"] is True
+    assert zones[0]["peak_kpa"] == pytest.approx(25.0, abs=0.5)
+    assert zones[0]["duration_s"] > 0.5
+
+
+def test_boost_sustained_ridge_high_without_peak(tmp_path):
+    """A long ridge whose mean clears +15 kPa is High even with peak < +20 (audit 3.2)."""
+    result = _run(tmp_path, [PullSpec(put_overshoot=16.0)])
+    boost = _by_id(result, "boost")[0]
+    assert boost.severity == Severity.HIGH
+    assert boost.evidence["peak_overshoot_kpa"] < 20.0
+
+
+# --------------------------------------------------------------------------- #
+# Wastegate authority (audit 3.1 — co-sample, integral-based)
+# --------------------------------------------------------------------------- #
+def test_wastegate_skipped_without_channels(tmp_path):
+    # No wastegate channels logged -> the check cannot run.
+    result = _run(tmp_path, [PullSpec()])
+    assert "wastegate" in [s.check_id for s in result.skipped]
+
+
+def test_wastegate_healthy_is_low(tmp_path):
+    # Boost tracks and the integral sits near zero -> Low, not out-of-authority.
+    result = _run(tmp_path, [PullSpec()], wastegate=True)
+    wg = _by_id(result, "wastegate")
+    assert wg and wg[0].severity == Severity.LOW
+
+
+def test_wastegate_out_of_authority_medium(tmp_path):
+    # Overshoot AND the integral driven to its opening clamp -> Medium.
+    result = _run(tmp_path, [PullSpec(put_overshoot=25.0, freeze={"WG I Value (%)": -30.0})],
+                  wastegate=True)
+    wg = _by_id(result, "wastegate")[0]
+    assert wg.severity == Severity.MEDIUM
+    assert wg.evidence["wg_i_min_during_overshoot_pct"] == pytest.approx(-30.0)
+    assert wg.evidence["worst_overshoot_kpa"] == pytest.approx(25.0, abs=0.5)
+
+
+def test_wastegate_overshoot_with_integral_headroom_is_low(tmp_path):
+    # Overshoot but the integral has headroom (default -2%) -> Low, not a false Medium.
+    result = _run(tmp_path, [PullSpec(put_overshoot=25.0)], wastegate=True)
+    wg = _by_id(result, "wastegate")[0]
+    assert wg.severity == Severity.LOW
+
+
+# --------------------------------------------------------------------------- #
+# Timing / torque-limiter correlation (audit 3.3)
+# --------------------------------------------------------------------------- #
+def test_timing_correlates_torque_limiter_when_knock_clean(tmp_path):
+    result = _run(tmp_path, [PullSpec(put_overshoot=12.0, freeze={"Torque Lim ()": 64.0})],
+                  torque_lim=True)
+    timing = _by_id(result, "timing")[0]
+    assert timing.evidence["knock_active"] is False
+    assert timing.evidence["torque_lim_active"] is True
+    torque = _by_id(result, "torque_limiter")[0]
+    # The limiter window carries its correlated timing/boost state.
+    assert torque.evidence["ign_min_during_limiter_deg"] is not None
+    assert torque.evidence["put_err_during_limiter_kpa"] == pytest.approx(12.0, abs=0.5)
 
 
 # --------------------------------------------------------------------------- #
@@ -163,8 +238,10 @@ def test_boost_cal_skipped_without_bin(tmp_path):
 
 
 def test_boost_cal_runs_with_fake_cal(tmp_path):
+    # Symbol stores hPa; the check converts to kPa (/10). 350000 hPa -> 35000 kPa,
+    # well above the synth setpoint peak (~250 kPa) -> Low with a large margin.
     class FakeView:
-        values = np.array([[260.0, 270.0], [280.0, 250.0]])
+        values = np.array([[349000.0, 350000.0], [348000.0, 347000.0]])
 
     class FakeCal:
         def get(self, symbol):
@@ -173,7 +250,63 @@ def test_boost_cal_runs_with_fake_cal(tmp_path):
     result = _run(tmp_path, [PullSpec()], cal=FakeCal())
     assert "boost_cal" in result.ran
     cal_findings = _by_id(result, "boost_cal")
-    assert cal_findings and cal_findings[0].evidence["ceiling"] == pytest.approx(280.0)
+    assert cal_findings
+    ev = cal_findings[0].evidence
+    assert ev["ceiling_kpa"] == pytest.approx(35000.0)
+    assert cal_findings[0].severity == Severity.LOW           # setpoint well under ceiling
+    assert ev["setpoint_channel"] == "put_sp"                 # map_sp not logged -> falls back
+
+
+def test_boost_cal_flags_setpoint_over_ceiling(tmp_path):
+    # A ceiling of 2000 hPa == 200 kPa; the synth setpoint peaks ~250 kPa -> Medium.
+    class FakeView:
+        values = np.array([2000.0])
+
+    class FakeCal:
+        def get(self, symbol):
+            return FakeView()
+
+    result = _run(tmp_path, [PullSpec()], cal=FakeCal())
+    cal = _by_id(result, "boost_cal")[0]
+    assert cal.severity == Severity.MEDIUM
+    assert cal.evidence["ceiling_kpa"] == pytest.approx(200.0)
+
+
+def test_p0234_runs_with_cal_and_ambient(tmp_path):
+    # Threshold 3000 hPa; synth PUT peaks ~250 kPa, ambient 101 kPa -> diff ~149 kPa
+    # == ~1490 hPa, under 3000 -> Low with a positive margin.
+    class FakeView:
+        values = np.array([3000.0])
+
+    class FakeCal:
+        def get(self, symbol):
+            return FakeView()
+
+    result = _run(tmp_path, [PullSpec()], cal=FakeCal())
+    assert "boost_p0234" in result.ran
+    p = _by_id(result, "boost_p0234")[0]
+    assert p.severity == Severity.LOW
+    assert p.evidence["threshold_hpa"] == pytest.approx(3000.0)
+    assert p.evidence["logged_put_minus_ambient_hpa"] > 0
+
+
+def test_p0234_flags_overboost_exposure(tmp_path):
+    # Threshold 1000 hPa == 100 kPa differential; synth diff ~149 kPa exceeds -> Medium.
+    class FakeView:
+        values = np.array([1000.0])
+
+    class FakeCal:
+        def get(self, symbol):
+            return FakeView()
+
+    result = _run(tmp_path, [PullSpec()], cal=FakeCal())
+    p = _by_id(result, "boost_p0234")[0]
+    assert p.severity == Severity.MEDIUM
+
+
+def test_p0234_skipped_without_bin(tmp_path):
+    result = _run(tmp_path, [PullSpec()], cal=None)
+    assert "boost_p0234" in [s.check_id for s in result.skipped]
 
 
 # --------------------------------------------------------------------------- #
