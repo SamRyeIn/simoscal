@@ -280,6 +280,7 @@ class Tune:
         *,
         intent: str = "",
         verdict: str = VERDICT_SKIPPED,
+        kind: str = KIND_CHECK,
         space: str = BASE_SPACE,
     ) -> EditEntry:
         """Journal something that moved no bytes — a skip, or a check verdict.
@@ -294,8 +295,37 @@ class Tune:
             label, key = f"`{name}`", name
         return self.journal.record(EditEntry(
             space=space, name=name, label=label, key=key,
-            kind=KIND_CHECK, verdict=verdict, intent=intent, detail=detail,
+            kind=kind, verdict=verdict, intent=intent, detail=detail,
         ))
+
+    # -- domain facades -------------------------------------------------------- #
+    def _domain(self, name: str, factory):
+        """Lazily build and cache a domain facade, so ``tune.boost`` is stable."""
+        existing = self._domains.get(name)
+        if existing is None:
+            existing = self._domains[name] = factory(self)
+        return existing
+
+    @property
+    def boost(self):
+        """Boost setpoints and the caps that can defeat them."""
+        from .domains.boost import Boost
+
+        return self._domain("boost", Boost)
+
+    @property
+    def wastegate(self):
+        """Wastegate position feedforward (both VVL maps, always together)."""
+        from .domains.wastegate import Wastegate
+
+        return self._domain("wastegate", Wastegate)
+
+    @property
+    def limits(self):
+        """Limiter ceilings, including the kg/stk airmass cap."""
+        from .domains.limits import Limits
+
+        return self._domain("limits", Limits)
 
     # -- saving --------------------------------------------------------------- #
     def save(self, path: Union[str, Path], *, correct_checksums: bool = True) -> list:

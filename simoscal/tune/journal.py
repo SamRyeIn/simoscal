@@ -58,10 +58,6 @@ VERDICT_GUARDED_SKIP = "guarded_skip"    # a guard declined to lower/alter a val
 VERDICT_BLOCKED = "blocked"              # a guard rejected the write outright
 VERDICT_SKIPPED = "skipped"              # deliberately not done; reason recorded
 
-#: Verdicts under which bytes may have moved, and so which the audit and the
-#: readback must account for.
-TOUCHING_VERDICTS = frozenset({VERDICT_APPLIED})
-
 _ORDER = (
     VERDICT_APPLIED,
     VERDICT_UNCHANGED,
@@ -125,7 +121,14 @@ class EditEntry:
 
     @property
     def touched_bytes(self) -> bool:
-        return self.verdict in TOUCHING_VERDICTS and self.kind != KIND_CHECK
+        """Whether this entry moved bytes — measured, not claimed.
+
+        Keyed off the measured offsets rather than the verdict, so the only
+        entries the audit and readback take responsibility for are the ones
+        that demonstrably changed the buffer. A patch application, a skip, and
+        a check all fall out naturally.
+        """
+        return bool(self.offsets)
 
     @property
     def cells_changed(self) -> int:
