@@ -43,7 +43,13 @@ from ..model import SimosCalError
 from ..plot import TableMismatchError, compare_tables
 from ..render import render_table
 from . import audit
-from .journal import EditEntry, Journal
+from .journal import (
+    KIND_CHECK,
+    VERDICT_BLOCKED,
+    VERDICT_UNCHANGED,
+    EditEntry,
+    Journal,
+)
 from .project import BASE_SPACE, Tune
 
 __all__ = ["BuildFailed", "BuildResult", "build"]
@@ -150,6 +156,22 @@ def build(
     for finding in coherence:
         if finding.severity == "DO NOT FLASH":
             problems.append(f"recipe coherence: {finding.message}")
+
+    # 3b. gates that only the finished file can answer ---------------------- #
+    for check in tune.post_checks:
+        try:
+            passed, detail = check.run(bin_path)
+        except Exception as exc:  # noqa: BLE001 - a gate that cannot run is a failure
+            passed, detail = False, f"check raised {type(exc).__name__}: {exc}"
+        tune.journal.record(EditEntry(
+            space=BASE_SPACE, name=check.name, label=f"**{check.name}**",
+            key="", kind=KIND_CHECK,
+            verdict=VERDICT_UNCHANGED if passed else VERDICT_BLOCKED,
+            intent=check.description or "post-save verification",
+            detail=f"{'PASS' if passed else 'FAIL'} — {detail}",
+        ))
+        if not passed:
+            problems.append(f"{check.name} failed: {detail}")
 
     # 4. raw-diff audit vs the declared reference --------------------------- #
     diff: Optional[audit.RawDiffAudit] = None

@@ -21,6 +21,9 @@ from .boost import Boost
 from .fueling import Fueling
 from .ignition import Ignition
 from .limits import Limits
+from .switchpatch import SwitchPatch
 from .wastegate import Wastegate
 
-__all__ = ["Boost", "Fueling", "Ignition", "Limits", "Wastegate"]
+__all__ = [
+    "Boost", "Fueling", "Ignition", "Limits", "SwitchPatch", "Wastegate",
+]

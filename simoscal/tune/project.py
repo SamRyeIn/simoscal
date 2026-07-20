@@ -25,7 +25,7 @@ import tempfile
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Optional, Sequence, Union
+from typing import Callable, Iterable, Mapping, Optional, Sequence, Union
 
 import numpy as np
 
@@ -50,7 +50,9 @@ from .journal import (
 from .profile import Profile, ResolvedProfile, ResolvedTable
 from .profile import resolve as resolve_profile
 
-__all__ = ["BASE_SPACE", "PatchSpec", "TableSpace", "Tune", "TuneError"]
+__all__ = [
+    "BASE_SPACE", "PatchSpec", "PostCheck", "TableSpace", "Tune", "TuneError",
+]
 
 #: Name of the space a tune's primary (OEM) XDF occupies.
 BASE_SPACE = "base"
@@ -58,6 +60,20 @@ BASE_SPACE = "base"
 
 class TuneError(SimosCalError):
     """A tune could not be opened or edited as declared."""
+
+
+@dataclass(frozen=True)
+class PostCheck:
+    """A gate that can only be answered by the finished file.
+
+    ``run`` takes the saved bin's path and returns ``(passed, detail)``. Some
+    verifications — does the switch patch still load and decode? — are about
+    the artifact rather than any single table, and staging cannot answer them.
+    """
+
+    name: str
+    run: Callable[[Path], tuple[bool, str]]
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -97,6 +113,10 @@ class Tune:
         self.journal = journal if journal is not None else Journal()
         #: Set by :meth:`apply_basics_sop`; ``build()`` runs its coherence rules.
         self.recipe_report = None
+        #: Gates that can only be evaluated on the finished file — patch
+        #: sanity, for one. Domains register them; ``build()`` runs them after
+        #: saving and treats a failure as a failed build.
+        self.post_checks: list[PostCheck] = []
         self._domains: dict[str, object] = {}
 
     # -- construction -------------------------------------------------------- #
@@ -335,6 +355,13 @@ class Tune:
         from .domains.fueling import Fueling
 
         return self._domain("fueling", Fueling)
+
+    @property
+    def switchpatch(self):
+        """BinToolz switch-patch slots: per-slot boost caps and TC flags."""
+        from .domains.switchpatch import SwitchPatch
+
+        return self._domain("switchpatch", SwitchPatch)
 
     @property
     def ignition(self):
