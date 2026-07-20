@@ -144,6 +144,13 @@ def build(
         blocked = ", ".join(e.label for e in tune.journal.blocked())
         problems.append(f"guard blocked an intended write: {blocked}")
 
+    # The SOP's coherence rules, when the recipe ran — they catch a boost
+    # change shipped without the matching fuelling, which no per-table gate can.
+    coherence = tune.recipe_report.coherence() if tune.recipe_report else []
+    for finding in coherence:
+        if finding.severity == "DO NOT FLASH":
+            problems.append(f"recipe coherence: {finding.message}")
+
     # 4. raw-diff audit vs the declared reference --------------------------- #
     diff: Optional[audit.RawDiffAudit] = None
     if reference_bin is not None:
@@ -194,11 +201,14 @@ def _readback(tune: Tune, bin_path: Path) -> tuple[str, ...]:
     """
     failures: list[str] = []
     caches: dict[str, CalFile] = {}
-    latest: dict[tuple[str, str], EditEntry] = {}
+    # Keyed on the XDF key, not the logical name: one table can be journaled
+    # under both (a domain call names it logically, the basics SOP names it by
+    # symbol), and only the last write to it describes the saved bin.
+    latest: dict[tuple[str, object], EditEntry] = {}
     for entry in tune.journal.touching():
-        latest[(entry.space, entry.name)] = entry
+        latest[(entry.space, entry.key)] = entry
 
-    for (space_name, name), entry in latest.items():
+    for (space_name, _key), entry in latest.items():
         space = tune.space(space_name)
         cal = caches.get(space_name)
         if cal is None:
@@ -206,7 +216,10 @@ def _readback(tune: Tune, bin_path: Path) -> tuple[str, ...]:
         expected = entry.after
         if expected is None:
             continue
-        actual = np.asarray(cal.get(space.tables[name].spec.key).values, dtype=np.float64)
+        # Resolve by the recorded XDF key rather than the logical name: the
+        # basics SOP reaches tables the profile does not map, and they still
+        # have to be read back.
+        actual = np.asarray(cal.get(entry.key).values, dtype=np.float64)
         if actual.shape != expected.shape:
             failures.append(
                 f"{entry.label}: read back shape {actual.shape}, expected "
@@ -215,8 +228,8 @@ def _readback(tune: Tune, bin_path: Path) -> tuple[str, ...]:
         elif not np.allclose(actual, expected, rtol=0, atol=READBACK_ATOL):
             worst = int(np.argmax(np.abs(actual - expected)))
             failures.append(
-                f"{entry.label}: read back {actual.ravel()[worst]:.6g} where "
-                f"{expected.ravel()[worst]:.6g} was written"
+                f"{entry.label}: saved bin reads {actual.ravel()[worst]:.6g} "
+                f"where the journal recorded {expected.ravel()[worst]:.6g}"
             )
     return tuple(failures)
 
@@ -233,12 +246,11 @@ def _compare_plots(
     paths: list[Path] = []
     before_cals: dict[str, CalFile] = {}
     after_cals: dict[str, CalFile] = {}
-    for space_name, name in tune.journal.tables_touched():
+    for space_name, key in tune.journal.tables_touched():
         space = tune.space(space_name)
         if space_name not in before_cals:
             before_cals[space_name] = CalFile.open(str(space.xdf), str(reference_bin))
             after_cals[space_name] = CalFile.open(str(space.xdf), str(bin_path))
-        key = space.tables[name].spec.key
         try:
             paths.extend(compare_tables(
                 render_table(before_cals[space_name].get(key)),

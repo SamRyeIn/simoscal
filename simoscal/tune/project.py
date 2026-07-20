@@ -95,6 +95,8 @@ class Tune:
         self.spaces: dict[str, TableSpace] = dict(spaces)
         self.patch_results = tuple(patch_results)
         self.journal = journal if journal is not None else Journal()
+        #: Set by :meth:`apply_basics_sop`; ``build()`` runs its coherence rules.
+        self.recipe_report = None
         self._domains: dict[str, object] = {}
 
     # -- construction -------------------------------------------------------- #
@@ -326,6 +328,31 @@ class Tune:
         from .domains.limits import Limits
 
         return self._domain("limits", Limits)
+
+    @property
+    def fueling(self):
+        """Lambda setpoint grids, their shared axes, and the enrichment floors."""
+        from .domains.fueling import Fueling
+
+        return self._domain("fueling", Fueling)
+
+    @property
+    def ignition(self):
+        """Base timing, addressed by ``(rpm, load)`` the way logs report knock."""
+        from .domains.ignition import Ignition
+
+        return self._domain("ignition", Ignition)
+
+    def apply_basics_sop(self, *, space: str = BASE_SPACE, **kwargs):
+        """Apply the whole ``ecu-tuning-basics`` SOP, journaled per table.
+
+        The bulk pass every revision since R00 starts from. Its outcomes are
+        folded into the journal with each changed byte attributed to the table
+        that owns it, so the recipe's writes are audited like any other.
+        """
+        from .sop_bridge import apply_basics_sop as _apply
+
+        return _apply(self, space=space, **kwargs)
 
     # -- saving --------------------------------------------------------------- #
     def save(self, path: Union[str, Path], *, correct_checksums: bool = True) -> list:

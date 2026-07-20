@@ -220,18 +220,30 @@ class Journal:
         }
 
     def blocked(self) -> tuple[EditEntry, ...]:
-        """Entries a guard rejected — a build gate, not just a report row."""
-        return tuple(e for e in self._entries if e.verdict == VERDICT_BLOCKED)
+        """Directly-authored writes a guard rejected — a build gate.
 
-    def tables_touched(self) -> tuple[tuple[str, str], ...]:
-        """``(space, logical name)`` per byte-touching entry, de-duplicated.
-
-        The readback set: every table the build must re-read off the saved bin
-        and compare against its recorded ``after``.
+        Excludes recipe entries (:data:`KIND_SOP`). The basics SOP is a bulk
+        pass over the whole guide and is *expected* to hit guards on tables a
+        revision then writes deliberately by another route; failing the build
+        on those would make the recipe unusable. A guard rejecting a call the
+        author wrote by hand is different — that intent did not happen, and the
+        build must not pretend otherwise.
         """
-        seen: dict[tuple[str, str], None] = {}
+        return tuple(
+            e for e in self._entries
+            if e.verdict == VERDICT_BLOCKED and e.kind != KIND_SOP
+        )
+
+    def tables_touched(self) -> tuple[tuple[str, Union[str, int]], ...]:
+        """``(space, XDF key)`` per byte-touching entry, de-duplicated.
+
+        Keyed on the XDF key rather than the logical name, because one table
+        can be journaled under both — a domain call names it logically, the
+        basics SOP names it by symbol — and it is still one table.
+        """
+        seen: dict[tuple[str, Union[str, int]], None] = {}
         for entry in self.touching():
-            seen.setdefault((entry.space, entry.name), None)
+            seen.setdefault((entry.space, entry.key), None)
         return tuple(seen)
 
     def changed_offsets(self) -> frozenset[int]:

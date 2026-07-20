@@ -18,7 +18,9 @@ Reached as attributes of a tune: ``tune.boost``, ``tune.wastegate``,
 from __future__ import annotations
 
 from .boost import Boost
+from .fueling import Fueling
+from .ignition import Ignition
 from .limits import Limits
 from .wastegate import Wastegate
 
-__all__ = ["Boost", "Limits", "Wastegate"]
+__all__ = ["Boost", "Fueling", "Ignition", "Limits", "Wastegate"]

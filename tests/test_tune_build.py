@@ -93,7 +93,26 @@ def test_journal_counts_and_touching_partition_entries() -> None:
     assert journal.touching() == (applied,)
     assert journal.blocked() == (blocked,)
     assert journal.changed_offsets() == frozenset({1, 2})
-    assert journal.tables_touched() == (("base", "a"),)
+    # Keyed on the XDF key, not the logical name — one table can be journaled
+    # under both, and the readback must treat it as one table.
+    assert journal.tables_touched() == (("base", "A"),)
+
+
+def test_one_table_journaled_under_two_names_is_still_one_table() -> None:
+    """A domain call names a table logically; the SOP names it by symbol."""
+    journal = Journal()
+    journal.record(EditEntry(
+        space="base", name="put_setpoint", label="`IP_PUT_SP` — …",
+        key="IP_PUT_SP", kind=KIND_TABLE, verdict=VERDICT_APPLIED,
+        offsets=frozenset({10}),
+    ))
+    journal.record(EditEntry(
+        space="base", name="IP_PUT_SP", label="`IP_PUT_SP` — …",
+        key="IP_PUT_SP", kind=KIND_TABLE, verdict=VERDICT_APPLIED,
+        offsets=frozenset({11}),
+    ))
+
+    assert journal.tables_touched() == (("base", "IP_PUT_SP"),)
 
 
 # --------------------------------------------------------------------------- #
