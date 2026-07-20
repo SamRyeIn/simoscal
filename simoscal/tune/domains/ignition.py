@@ -15,8 +15,6 @@ from __future__ import annotations
 
 from typing import Mapping, Sequence
 
-import numpy as np
-
 from ..journal import EditEntry
 from ..profiles.sc8s50 import IGNITION_BASE_VVL0
 from ._common import Domain, nearest_index

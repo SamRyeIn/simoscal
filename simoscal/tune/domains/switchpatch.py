@@ -31,7 +31,7 @@ from typing import Iterable, Optional, Sequence, Union
 import numpy as np
 
 from ... import btp
-from ..journal import KIND_AXIS, KIND_CHECK, VERDICT_APPLIED, VERDICT_SKIPPED, EditEntry
+from ..journal import KIND_AXIS, KIND_CHECK, VERDICT_SKIPPED, EditEntry
 from ..profiles.switchpatch_2933 import (
     SLOT_AXIS_HEADER_VALUE,
     SLOT_DEFAULT_HPA,

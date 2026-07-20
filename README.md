@@ -77,6 +77,68 @@ for r in reports:
   flash externally                SimosTools / VW_Flash  ← NOT this library
 ```
 
+## Authoring a revision — `simoscal.tune`
+
+Everything above is the substrate. **`simoscal.tune` is the layer you actually
+write a tune revision in**, and it is where you should start if your goal is to
+change a calibration rather than to build a tool.
+
+A revision is one flat, self-contained script: it declares the whole calibration
+in physical units through domain-level calls, then hands the entire verification
+pipeline to a single `build()`.
+
+```python
+from simoscal.tune import SC8S50, Tune, build
+
+tune = Tune.open(SC8S50, xdf=XDF_PATH, bin=STOCK_BIN)
+
+tune.apply_basics_sop()                         # the whole ecu-tuning-basics SOP
+tune.boost.put_ceiling_psi(30.0)                # full-load row only
+tune.wastegate.overlay({(7, 14): -0.06})        # both VVL maps, identical deltas
+tune.limits.airmass_cap_mg(2000)                # mg/stk in, kg/stk stored
+
+result = build(tune, "R14", out_root=OUT_ROOT, reference_bin=PREVIOUS_BIN)
+```
+
+That produces the standard artifact set — saved bin, `report.md`, `compare/`
+PNGs — with every gate run: checksums corrected and independently verified,
+every edited table read back off the saved file, and a **byte-level audit**
+against the previous revision.
+
+**→ Full walkthrough: [`docs/authoring-a-revision.md`](docs/authoring-a-revision.md)**
+— how to write your first revision, the complete domain-call reference, and how
+to add a profile for a different Simos 18 XDF.
+
+Three properties are what make this safe to hand to someone with no simoscal
+history:
+
+1. **Every edit is journaled.** A domain call moves bytes *and* records a typed
+   entry — logical name, resolved `` `ID` — Description ``, units, before/after
+   values, guard verdict. `report.md` is rendered *from* that journal, so it
+   cannot drift from what the code did.
+2. **The byte audit is driven by the journal.** The allowance set comes from the
+   edits that were recorded, so a change made outside the journal shows up as
+   *unexplained bytes* and fails the build. Forgetting to declare something is
+   loud rather than silent.
+3. **Table references go through a profile.** Logical names resolve against an
+   explicit per-XDF map, exactly — never fuzzily. A name that does not resolve
+   fails before any bin is opened, listing every miss with suggestions.
+
+Safety-critical unit handling lives in the library rather than in each script,
+so the traps are unavailable rather than merely documented:
+
+| Trap | How the API removes it |
+|------|------------------------|
+| `C_M_AIR_CYL_SP_MAX` — Maximum allowed airmass setpoint stores **kg/stk** behind an mg/stk label; writing `2000` removes the limiter | `limits.airmass_cap_mg(2000)` takes mg/stk and writes `0.002`; a sub-1.0 argument is rejected as a raw value passed by mistake |
+| A psi→hPa boost cap that rounds **up** encodes above the number you asked for | `switchpatch.slot_curve(5, psi=10.0)` floors — 1705 hPa, never 1706 |
+| Timing pulled from only some cam-position grids leaves the knock cell reachable | `ignition.retard_cells(...)` writes all nine by default |
+| A lambda grid written against the wrong breakpoints is lean at full load | `fueling.lambda_grid(...)` refuses unless the declared breakpoints match the table's live axes |
+| A per-slot boost cap above the base ceiling is capped by the base instead | `switchpatch.slot_curve(...)` checks against the live base table and refuses |
+
+`Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R13.py` is the worked example: the
+complete R00–R12 calibration in one page of domain calls, verified byte-identical
+to the hand-written R12 output (`tests/test_acceptance_tune.py`).
+
 ## API surface
 
 ### `CalFile`
@@ -399,6 +461,7 @@ cd Code
 ./.venv/bin/python -m pytest tests/test_acceptance_sop.py -v      # AE1–AE5 (SOP tune recipe)
 ./.venv/bin/python -m pytest tests/test_acceptance_btp.py -v      # AE1–AE7 (BTP patching)
 ./.venv/bin/python -m pytest tests/test_acceptance_analysis.py -v # R01/R04 log-analysis replay
+./.venv/bin/python -m pytest tests/test_acceptance_tune.py -v     # AE1 (R13 ≡ R12, byte-identical)
 ```
 
 `test_btp.py` (synthetic fixtures) and `test_acceptance_btp.py` (real files) skip
