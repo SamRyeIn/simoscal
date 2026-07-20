@@ -112,6 +112,56 @@ def golden_multipatch() -> dict:
     }
 
 
+# Frozen output bins from the R00–R12 revision lineage. The tune-API domain
+# modules are distilled from those revisions' private helpers, so the strongest
+# check available is that a domain call reproduces the table the corresponding
+# historical revision actually produced. They live in the root repo, are
+# gitignored, and may be absent → the fixture SKIPS rather than fails.
+TUNES_OUT = PROJECT_ROOT / "Tunes" / "TuningBasicsGuide" / "TUNE_Basics_Guide_out"
+_PLAIN = "5G0906259L_0002_BasicsGuide_R{}.bin"
+_PATCHED = "CB_HSL_SP2933_5G0906259L_0002_BasicsGuide_R{}.bin"
+HISTORICAL_BINS = {
+    "R07": TUNES_OUT / "R07_20260711-223757" / _PLAIN.format("07"),
+    "R08": TUNES_OUT / "R08_20260712-170312" / _PLAIN.format("08"),
+    "R09": TUNES_OUT / "R09_20260712-213556" / _PLAIN.format("09"),
+    "R10": TUNES_OUT / "R10_20260713-000102" / _PATCHED.format("10"),
+    "R11": TUNES_OUT / "R11_20260713-112124" / _PATCHED.format("11"),
+    "R12": TUNES_OUT / "R12_20260715-165615" / _PATCHED.format("12"),
+}
+
+
+@pytest.fixture(scope="session")
+def historical_bins() -> dict:
+    """``{"R07": Path, …}`` for the frozen revision outputs; skips if any absent."""
+    missing = [rev for rev, path in HISTORICAL_BINS.items() if not path.is_file()]
+    if missing:
+        pytest.skip(f"historical revision bins absent: {', '.join(sorted(missing))}")
+    return dict(HISTORICAL_BINS)
+
+
+# Human-reviewed log folders for the analysis acceptance replay (plan U6). They
+# live in the root repo (not the Code/ checkout) and may be absent, so the
+# fixtures SKIP rather than fail.
+ANALYSIS_R01_DIR = PROJECT_ROOT / "Logs" / "BasicsGuide_R01"
+ANALYSIS_R04_DIR = PROJECT_ROOT / "Logs" / "BasicsGuide_R04"
+
+
+@pytest.fixture(scope="session")
+def r01_log_dir() -> Path:
+    """The human-reviewed R01 log folder; skips if absent from a lean checkout."""
+    if not ANALYSIS_R01_DIR.is_dir():
+        pytest.skip(f"R01 log folder not present: {ANALYSIS_R01_DIR}")
+    return ANALYSIS_R01_DIR
+
+
+@pytest.fixture(scope="session")
+def r04_log_dir() -> Path:
+    """The human-reviewed R04 log folder; skips if absent from a lean checkout."""
+    if not ANALYSIS_R04_DIR.is_dir():
+        pytest.skip(f"R04 log folder not present: {ANALYSIS_R04_DIR}")
+    return ANALYSIS_R04_DIR
+
+
 @pytest.fixture(scope="session")
 def real_xdf() -> Path:
     """Path to the real SC8S50 XDF; skips the test if it is not present."""

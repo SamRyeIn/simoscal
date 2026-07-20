@@ -21,35 +21,39 @@ in place as they are fixed or dismissed.
 
 ## Findings index
 
-| ID             | Severity | Verdict   | File                                            | Summary                                                                    | Status             |
-|----------------|----------|-----------|-------------------------------------------------|----------------------------------------------------------------------------|--------------------|
-| CR-20260706-01 | High     | CONFIRMED | tests/test_acceptance.py                        | AE3 diff blind to appended bytes; no length assert on edited save          | Open               |
-| CR-20260706-02 | High     | CONFIRMED | tests/conftest.py                               | Safety suite is skip-if-absent with no way to force a non-skipped run      | Open               |
-| CR-20260706-03 | High     | CONFIRMED | tests/test_acceptance.py                        | AE3 offset math ignores `base_subtract`                                    | Open               |
-| CR-20260706-04 | High     | CONFIRMED | tests/test_acceptance.py                        | AE1 tolerance is unbounded and controlled by the capture under test        | Open               |
-| CR-20260706-05 | Medium   | CONFIRMED | tests/test_acceptance.py                        | AE4 precondition unsound for declared max in [120, 127)                    | Open               |
-| CR-20260706-06 | High     | CONFIRMED | README.md                                       | Quick-start paths do not resolve from the documented cwd                   | Open               |
-| CR-20260706-07 | Medium   | CONFIRMED | README.md                                       | Quick-start example writes out-of-range value, fires EditRangeWarning      | Open               |
-| CR-20260706-08 | Medium   | CONFIRMED | tests/conftest.py                               | `real_cal` fixture silently shadowed by test_read.py module fixture        | Open               |
-| CR-20260706-09 | Medium   | CONFIRMED | tests/test_acceptance.py                        | AE2/AE3/AE5 duplicate pre-existing tests near-verbatim                     | Open               |
-| CR-20260706-10 | Medium   | PLAUSIBLE | tests/test_acceptance.py                        | int8 wraparound in AE3 whole-table `+1` before clip                        | Open               |
-| CR-20260706-11 | Low      | PLAUSIBLE | tests/test_acceptance.py                        | AE4 asserts on `rec[0]` without filtering warning category                 | Open               |
-| CR-20260706-12 | Low      | PLAUSIBLE | tests/conftest.py                               | Oracle JSON read without `utf-8-sig`; Windows BOM fails a valid capture    | Open               |
-| CR-20260706-13 | Low      | CONFIRMED | tests/fixtures/README.md                        | mini.xdf documented as 3 tables; it contains 4                             | Open               |
-| CR-20260706-14 | Low      | CONFIRMED | tests/conftest.py                               | `requires_real_files` marker is dead code (fifth copy of the guard)        | Open               |
-| CR-20260706-15 | Low      | CONFIRMED | tests/test_acceptance.py                        | No guard pins ORACLE_ID identity/shape/dtype                               | Open               |
-| CR-20260706-16 | Low      | CONFIRMED | tests/ (multiple)                               | Oracle JSON schema exists in three uncoordinated copies                    | Open               |
-| CR-20260706-17 | Low      | CONFIRMED | tests/test_acceptance.py                        | Redundant `checked` counter duplicates fixture guard                       | Open               |
-| CR-20260706-18 | Low      | CONFIRMED | README.md                                       | AE gating story told in three prose locations                              | Open               |
-| CR-20260706-19 | Low      | CONFIRMED | tests/ (multiple)                               | ~2.5 s/run avoidable XDF re-parsing and slow Python byte-diff loops        | Open               |
-| CR-20260706-20 | Low      | CONFIRMED | tests/fixtures/README.md                        | AE1 capture procedure relies on error-prone hand transcription             | Open               |
-| CR-20260706-21 | High     | CONFIRMED | simoscal/codec.py                               | 2D table decode uses row-major reshape against column-major on-bin data    | Fixed (2026-07-06) |
-| CR-20260706-22 | High     | CONFIRMED | simoscal/xdf.py                                 | mmedtypeflags sign bit inverted for at least three real int16/int32 tables | Fixed (2026-07-06) |
-| CR-20260707-01 | Medium   | PLAUSIBLE | simoscal/sop_recipe.py                          | Multi-cell writers leave a table partly written if a guard trips mid-loop  | Fixed (2026-07-07) |
-| CR-20260707-02 | Low      | CONFIRMED | simoscal/sop_recipe.py                          | Vestigial row_idx/col_idx locals only None-checked in _apply_literal_table | Fixed (2026-07-07) |
-| CR-20260707-03 | High     | CONFIRMED | Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R01.py | Max allowed airmass written as TunerPro workaround value, not physical 2000 | Dismissed (invalid) |
-| CR-20260707-04 | Medium   | CONFIRMED | Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R01.py | Merged report shows R01-covered guide items as both applied and skipped    | Fixed (2026-07-07) |
-| CR-20260707-05 | Medium   | CONFIRMED | Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R01.py | Coherence-passed banner hides unresolved in-scope guide fueling items      | Open               |
+| ID             | Severity | Verdict   | File                                                | Summary                                                                     | Status              |
+|----------------|----------|-----------|-----------------------------------------------------|-----------------------------------------------------------------------------|---------------------|
+| CR-20260706-01 | High     | CONFIRMED | tests/test_acceptance.py                            | AE3 diff blind to appended bytes; no length assert on edited save           | Open                |
+| CR-20260706-02 | High     | CONFIRMED | tests/conftest.py                                   | Safety suite is skip-if-absent with no way to force a non-skipped run       | Open                |
+| CR-20260706-03 | High     | CONFIRMED | tests/test_acceptance.py                            | AE3 offset math ignores `base_subtract`                                     | Open                |
+| CR-20260706-04 | High     | CONFIRMED | tests/test_acceptance.py                            | AE1 tolerance is unbounded and controlled by the capture under test         | Open                |
+| CR-20260706-05 | Medium   | CONFIRMED | tests/test_acceptance.py                            | AE4 precondition unsound for declared max in [120, 127)                     | Open                |
+| CR-20260706-06 | High     | CONFIRMED | README.md                                           | Quick-start paths do not resolve from the documented cwd                    | Open                |
+| CR-20260706-07 | Medium   | CONFIRMED | README.md                                           | Quick-start example writes out-of-range value, fires EditRangeWarning       | Open                |
+| CR-20260706-08 | Medium   | CONFIRMED | tests/conftest.py                                   | `real_cal` fixture silently shadowed by test_read.py module fixture         | Open                |
+| CR-20260706-09 | Medium   | CONFIRMED | tests/test_acceptance.py                            | AE2/AE3/AE5 duplicate pre-existing tests near-verbatim                      | Open                |
+| CR-20260706-10 | Medium   | PLAUSIBLE | tests/test_acceptance.py                            | int8 wraparound in AE3 whole-table `+1` before clip                         | Open                |
+| CR-20260706-11 | Low      | PLAUSIBLE | tests/test_acceptance.py                            | AE4 asserts on `rec[0]` without filtering warning category                  | Open                |
+| CR-20260706-12 | Low      | PLAUSIBLE | tests/conftest.py                                   | Oracle JSON read without `utf-8-sig`; Windows BOM fails a valid capture     | Open                |
+| CR-20260706-13 | Low      | CONFIRMED | tests/fixtures/README.md                            | mini.xdf documented as 3 tables; it contains 4                              | Open                |
+| CR-20260706-14 | Low      | CONFIRMED | tests/conftest.py                                   | `requires_real_files` marker is dead code (fifth copy of the guard)         | Open                |
+| CR-20260706-15 | Low      | CONFIRMED | tests/test_acceptance.py                            | No guard pins ORACLE_ID identity/shape/dtype                                | Open                |
+| CR-20260706-16 | Low      | CONFIRMED | tests/ (multiple)                                   | Oracle JSON schema exists in three uncoordinated copies                     | Open                |
+| CR-20260706-17 | Low      | CONFIRMED | tests/test_acceptance.py                            | Redundant `checked` counter duplicates fixture guard                        | Open                |
+| CR-20260706-18 | Low      | CONFIRMED | README.md                                           | AE gating story told in three prose locations                               | Open                |
+| CR-20260706-19 | Low      | CONFIRMED | tests/ (multiple)                                   | ~2.5 s/run avoidable XDF re-parsing and slow Python byte-diff loops         | Open                |
+| CR-20260706-20 | Low      | CONFIRMED | tests/fixtures/README.md                            | AE1 capture procedure relies on error-prone hand transcription              | Open                |
+| CR-20260706-21 | High     | CONFIRMED | simoscal/codec.py                                   | 2D table decode uses row-major reshape against column-major on-bin data     | Fixed (2026-07-06)  |
+| CR-20260706-22 | High     | CONFIRMED | simoscal/xdf.py                                     | mmedtypeflags sign bit inverted for at least three real int16/int32 tables  | Fixed (2026-07-06)  |
+| CR-20260707-01 | Medium   | PLAUSIBLE | simoscal/sop_recipe.py                              | Multi-cell writers leave a table partly written if a guard trips mid-loop   | Fixed (2026-07-07)  |
+| CR-20260707-02 | Low      | CONFIRMED | simoscal/sop_recipe.py                              | Vestigial row_idx/col_idx locals only None-checked in _apply_literal_table  | Fixed (2026-07-07)  |
+| CR-20260707-03 | High     | CONFIRMED | Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R01.py    | Max allowed airmass written as TunerPro workaround value, not physical 2000 | Dismissed (invalid) |
+| CR-20260707-04 | Medium   | CONFIRMED | Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R01.py    | Merged report shows R01-covered guide items as both applied and skipped     | Fixed (2026-07-07)  |
+| CR-20260707-05 | Medium   | CONFIRMED | Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R01.py    | Coherence-passed banner hides unresolved in-scope guide fueling items       | Open                |
+| CR-20260720-01 | High     | CONFIRMED | simoscal/tune/pipeline.py                           | Unverifiable checksums are reported CLEAN and do not fail the build         | Fixed (2026-07-20)  |
+| CR-20260720-02 | High     | CONFIRMED | simoscal/tune/project.py                            | Intentional restoration to stock fails as unexplained bytes                 | Fixed (2026-07-20)  |
+| CR-20260720-03 | Medium   | CONFIRMED | pyproject.toml                                      | Installed distributions omit all tune domain modules                        | Fixed (2026-07-20)  |
+| CR-20260720-04 | Medium   | CONFIRMED | ../Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R13.py | R13 template omits the required explicit intent on most domain calls        | Fixed (2026-07-20)  |
 
 ---
 
@@ -790,3 +794,196 @@ items lower in the report. Left Open pending that wording/section change.
   axis mismatch for the recipe-targeted HPDI/MPI tables and writes the third
   shared table, `IP_LAMB_BAS[1]` — Basic lambda setpoint, to keep the shared-axis
   family coherent.
+
+---
+
+## Review 2026-07-20 — human-friendly tune API (`simoscal.tune`) and R13
+
+- **Scope:** the seven implementation units on `feat/human-friendly-tune-api`
+  relative to `Code` commit `2b2eff6`, plus
+  `Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R13.py` in the root repository.
+  The requirements and completed plan were reviewed alongside the surrounding
+  calibration, checksum, patch, packaging, and test code.
+- **Method:** inspected both repository histories and diffs, traced profile
+  resolution, journaling, checksum/save/readback, raw-diff attribution, domain
+  calls, and switch-patch handling; ran the complete test suite; and executed
+  focused reproductions for the previous-revision restoration and unverifiable-
+  checksum paths.
+- **Verification:** `pytest -q` completed with **540 passed** and 4 expected
+  `StaleChecksumWarning` warnings in 346.83 seconds. Both focused reproductions
+  triggered the behaviors described below. The repositories were clean after
+  review; no source changes were made.
+- **Headline:** R13 reproduces R12 byte-for-byte and the complete existing suite
+  passes, but two core build guarantees have uncovered failure modes: a checksum
+  that cannot be verified is treated as clean, and a declared restoration to
+  stock cannot pass the previous-revision byte audit. Packaging omits the domain
+  package, and the R13 template does not follow the repository's explicit-intent
+  authoring rule.
+
+### CR-20260720-01 — Unverifiable checksums are reported CLEAN — High, CONFIRMED — Fixed (2026-07-20)
+
+> **RESOLUTION (2026-07-20) — Fixed.** Independently reproduced first: two
+> `ChecksumReport`s with `can_verify=False` returned `checksums_clean=True`, and
+> an empty report tuple did too (`all()` over nothing is vacuously true).
+> `simoscal/tune/pipeline.py` now classifies reports through one
+> `_checksum_state()` helper into three verdicts — `CHECKSUM_CLEAN`,
+> `CHECKSUM_STALE`, `CHECKSUM_UNVERIFIABLE`. Clean requires the reports to be
+> *present* and every one `can_verify=True` and `is_stale=False`; a missing,
+> stale, or unverifiable report fails the build and renders
+> `Checksums: **UNVERIFIABLE — DO NOT FLASH**` (or `STALE — …`). Tests added
+> (`test_tune_build.py`): one and both unverifiable reports, and the empty-set
+> case, each asserting `BuildFailed` + the report banner. The pre-existing stale
+> test's match string was updated to the new label. Full suite: 548 passed.
+
+
+`simoscal/tune/pipeline.py:93-96` defines `checksums_clean` as true when every
+checksum is either unverifiable or non-stale. The build gate repeats the same
+logic at `:139-142`, so `can_verify=False` is a passing vote rather than a failed
+verification. `render_report()` then labels that state `CLEAN` at `:320-324`.
+
+**Reproduction:** replaced the final-file verification response with two
+`ChecksumReport`s for CAL_CRC and ECM3 whose `can_verify` fields were false.
+`build()` returned successfully with `result.ok == True` and
+`result.checksums_clean == True` even though neither checksum could be verified.
+The existing checksum layer deliberately uses `can_verify=False` for malformed,
+short, or unsupported layouts, so this is a real API state rather than an
+impossible mock value.
+
+**Failure scenario:** a full bin with a malformed or unsupported checksum layout
+is saved and presented as having passed every automated gate. The human-facing
+report says `Checksums: CLEAN`, even though the requirement says checksum
+verification must complete before any bin is declared buildable. Combined with
+the checksum-byte audit allowance, this weakens the last automated gate before
+human review of a safety-critical artifact.
+
+**Suggested fix:** require the expected checksum reports to be present,
+`can_verify=True`, and `is_stale=False`. Add a distinct `UNVERIFIABLE — DO NOT
+FLASH` report state and a build test covering one and both unverifiable reports.
+
+### CR-20260720-02 — Restoring a table to stock fails the byte audit — High, CONFIRMED — Fixed (2026-07-20)
+
+> **RESOLUTION (2026-07-20) — Fixed.** Reproduced verbatim first (tuned one cell
+> of `IP_PQ_CHA_MAX` — Maximum allowed pressure quotient at turbo charger
+> compressor in one revision, restored it to stock in the next → `2 unexplained
+> changed byte(s)`). Fix: `EditEntry` now carries a `declared` byte extent (the
+> table's full z-data extent, set by `Tune.write` regardless of whether any byte
+> moved) alongside the measured `offsets`; `Journal.declared_offsets()` and
+> `touching()` expose it. `build()` adds a second, *tight* allowance —
+> `audit.restore_to_source_allowance()` — that authorises only the declared bytes
+> whose candidate value equals the build's pre-write source snapshot
+> (`Tune.source_snapshot`, captured post-patch at construction). A restored byte
+> (candidate == source, but differs from the prior revision) is attributed; a
+> byte moved *away* from source stays accountable, so an undeclared change
+> smuggled into a *different cell of a declared table* still fails the audit. The
+> restored table is additionally read back off the saved bin (via the widened
+> `touching()`), which independently pins its contents. Tests added: a
+> restore-to-stock revision that now builds clean, and the negative
+> smuggled-cell case that must still fail. Full suite: 548 passed.
+
+
+`simoscal/tune/project.py:233-260` measures each journal entry's offsets by
+comparing the write against the tune's source buffer, which is normally the
+stock bin plus declared patches. When the target already equals that source,
+the entry is marked `unchanged` with no offsets at `:261-262`. The final audit,
+however, compares the candidate against the previous revision and permits only
+`journal.changed_offsets()` at `simoscal/tune/pipeline.py:176-186`.
+
+**Reproduction:** built a prior revision that changed one cell of
+`IP_PQ_CHA_MAX` — Maximum allowed pressure quotient at turbo charger compressor,
+then opened a fresh stock-based tune and explicitly wrote that table's stock
+values with intent `restore stock`. The journal entry was `unchanged` with zero
+offsets. Building against the tuned prior revision failed with `2 unexplained
+changed byte(s)`.
+
+**Failure scenario:** a later flat revision intentionally removes or backs out a
+previous calibration change. Its candidate bytes are correct and its declaration
+is explicit, but `build()` rejects the revision, omits the table from readback and
+comparison plots, and calls the legitimate reversion unexplained. Omitting the
+old domain call has the same result because every revision rebuilds from stock.
+This makes a normal and safety-relevant rollback operation impossible through
+the standard pipeline.
+
+**Suggested fix:** derive audit responsibility from the declared table/cell
+extent as it differs from `reference_bin`, while retaining the measured
+source-buffer offsets as evidence of what the current write staged. At minimum,
+explicitly declared tables must be able to authorize candidate-versus-reference
+bytes that restore source values. Add a regression test that tunes one revision
+and restores the affected cell or table in the next.
+
+### CR-20260720-03 — Installed distributions omit tune domains — Medium, CONFIRMED — Fixed (2026-07-20)
+
+> **RESOLUTION (2026-07-20) — Fixed.** Added `simoscal.tune.domains` to the
+> `[tool.setuptools] packages` list in `pyproject.toml`. Verified by building a
+> wheel (`pip wheel . --no-deps`): all eight domain modules
+> (`__init__`, `_common`, `boost`, `fueling`, `ignition`, `limits`, `switchpatch`,
+> `wastegate`) are now included. Added `tests/test_packaging.py`, which pins the
+> declared package list to the packages actually on disk (a dir with
+> `__init__.py`) in both directions, so the next omission fails in CI rather than
+> at a user's first `tune.boost` access.
+
+
+`pyproject.toml:23-29` configures an explicit setuptools package list containing
+`simoscal`, `simoscal.analysis`, `simoscal.tune`, and
+`simoscal.tune.profiles`, but not `simoscal.tune.domains`. The new domain package
+and all six domain modules therefore fall outside the declared distribution.
+
+**Failure scenario:** a wheel or other non-source-path installation can import
+`simoscal.tune`, but the first lazy property access such as `tune.boost`,
+`tune.fueling`, or `tune.switchpatch` imports an omitted module and raises
+`ModuleNotFoundError`. Source-tree and current editable testing do not expose the
+packaging boundary, so all 540 tests remain green.
+
+**Suggested fix:** include `simoscal.tune.domains` in the package list or switch
+to setuptools package discovery, then add a wheel-build/install smoke test that
+imports and instantiates every public domain facade outside the source tree.
+
+### CR-20260720-04 — R13 template omits explicit `intent=` arguments — Medium, CONFIRMED — Fixed (2026-07-20)
+
+> **RESOLUTION (2026-07-20) — Fixed.** Added an explicit, revision-specific
+> `intent=` to every calibration-changing domain call in
+> `TUNE_Basics_Guide_R13.py` (previously only the two wastegate overlays and the
+> valet slot supplied one). Exempt, correctly: `tune.apply_basics_sop()` (bulk
+> SOP, journaled per table with its own reasons) and `require_sanity()` (a gate
+> that moves no bytes) — neither accepts `intent`. Updated
+> `docs/authoring-a-revision.md` to state the rule is required, not optional, and
+> demonstrate it in the quick-start snippet. Extended the R13 acceptance test with
+> `test_r13_every_calibration_call_declares_intent`, which walks `declare()`'s AST
+> and asserts an `intent` keyword on every `tune.<domain>.<method>(...)` call. R13
+> still reproduces the R12 bin byte-for-byte (intent strings change no bytes).
+
+
+The canonical project workflow at `../CLAUDE.md:78-85` names
+`TUNE_Basics_Guide_R13.py` as the template for R13 onward and requires physical
+units, named constants, and an explicit `intent=` on every call. Most domain
+calls in `../Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R13.py:227-273` omit
+`intent=` and rely on the library's generic fallback text; only the two
+wastegate overlays and the slot-5 valet call supply it explicitly.
+
+**Failure scenario:** a human copies the designated template for R14 and follows
+its demonstrated style. The edit journal contains mechanically generated action
+descriptions instead of the author's revision-specific reason, weakening the
+audit trail precisely where the API is intended to make a tune understandable
+without mentally executing earlier revisions. The acceptance test checks only
+the count of `tune.` calls, not the required keyword.
+
+**Suggested fix:** add `intent=` to every R13 domain call, update the authoring
+guide examples to demonstrate the same convention, and extend the R13 source
+acceptance test to require an explicit `intent` keyword on every calibration-
+changing domain call.
+
+### Open questions / assumptions
+
+- Review scope used `2b2eff6` as the `Code/` feature base and treated the root
+  R11 log-analysis commit as unrelated except where it supplied historical
+  artifacts used by R13 acceptance.
+- Public PyPI distribution is deferred, but `pyproject.toml` already defines the
+  installation boundary and the authoring goal includes eventual use outside the
+  source checkout; CR-20260720-03 is therefore retained as a current packaging
+  defect rather than deferred documentation work.
+
+### Summary
+
+Four findings: 2 High and 2 Medium, all CONFIRMED and Open. The complete existing
+suite passes, but it has no regression coverage for restoring a previous edit to
+stock, treating unverifiable checksums as a failed build, or importing the domain
+facades from an installed distribution.

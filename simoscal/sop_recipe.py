@@ -75,6 +75,7 @@ __all__ = [
     "ResolvedEntry",
     "SYMBOL_MAP",
     "resolve_symbol_map",
+    "positional_axis_match",
     # outcomes + write paths
     "OUTCOME_APPLIED",
     "OUTCOME_APPLIED_BUILDOUT",
@@ -818,6 +819,12 @@ def _positional_axis_match(
         if abs(a[i] - k) > tol:
             return None
     return list(range(len(keys)))
+
+
+
+#: Public alias — the tune layer reuses this tolerance rather than inventing a
+#: second axis-match rule (see :mod:`simoscal.tune.sop_bridge`).
+positional_axis_match = _positional_axis_match
 
 
 # ---- staging wrapper: catch the existing guards, capture warnings ---------- #

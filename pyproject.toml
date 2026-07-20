@@ -21,7 +21,13 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["simoscal"]
+packages = [
+    "simoscal",
+    "simoscal.analysis",
+    "simoscal.tune",
+    "simoscal.tune.domains",
+    "simoscal.tune.profiles",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

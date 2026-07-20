@@ -77,6 +77,68 @@ for r in reports:
   flash externally                SimosTools / VW_Flash  ← NOT this library
 ```
 
+## Authoring a revision — `simoscal.tune`
+
+Everything above is the substrate. **`simoscal.tune` is the layer you actually
+write a tune revision in**, and it is where you should start if your goal is to
+change a calibration rather than to build a tool.
+
+A revision is one flat, self-contained script: it declares the whole calibration
+in physical units through domain-level calls, then hands the entire verification
+pipeline to a single `build()`.
+
+```python
+from simoscal.tune import SC8S50, Tune, build
+
+tune = Tune.open(SC8S50, xdf=XDF_PATH, bin=STOCK_BIN)
+
+tune.apply_basics_sop()                         # the whole ecu-tuning-basics SOP
+tune.boost.put_ceiling_psi(30.0)                # full-load row only
+tune.wastegate.overlay({(7, 14): -0.06})        # both VVL maps, identical deltas
+tune.limits.airmass_cap_mg(2000)                # mg/stk in, kg/stk stored
+
+result = build(tune, "R14", out_root=OUT_ROOT, reference_bin=PREVIOUS_BIN)
+```
+
+That produces the standard artifact set — saved bin, `report.md`, `compare/`
+PNGs — with every gate run: checksums corrected and independently verified,
+every edited table read back off the saved file, and a **byte-level audit**
+against the previous revision.
+
+**→ Full walkthrough: [`docs/authoring-a-revision.md`](docs/authoring-a-revision.md)**
+— how to write your first revision, the complete domain-call reference, and how
+to add a profile for a different Simos 18 XDF.
+
+Three properties are what make this safe to hand to someone with no simoscal
+history:
+
+1. **Every edit is journaled.** A domain call moves bytes *and* records a typed
+   entry — logical name, resolved `` `ID` — Description ``, units, before/after
+   values, guard verdict. `report.md` is rendered *from* that journal, so it
+   cannot drift from what the code did.
+2. **The byte audit is driven by the journal.** The allowance set comes from the
+   edits that were recorded, so a change made outside the journal shows up as
+   *unexplained bytes* and fails the build. Forgetting to declare something is
+   loud rather than silent.
+3. **Table references go through a profile.** Logical names resolve against an
+   explicit per-XDF map, exactly — never fuzzily. A name that does not resolve
+   fails before any bin is opened, listing every miss with suggestions.
+
+Safety-critical unit handling lives in the library rather than in each script,
+so the traps are unavailable rather than merely documented:
+
+| Trap | How the API removes it |
+|------|------------------------|
+| `C_M_AIR_CYL_SP_MAX` — Maximum allowed airmass setpoint stores **kg/stk** behind an mg/stk label; writing `2000` removes the limiter | `limits.airmass_cap_mg(2000)` takes mg/stk and writes `0.002`; a sub-1.0 argument is rejected as a raw value passed by mistake |
+| A psi→hPa boost cap that rounds **up** encodes above the number you asked for | `switchpatch.slot_curve(5, psi=10.0)` floors — 1705 hPa, never 1706 |
+| Timing pulled from only some cam-position grids leaves the knock cell reachable | `ignition.retard_cells(...)` writes all nine by default |
+| A lambda grid written against the wrong breakpoints is lean at full load | `fueling.lambda_grid(...)` refuses unless the declared breakpoints match the table's live axes |
+| A per-slot boost cap above the base ceiling is capped by the base instead | `switchpatch.slot_curve(...)` checks against the live base table and refuses |
+
+`Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R13.py` is the worked example: the
+complete R00–R12 calibration in one page of domain calls, verified byte-identical
+to the hand-written R12 output (`tests/test_acceptance_tune.py`).
+
 ## API surface
 
 ### `CalFile`
@@ -276,6 +338,60 @@ three states are reported explicitly, never assumed. See
 `demos/apply_btp_patch.py` for the canonical stock→patch→verify pipeline and
 `knowledge/bintoolz-btp-patching.md` "U1 findings" for the checksum/XDF evidence.
 
+### Log analysis battery — `simoscal.analysis`
+
+Runs an identical, enumerable battery of checks against a `Logs/<Tune>_R<NN>/`
+folder of SimosTools datalog CSVs and writes a machine-readable findings file, a
+rendered Markdown summary, an explicit SKIPPED list, evidence plots, and
+per-table coverage maps into that folder. It is **findings-only and read-only**:
+Claude consumes the output to write `log_review.md` — the tool **never writes
+`log_review.md` and never proposes or writes a calibration change**. It consumes
+the rest of `simoscal` read-only (opening the flashed bin via `CalFile` for the
+calibration-aware checks) and inherits the fail-loud mandate: a channel it cannot
+confidently resolve is reported unmapped rather than mis-scaled, and a check
+whose required channels (or bin) are absent lands in SKIPPED rather than firing
+on wrong data.
+
+```python
+from simoscal.analysis import analyze_folder
+
+out = analyze_folder("Logs/BasicsGuide_R04")   # autolocates the flashed bin
+print(out.result.high_findings)                # ranked findings
+print(out.json_path, out.md_path)              # written into the folder
+```
+
+```bash
+python -m simoscal.analysis Logs/BasicsGuide_R04     # writes findings + plots
+python -m simoscal.analysis --print-battery          # enumerate the battery, run nothing
+```
+
+| Member | Description |
+|--------|-------------|
+| `analyze_folder(folder, *, xdf_path=None, bin_path=None, make_plots=True)` → `AnalyzeResult` | Load CSVs, detect pulls, autolocate the bin, run the battery + coverage, write `analysis_findings.{json,md}` and `plots/analysis_*.png` into the folder. |
+| `load_logset(folder)` → `LogSet` | Parse `simostools-*.csv` into canonical, unit-normalized channels (airmass→mg/stk, rail→bar) with header-rule gear resolution and a non-mutating quality preflight; dedups trimmed re-exports of one capture. |
+| `detect_pulls(logset)` → `list[Pull]` | Segment WOT pulls + per-pull summary with environment context. |
+| `default_battery()` → `list[Check]` · `run_battery(checks, ctx)` → `BatteryResult` | The v1 battery (knock, boost, wastegate, lambda, rail, timing, turbo/heat, torque limiter, data quality, + a `needs_cal` boost-ceiling check) and its runner. |
+| `compute_coverage(ctx)` → `(results, skipped)` | Per-cell hit-count maps (whole-log + WOT-only) for the primary tuning tables via ECU-lookup simulation. |
+| `format_battery(checks)` → `str` | Print the enumerable battery (ids, channels, thresholds) without running it. |
+
+Output contract per folder: `analysis_findings.json` (sorted keys, fixed float
+formatting — byte-identical across identical reruns), `analysis_findings.md`
+(findings by severity, SKIPPED, aligned pull table + environment, coverage,
+battery enumeration), and `plots/analysis_*.png`. Evidence plots follow one
+encoding rule — **quantity = line style, pull = color** (each pull an
+RPM-sorted solid line, setpoint/base/table dashed dark gray). The six per-check
+plots (`boost`, `knock`, `lambda`, `rail_pressure`, `turbo_heat`, `wastegate`)
+are referenced from their findings; three standalone plots are additive:
+`ignition` (delivered vs table timing vs RPM), `overview_<log>` (one whole-log
+panel-stack per CSV vs time with detected pull windows shaded), and
+`tc_activity_<log>` (per CSV, inferring the switch-patch slip-based TC — wheel
+slip, ignition, wastegate, torque — skipped when no wheel-speed channel is
+present).
+Thresholds are seeded from the R01/R04 reviews and live as inspectable registry
+data. Acceptance replay (`tests/test_acceptance_analysis.py`) reproduces the
+R01/R04 headline findings with **no false High** — every High the tool emits is
+one the human review also called High.
+
 ### Checksums — `ChecksumReport`
 `name` · `can_verify` · `is_stale` · `stored` · `computed` · `covered` (half-open
 full-bin byte ranges) · `detail`. Two checksums are reported: **`CAL_CRC`**
@@ -344,11 +460,19 @@ cd Code
 ./.venv/bin/python -m pytest tests/test_acceptance_plot.py -v     # AE1–AE9 (Phase 3 viz)
 ./.venv/bin/python -m pytest tests/test_acceptance_sop.py -v      # AE1–AE5 (SOP tune recipe)
 ./.venv/bin/python -m pytest tests/test_acceptance_btp.py -v      # AE1–AE7 (BTP patching)
+./.venv/bin/python -m pytest tests/test_acceptance_analysis.py -v # R01/R04 log-analysis replay
+./.venv/bin/python -m pytest tests/test_acceptance_tune.py -v     # AE1 (R13 ≡ R12, byte-identical)
 ```
 
 `test_btp.py` (synthetic fixtures) and `test_acceptance_btp.py` (real files) skip
 cleanly when the vendored `BinToolz-main/` tree, the real switch patch, or the
 stock bin are absent — the BTP adapter wraps BinToolz at runtime.
+
+The `simoscal.analysis` unit tests (`test_analysis_*.py`) run entirely on
+synthetic logs built by `tests/faultinject.py` (fault injection) and
+`tests/synthlog.py`. `test_acceptance_analysis.py` replays the real
+human-reviewed `Logs/BasicsGuide_R01`/`_R04` folders and skips cleanly when they
+are absent from a lean `Code/` checkout.
 
 The acceptance suite (`tests/test_acceptance.py`) encodes the AE1–AE5 examples:
 
@@ -377,12 +501,16 @@ table selection in physical units, a public `RenderedTable` rendering layer
 (Phase 2); static-PNG visualization (surface/heatmap/line) and provenance-
 agnostic comparison composites (Phase 3); check / apply / remove of BinToolz
 `.btp` patches with confined-diff post-verification and checksum reporting
-(`simoscal.btp`, wrapping BinToolz).
+(`simoscal.btp`, wrapping BinToolz); a read-only, findings-only log-analysis
+battery over SimosTools datalog folders with evidence plots and per-table
+coverage maps (`simoscal.analysis`).
 **Out:** flashing (SimosTools/VW_Flash), checksum *recompute* beyond the
 optional correction path, CBOOT/ASW editing, `.btp` *creation* (`patchCreate`)
 and BinToolz's ignore-data CAL-skip mode, FRF→BIN extraction,
 GUI/CLI, import/round-trip from an exported file back into a `.bin`;
 interactive/on-screen viewing, vector (SVG/PDF) output, >2-bin comparison
-(Phase 3 out-of-scope). Datalog-driven auto-tuning (Phase 4) is a later phase
+(Phase 3 out-of-scope); for `simoscal.analysis`, authoring `log_review.md`
+(Claude's job) and any calibration proposer/orchestration/bin-writing
+(deferred). Datalog-driven auto-tuning (Phase 4) is a later phase
 that consumes this library read-only and writes *through* this writer,
 inheriting its guards.
