@@ -118,6 +118,22 @@ class Tune:
         #: saving and treats a failure as a failed build.
         self.post_checks: list[PostCheck] = []
         self._domains: dict[str, object] = {}
+        # The shared buffer before any write — the patched stock the build
+        # starts from. Captured here (construction precedes every write) so the
+        # audit can tell a legitimate restore-to-stock (candidate byte equals
+        # source) from an undeclared change (candidate byte differs). See
+        # CR-20260720-02 and ``audit.restore_to_source_allowance``.
+        try:
+            self._source_snapshot: bytes = (
+                self.space(BASE_SPACE).cal.binimage.to_bytes()
+            )
+        except (TuneError, KeyError, AttributeError):  # pragma: no cover
+            self._source_snapshot = b""
+
+    @property
+    def source_snapshot(self) -> bytes:
+        """The patched stock buffer the build started from, before any write."""
+        return self._source_snapshot
 
     # -- construction -------------------------------------------------------- #
     @classmethod
@@ -273,6 +289,7 @@ class Tune:
             before=before_phys,
             after=after_phys,
             offsets=moved,
+            declared=frozenset(extent),
             rows_changed=_rows_changed(before_phys, after_phys),
             detail=blocked_detail or detail,
             warning=warning,

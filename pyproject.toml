@@ -25,6 +25,7 @@ packages = [
     "simoscal",
     "simoscal.analysis",
     "simoscal.tune",
+    "simoscal.tune.domains",
     "simoscal.tune.profiles",
 ]
 

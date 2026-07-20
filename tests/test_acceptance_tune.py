@@ -157,3 +157,51 @@ def test_r13_declaration_stays_about_a_page(r13: ModuleType) -> None:
         if line.strip().startswith("tune.")
     ]
     assert 10 <= len(calls) <= 30, f"{len(calls)} domain calls in declare()"
+
+
+def test_r13_every_calibration_call_declares_intent() -> None:
+    """CR-20260720-04: the authoring rule — an explicit ``intent=`` on every write.
+
+    ``CLAUDE.md`` names R13 the template for R14 onward and requires physical
+    units, named constants, and an explicit ``intent=`` on every
+    calibration-changing domain call. A copied template teaches by example, so
+    the rule has to hold in the source, not just in the prose. Exempt: the bulk
+    SOP pass (``apply_basics_sop``, journaled per table with its own reasons)
+    and gates that move no calibration bytes (``require_sanity``).
+    """
+    if not R13_SCRIPT.is_file():
+        pytest.skip(f"R13 revision script absent: {R13_SCRIPT}")
+
+    import ast
+
+    tree = ast.parse(R13_SCRIPT.read_text())
+    declare = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "declare"
+    )
+
+    exempt = {"require_sanity"}
+    missing: list[str] = []
+    for node in ast.walk(declare):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        # A calibration write is ``tune.<domain>.<method>(...)`` — a two-level
+        # attribute rooted at the ``tune`` parameter. ``tune.apply_basics_sop``
+        # is one level and so is not counted.
+        if not (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Attribute)
+            and isinstance(func.value.value, ast.Name)
+            and func.value.value.id == "tune"
+        ):
+            continue
+        if func.attr in exempt:
+            continue
+        if not any(kw.arg == "intent" for kw in node.keywords):
+            missing.append(f"tune.{func.value.attr}.{func.attr}")
+
+    assert not missing, (
+        "R13 calibration calls missing an explicit intent= keyword "
+        f"(CLAUDE.md authoring rule): {missing}"
+    )

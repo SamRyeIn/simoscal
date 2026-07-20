@@ -292,8 +292,122 @@ def test_a_stale_checksum_fails_the_build(
 
     monkeypatch.setattr(Tune, "save", save_without_correcting)
 
-    with pytest.raises(BuildFailed, match="checksums stale"):
+    with pytest.raises(BuildFailed, match="checksums STALE"):
         build(tune, "R01", out_root=tmp_path, plots=False)
+
+
+@pytest.mark.parametrize("n_unverifiable", [1, 2])
+def test_unverifiable_checksums_fail_the_build(
+    tune: Tune, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, n_unverifiable: int
+) -> None:
+    """CR-20260720-01: a checksum that could not be verified is not clean.
+
+    The checksum layer returns ``can_verify=False`` for a malformed, short, or
+    unsupported layout. Treating that as a passing vote presents a bin that was
+    never actually checked as ``Checksums: CLEAN`` — the exact silent hole this
+    test pins shut, for one unverifiable report and for both.
+    """
+    from simoscal.checksum import ChecksumReport
+
+    tune.write_cells("pressure_quotient_max", {(0, 0): 1.7}, intent="lower")
+
+    def fake_verify(self):
+        reports = [
+            ChecksumReport("CAL_CRC", can_verify=False, is_stale=False,
+                           detail="unsupported layout"),
+        ]
+        if n_unverifiable == 2:
+            reports.append(ChecksumReport("ECM3", can_verify=False, is_stale=False,
+                                          detail="bin too short"))
+        else:
+            # A genuinely-verified, current second checksum: the build must still
+            # fail on the one it could not verify, not pass on the one it could.
+            reports.append(ChecksumReport("ECM3", can_verify=True, is_stale=False,
+                                          stored=0x1234, computed=0x1234))
+        return reports
+
+    monkeypatch.setattr(CalFile, "verify_checksums", fake_verify)
+
+    with pytest.raises(BuildFailed, match="checksums UNVERIFIABLE") as excinfo:
+        build(tune, "R01", out_root=tmp_path, plots=False)
+
+    report = (excinfo.value.out_dir / "report.md").read_text()
+    assert "Checksums: **UNVERIFIABLE — DO NOT FLASH**" in report
+
+
+def test_no_checksum_reports_is_not_vacuously_clean(
+    tune: Tune, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty report set means the checksum gate never ran — not that it passed."""
+    tune.write_cells("pressure_quotient_max", {(0, 0): 1.7}, intent="lower")
+    monkeypatch.setattr(CalFile, "verify_checksums", lambda self: [])
+
+    with pytest.raises(BuildFailed, match="checksums UNVERIFIABLE"):
+        build(tune, "R01", out_root=tmp_path, plots=False)
+
+
+def test_restoring_a_table_to_stock_passes_the_audit(
+    tune: Tune, tmp_path: Path, baseline: Path
+) -> None:
+    """CR-20260720-02: backing out a prior revision's change is a clean build.
+
+    Revision A changes one cell; revision B, built from stock, explicitly writes
+    that cell back to its stock value. B stages no bytes versus stock, but its
+    bin differs from A at that cell — a legitimate reversion the audit must
+    attribute, not reject as unexplained.
+    """
+    sym = "pressure_quotient_max"
+    stock = tune.values(sym)
+
+    # Revision A: change one cell, audited against the stock baseline.
+    tune_a = Tune.open(SC8S50, xdf=tune.space("base").xdf, bin=tune.source_bin)
+    tune_a.write_cells(sym, {(0, 0): float(stock[0, 0]) + 0.05}, intent="nudge one cell")
+    rev_a_bin = build(
+        tune_a, "RA", out_root=tmp_path / "a", bin_name="ra.bin",
+        reference_bin=baseline, plots=False,
+    ).bin_path
+
+    # Revision B: restore that cell to stock, audited against revision A.
+    tune_b = Tune.open(SC8S50, xdf=tune.space("base").xdf, bin=tune.source_bin)
+    entry = tune_b.write_cells(sym, {(0, 0): float(stock[0, 0])}, intent="restore stock")
+    assert entry.verdict == VERDICT_UNCHANGED  # nothing moved vs stock
+    assert entry.offsets == frozenset()
+    assert entry.declares_table  # but it still declared the table's extent
+
+    result = build(
+        tune_b, "RB", out_root=tmp_path / "b", bin_name="rb.bin",
+        reference_bin=rev_a_bin, plots=False,
+    )
+    assert result.ok, result.problems
+    assert result.diff is not None and result.diff.clean
+    assert "declared restore to stock" in result.diff.attributed
+    # The restored table was read back off the saved bin, pinning its contents.
+    reopened = CalFile.open(str(tune.space("base").xdf), str(result.bin_path))
+    assert np.allclose(reopened.get("IP_PQ_CHA_MAX").values, stock, atol=1e-3)
+
+
+def test_a_smuggled_change_into_a_declared_table_is_still_caught(
+    tune: Tune, tmp_path: Path, baseline: Path
+) -> None:
+    """The restore allowance is tight: it authorises only bytes equal to source.
+
+    A change smuggled past the journal into a *different cell of a declared
+    table* differs from source, so it is not a restore and must still fail the
+    audit — the declared-extent widening must not become a blanket pass on the
+    whole table.
+    """
+    fresh = Tune.open(SC8S50, xdf=tune.space("base").xdf, bin=tune.source_bin)
+    # Declare a write to one cell of the table...
+    fresh.write_cells("pressure_quotient_max", {(0, 0): 1.7}, intent="declared")
+    # ...then smuggle an undeclared change into a different cell of the same table.
+    smuggled = fresh.space("base").cal.get("IP_PQ_CHA_MAX")
+    values = np.array(smuggled.values)
+    values[2, 2] = float(values[2, 2]) + 0.5
+    smuggled.set(values)
+
+    with pytest.raises(BuildFailed) as excinfo:
+        build(fresh, "R01", out_root=tmp_path, reference_bin=baseline, plots=False)
+    assert any("unexplained" in p for p in excinfo.value.problems)
 
 
 def test_a_blocked_write_fails_the_build(tune: Tune, tmp_path: Path) -> None:

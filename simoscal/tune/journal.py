@@ -115,6 +115,13 @@ class EditEntry:
     before: Optional[np.ndarray] = None
     after: Optional[np.ndarray] = None
     offsets: frozenset[int] = frozenset()
+    #: The full file-byte extent of the table this entry declared a write over,
+    #: whether or not any byte moved. ``offsets`` (measured) is a subset of it.
+    #: This is what lets a *restore-to-source* write — one whose target already
+    #: equals the build's working buffer, so it stages nothing — still authorise
+    #: its table to differ from an earlier revision that changed it. Empty for
+    #: entries that are not a physical/raw table write (patches, skips, checks).
+    declared: frozenset[int] = frozenset()
     rows_changed: tuple[int, ...] = ()   # display aid; derived from the values
     detail: str = ""
     warning: str = ""
@@ -129,6 +136,20 @@ class EditEntry:
         a check all fall out naturally.
         """
         return bool(self.offsets)
+
+    @property
+    def declares_table(self) -> bool:
+        """Whether this entry took responsibility for a table's byte extent.
+
+        True for any physical/raw table write, including one that staged no
+        bytes because its target already matched the working buffer. Such an
+        entry moved nothing versus the build's *source*, yet its table still
+        differs from a *previous revision* that changed it — so the audit must
+        authorise the declared extent and the readback must pin the saved
+        contents, or a legitimate rollback fails as unexplained bytes
+        (CR-20260720-02).
+        """
+        return bool(self.declared)
 
     @property
     def cells_changed(self) -> int:
@@ -199,8 +220,16 @@ class Journal:
         return bool(self._entries)
 
     def touching(self) -> tuple[EditEntry, ...]:
-        """Entries whose bytes the audit and readback must account for."""
-        return tuple(e for e in self._entries if e.touched_bytes)
+        """Entries whose bytes the audit and readback must account for.
+
+        Includes both entries that *moved* bytes and entries that *declared* a
+        table write without moving any (a restore-to-source write): the latter
+        still describe a table whose saved contents must be read back and whose
+        extent the audit must be allowed to reconcile against a prior revision.
+        """
+        return tuple(
+            e for e in self._entries if e.touched_bytes or e.declares_table
+        )
 
     def by_space(self, space: str) -> tuple[EditEntry, ...]:
         return tuple(e for e in self._entries if e.space == space)
@@ -247,8 +276,22 @@ class Journal:
         return tuple(seen)
 
     def changed_offsets(self) -> frozenset[int]:
-        """Every byte offset the journal claims responsibility for."""
+        """Every byte offset the journal *measured* as moved by an edit."""
         offsets: set[int] = set()
         for entry in self._entries:
             offsets |= entry.offsets
+        return frozenset(offsets)
+
+    def declared_offsets(self) -> frozenset[int]:
+        """Every byte offset the journal declared an explicit table write over.
+
+        Wider than :meth:`changed_offsets` on exactly the restore case: a write
+        whose target already equals the build's source stages no bytes, yet
+        still authorises its table's extent to differ from an earlier revision.
+        The saved contents of every such table are independently pinned by the
+        final-bin readback, which is what makes authorising the extent safe.
+        """
+        offsets: set[int] = set()
+        for entry in self._entries:
+            offsets |= entry.declared
         return frozenset(offsets)

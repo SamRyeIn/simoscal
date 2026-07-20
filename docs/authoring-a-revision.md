@@ -30,9 +30,9 @@ A revision has three parts:
 # 1. Open: which bin, which XDF(s), which patches
 tune = Tune.open(SC8S50, xdf=XDF_PATH, bin=STOCK_BIN)
 
-# 2. Declare: the whole calibration, in physical units
+# 2. Declare: the whole calibration, in physical units, an intent on every call
 tune.apply_basics_sop()
-tune.boost.put_ceiling_psi(30.0)
+tune.boost.put_ceiling_psi(30.0, intent="park the base boost ceiling above every slot")
 ...
 
 # 3. Build: one call, every verification gate
@@ -81,9 +81,15 @@ if __name__ == "__main__":
 Run it. You get a fresh timestamped folder `MyTune_out/R01_<stamp>/` containing
 the bin, `report.md`, and `compare/` PNGs.
 
-`intent=` is optional but worth writing. It is what appears in the report's
-"Why" column, and in six months it is the only record of *why* the number is
-what it is.
+Write an `intent=` on **every** calibration-changing call — it is required by
+the project's authoring rule (`CLAUDE.md`), not optional, and the R13 source
+acceptance test (`test_r13_every_calibration_call_declares_intent`) enforces it
+on the template. It is what appears in the report's "Why" column, and in six
+months it is the only record of *why* the number is what it is. Without it the
+journal falls back to the library's generic action text, which describes *what*
+changed but never *why*. The only exemptions are the bulk `tune.apply_basics_sop()`
+pass (journaled per table with its own reasons) and gates that move no bytes
+such as `tune.switchpatch.require_sanity(...)`.
 
 ### Read the report before anything else
 

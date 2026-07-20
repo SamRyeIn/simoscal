@@ -32,6 +32,7 @@ __all__ = [
     "checksum_storage_allowance",
     "patch_allowance",
     "raw_diff_audit",
+    "restore_to_source_allowance",
     "table_byte_offsets",
 ]
 
@@ -98,6 +99,33 @@ def checksum_storage_allowance(candidate: Union[str, Path, bytes]) -> Allowance:
     for _name, offset, length in checksum.stored_checksum_ranges(data):
         offsets.update(range(offset, offset + length))
     return Allowance("stored checksums (CAL_CRC, ECM3)", frozenset(offsets))
+
+
+def restore_to_source_allowance(
+    declared: Iterable[int],
+    source: Union[str, Path, bytes],
+    candidate: Union[str, Path, bytes],
+) -> Allowance:
+    """Declared bytes the build left equal to its source — a legitimate restore.
+
+    A declared table whose target already matches the build's source stages no
+    bytes, so its extent never enters the measured-offset allowance; yet it can
+    still differ from a *previous revision* that changed it. Backing out that
+    earlier change is a normal, safety-relevant edit that must not read as
+    unexplained bytes (CR-20260720-02).
+
+    This authorises exactly the declared offsets whose candidate byte equals the
+    source byte — the restored ones — and nothing else. A declared byte the
+    build changed *away* from source (an undeclared write smuggled into a
+    declared table, say) does not match source and stays accountable. The saved
+    contents of every declared table are independently pinned by the build's
+    readback gate, which is what makes authorising the restored bytes safe.
+    """
+    src = source if isinstance(source, bytes) else Path(source).read_bytes()
+    cand = candidate if isinstance(candidate, bytes) else Path(candidate).read_bytes()
+    limit = min(len(src), len(cand))
+    offsets = frozenset(o for o in declared if o < limit and src[o] == cand[o])
+    return Allowance("declared restore to stock", offsets)
 
 
 def patch_allowance(label: str, blocks: Iterable) -> Allowance:

@@ -59,6 +59,33 @@ __all__ = ["BuildFailed", "BuildResult", "build"]
 #: write that did not land as intended.
 READBACK_ATOL = 5e-3
 
+#: The three checksum verdicts a build can reach. Only ``CLEAN`` may flash.
+#: ``UNVERIFIABLE`` is distinct from ``STALE`` on purpose: a stale checksum was
+#: verified and found wrong, while an unverifiable one could not be checked at
+#: all (a malformed, short, or unsupported layout — real states the checksum
+#: layer returns, not mock-only). Both fail the build; conflating "could not
+#: check" with "checked and fine" is the CR-20260720-01 hazard.
+CHECKSUM_CLEAN = "CLEAN"
+CHECKSUM_STALE = "STALE — DO NOT FLASH"
+CHECKSUM_UNVERIFIABLE = "UNVERIFIABLE — DO NOT FLASH"
+
+
+def _checksum_state(checksums: Sequence[ChecksumReport]) -> str:
+    """Classify a set of checksum reports into one flash-gating verdict.
+
+    Clean requires the reports to be *present* and every one of them verified
+    and current. No reports at all is ``UNVERIFIABLE``, not vacuously clean: a
+    build that could not produce a single checksum verdict has not passed the
+    checksum gate.
+    """
+    if not checksums:
+        return CHECKSUM_UNVERIFIABLE
+    if any(r.can_verify and r.is_stale for r in checksums):
+        return CHECKSUM_STALE
+    if any(not r.can_verify for r in checksums):
+        return CHECKSUM_UNVERIFIABLE
+    return CHECKSUM_CLEAN
+
 
 class BuildFailed(SimosCalError):
     """One or more build gates failed. The report is still on disk."""
@@ -90,10 +117,13 @@ class BuildResult:
     problems: tuple[str, ...] = ()
 
     @property
+    def checksum_state(self) -> str:
+        """One of :data:`CHECKSUM_CLEAN` / ``STALE`` / ``UNVERIFIABLE``."""
+        return _checksum_state(self.checksums)
+
+    @property
     def checksums_clean(self) -> bool:
-        return all(
-            (not r.can_verify) or (not r.is_stale) for r in self.checksums
-        )
+        return self.checksum_state == CHECKSUM_CLEAN
 
     @property
     def ok(self) -> bool:
@@ -138,8 +168,9 @@ def build(
     # 2. verify — independently of the save, off the file that was written -- #
     verify_cal = CalFile.open(str(tune.space(BASE_SPACE).xdf), str(bin_path))
     checksums = tuple(verify_cal.verify_checksums())
-    if not all((not r.can_verify) or (not r.is_stale) for r in checksums):
-        problems.append("checksums stale")
+    checksum_state = _checksum_state(checksums)
+    if checksum_state != CHECKSUM_CLEAN:
+        problems.append(f"checksums {checksum_state}")
 
     # 3. read back every journaled table off the saved bin ------------------ #
     readback_failures = _readback(tune, bin_path)
@@ -177,7 +208,16 @@ def build(
     diff: Optional[audit.RawDiffAudit] = None
     if reference_bin is not None:
         allowances = [
+            # Measured moves: every byte a write changed away from the source.
             audit.Allowance("journaled edits", tune.journal.changed_offsets()),
+            # Restores: declared bytes the build left equal to source, which a
+            # prior revision may have changed. Tight — a byte moved away from
+            # source is not here, so an undeclared change stays unexplained.
+            audit.restore_to_source_allowance(
+                tune.journal.declared_offsets(),
+                tune.source_snapshot,
+                bin_path,
+            ),
             audit.checksum_storage_allowance(bin_path),
             *extra_allowances,
         ]
@@ -319,7 +359,7 @@ def render_report(
 
     lines += ["## Verification gates", ""]
     lines.append(
-        f"- Checksums: **{'CLEAN' if result.checksums_clean else 'STALE — DO NOT FLASH'}** "
+        f"- Checksums: **{result.checksum_state}** "
         f"({', '.join(r.name for r in result.checksums) or 'none verifiable'})."
     )
     if result.readback_failures:
