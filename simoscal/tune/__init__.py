@@ -42,6 +42,23 @@ from .profile import (
 )
 from .profiles import PROFILES, SC8S50, SWITCH_PATCH_2933
 from .project import BASE_SPACE, PatchSpec, TableSpace, Tune, TuneError
+from .recovery import (
+    RecoveryError,
+    SessionHistory,
+    load_session,
+    restore_session,
+    save_session,
+    serialize_session,
+)
+from .catalog import AxisInfo, TableInfo, catalog, table_detail
+from .editing import EditOp, EditRejected, EditResult, Selection, apply_op
+from .boostcurve import (
+    BoostCurveModel,
+    SlotCurve,
+    SlotCurveResult,
+    boost_curve_model,
+    slot_curve_result,
+)
 
 __all__ = [
     # authoring
@@ -71,4 +88,28 @@ __all__ = [
     "TableSpace",
     "TuneError",
     "RawDiffError",
+    # session recovery (Quick Edit V4)
+    "serialize_session",
+    "restore_session",
+    "save_session",
+    "load_session",
+    "SessionHistory",
+    "RecoveryError",
+    # read-only catalog (Quick Edit V5)
+    "catalog",
+    "table_detail",
+    "TableInfo",
+    "AxisInfo",
+    # generic edit ops (Quick Edit V5)
+    "apply_op",
+    "EditOp",
+    "Selection",
+    "EditResult",
+    "EditRejected",
+    # boost-curve model (Quick Edit V5)
+    "boost_curve_model",
+    "BoostCurveModel",
+    "SlotCurve",
+    "slot_curve_result",
+    "SlotCurveResult",
 ]

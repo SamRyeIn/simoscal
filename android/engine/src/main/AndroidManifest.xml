@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The engine module declares no permissions at all — no INTERNET, no Bluetooth,
+  no location, no USB. That is a v1 product requirement (key design decision 7:
+  "No network or vehicle permissions"), not an oversight, and V7 adds a test that
+  asserts the merged manifest still looks like this.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

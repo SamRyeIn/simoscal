@@ -1,0 +1,9 @@
+local.properties
+.gradle/
+build/
+*.iml
+.idea/
+
+# Parity artifacts pulled off a device are run outputs, not source. The golden
+# host report IS committed (see parity/), because the gate compares against it.
+parity/device_report*.json
