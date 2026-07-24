@@ -139,6 +139,43 @@ so the traps are unavailable rather than merely documented:
 complete R00–R12 calibration in one page of domain calls, verified byte-identical
 to the hand-written R12 output (`tests/test_acceptance_tune.py`).
 
+### Renderer-independent build service — `simoscal.tune.build_service`
+
+`build()` above is the *desktop* build: it runs the gate chain and then renders
+it — comparison PNGs (matplotlib), `report.md`, `report.html`. The Quick Edit
+app (Android/Chaquopy) carries no matplotlib and cannot open a browser, so it
+needs the same gates and the same verdicts returned as **one machine-readable
+model**, not as files.
+
+`build_revision()` does exactly that. It runs `run_gates()` — the identical
+save → checksum-verify → readback → blocked-write → coherence → post-check →
+byte-audit spine, now factored out of `build()` so the safety gates live once —
+and returns a `BuildReport`: a frozen, JSON-serializable object the Compose UI
+(or a bridge, or a test) reads. Like `preflight()`, it returns a verdict rather
+than raising on a failed gate.
+
+```python
+from simoscal.tune import SC8S50, Tune, build_revision
+
+tune = Tune.open(SC8S50, xdf=XDF_PATH, bin=IMPORTED_BIN)
+tune.boost.put_ceiling_psi(24.0, intent="park the full-load ceiling")
+
+# For v1 the imported bin is both the edit baseline and the byte-audit reference.
+report = build_revision(tune, "R01", staging_dir=STAGING,
+                        reference_bin=IMPORTED_BIN, source_bin=IMPORTED_BIN)
+
+if report.verified:
+    share(report.share_path)     # the staged bin, or None on any gate failure
+print(report.to_json())          # deterministic; the bridge/golden-gate wire form
+```
+
+Two properties are structural, not conventions: the model is **derived from the
+journal** (same source as `report.md`/`report.html`, so it cannot describe
+something other than what the build did), and **sharing is gated on the
+verdict** — `report.share_path` is the staged bin only when every gate passed
+*and* the byte audit ran, else `None`. A failed build has no shareable bin. The
+module imports no matplotlib, so it runs in the on-device engine unchanged.
+
 ## API surface
 
 ### `CalFile`

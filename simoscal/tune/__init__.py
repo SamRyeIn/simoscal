@@ -31,7 +31,17 @@ from __future__ import annotations
 
 from .audit import Allowance, RawDiffAudit, RawDiffError, raw_diff_audit
 from .journal import EditEntry, Journal
-from .pipeline import BuildFailed, BuildResult, build
+from .pipeline import BuildFailed, BuildResult, GateOutcome, build, run_gates
+from .build_service import (
+    AuditModel,
+    BuildReport,
+    ChecksumModel,
+    EditModel,
+    GateResult,
+    TableRef,
+    build_report,
+    build_revision,
+)
 from .profile import (
     Profile,
     ProfileResolutionError,
@@ -67,6 +77,17 @@ __all__ = [
     "build",
     "BuildResult",
     "BuildFailed",
+    # renderer-independent build service (Quick Edit V3)
+    "run_gates",
+    "GateOutcome",
+    "build_revision",
+    "build_report",
+    "BuildReport",
+    "GateResult",
+    "ChecksumModel",
+    "AuditModel",
+    "EditModel",
+    "TableRef",
     # profiles
     "PROFILES",
     "SC8S50",

@@ -1,0 +1,504 @@
+"""Renderer-independent build service — the gate chain as a data model.
+
+:func:`~simoscal.tune.pipeline.build` is the desktop build: it runs the safety
+spine and then *renders* it — comparison PNGs (matplotlib), ``report.md``, and
+``report.html`` written next to the bin. None of that can run on the phone, and
+none of it is the verification. The Quick Edit app needs the same gates and the
+same verdicts, but returned as one machine-readable object a Compose screen (or
+a bridge, or a test) reads — not as files a browser opens.
+
+So this module runs :func:`~simoscal.tune.pipeline.run_gates` — the exact same
+save → checksum-verify → readback → blocked-write → coherence → post-check →
+byte-audit spine, imported with no matplotlib — and turns the outcome into a
+:class:`BuildReport`: a frozen, JSON-serializable model of what changed and how
+every gate voted. Like :func:`simoscal.preflight`, it returns a verdict rather
+than raising on a failed gate — a build that failed verification is a *report*
+the UI shows, with :attr:`BuildReport.verified` false, not an exception thrown
+across a bridge.
+
+Two safety properties are structural here, not conventions:
+
+* **The report is derived from the journal**, exactly as ``report.md`` and
+  ``report.html`` are, so the model a reviewer approves cannot describe
+  something other than what the build did.
+* **Sharing is gated on the verdict.** :attr:`BuildReport.share_path` is the
+  staged bin only when every gate passed; on any failure it is ``None``. A
+  failed build has no shareable bin — the staged file still exists (the gates
+  read it back off disk), but nothing hands it onward.
+
+Never flashes. Nothing in this package does.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Optional, Sequence, Union
+
+from ..checksum import ChecksumReport
+from . import audit
+from .journal import (
+    KIND_CHECK,
+    VERDICT_BLOCKED,
+    VERDICT_SUPERSEDED,
+    Journal,
+)
+from .pipeline import (
+    CHECKSUM_CLEAN,
+    GateOutcome,
+    run_gates,
+)
+from .project import Tune
+
+__all__ = [
+    "SCHEMA_VERSION",
+    "AuditModel",
+    "BuildReport",
+    "ChecksumModel",
+    "EditModel",
+    "GateResult",
+    "TableRef",
+    "build_report",
+    "build_revision",
+]
+
+#: The report model's version. The Kotlin bridge (V6) pins against this, so a
+#: field rename or removal must bump it — a UI reading an unexpected shape is a
+#: contract break, not a best-effort parse.
+SCHEMA_VERSION = "1"
+
+#: How many unexplained-byte offsets to include in the model. The full set can
+#: be large; a bounded sample is enough for a human to see *that* the audit
+#: failed and roughly where — :attr:`AuditModel.unexplained_count` carries the
+#: true total.
+_UNEXPLAINED_SAMPLE = 32
+
+
+@dataclass(frozen=True)
+class GateResult:
+    """One verification gate's verdict, uniform across gate kinds for the UI.
+
+    ``ran`` distinguishes a gate that *passed* from one that never applied — a
+    byte audit with no reference, or coherence rules with no recipe. A gate that
+    did not run is not a pass; the UI shows it as such.
+    """
+
+    name: str
+    passed: bool
+    ran: bool
+    detail: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ChecksumModel:
+    """One embedded checksum's verdict, JSON-safe (ints rendered as hex)."""
+
+    name: str
+    can_verify: bool
+    is_stale: bool
+    stored_hex: Optional[str]
+    computed_hex: Optional[str]
+    detail: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class AuditModel:
+    """The byte-level audit verdict, without the raw offset arrays."""
+
+    ran: bool
+    clean: bool
+    reference: Optional[str]
+    changed: int
+    unexplained_count: int
+    unexplained_sample_hex: tuple[str, ...]
+    #: allowance label → how many of its bytes actually changed
+    attributed: dict[str, int]
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class TableRef:
+    """A table that moved bytes this build: where it lives and its `ID` — desc."""
+
+    space: str
+    key: str
+    label: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class EditModel:
+    """One journal entry as UI-ready data — no numpy arrays cross this boundary.
+
+    ``before`` / ``after`` are the journal's own one-cell-wide summaries (the
+    same text ``report.md`` shows), and ``verdict`` already carries the
+    superseded substitution the reports apply, so a skip a later write covered
+    does not read as a contradiction.
+    """
+
+    label: str
+    name: str
+    kind: str
+    verdict: str
+    units: str
+    intent: str
+    scope: str
+    before: str
+    after: str
+    detail: str
+    warning: str
+    moved_bytes: int
+    cells_changed: int
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class BuildReport:
+    """The whole build verdict for one revision, as one serializable object.
+
+    :attr:`verified` is the single fact the caller acts on; :attr:`share_path`
+    is the staged bin iff verified, else ``None``. Everything else is evidence:
+    :attr:`gates` for the pass/fail row, :attr:`edits` for the journal table,
+    :attr:`changed_tables` for what to draw, :attr:`problems` for the failure
+    banner. Nothing here references the app — it is a data object a Compose
+    screen (or a test) reads, mirroring :class:`simoscal.preflight.Verdict`.
+    """
+
+    schema_version: str
+    revision: str
+    verified: bool
+    summary: str
+    problems: tuple[str, ...]
+
+    # provenance / artifacts
+    staged_bin: str
+    share_path: Optional[str]
+    source_bin: Optional[str]
+    reference_bin: Optional[str]
+
+    # gate verdicts
+    checksum_state: str
+    gates: tuple[GateResult, ...]
+    checksums: tuple[ChecksumModel, ...]
+    readback_failures: tuple[str, ...]
+    audit: AuditModel
+
+    # what changed
+    counts: dict[str, int]
+    edits: tuple[EditModel, ...]
+    changed_tables: tuple[TableRef, ...]
+
+    def __bool__(self) -> bool:  # pragma: no cover - convenience
+        return self.verified
+
+    def to_dict(self) -> dict:
+        """A JSON-safe nested dict — the wire form for the bridge and tests."""
+        return {
+            "schema_version": self.schema_version,
+            "revision": self.revision,
+            "verified": self.verified,
+            "summary": self.summary,
+            "problems": list(self.problems),
+            "staged_bin": self.staged_bin,
+            "share_path": self.share_path,
+            "source_bin": self.source_bin,
+            "reference_bin": self.reference_bin,
+            "checksum_state": self.checksum_state,
+            "gates": [g.to_dict() for g in self.gates],
+            "checksums": [c.to_dict() for c in self.checksums],
+            "readback_failures": list(self.readback_failures),
+            "audit": self.audit.to_dict(),
+            "counts": dict(self.counts),
+            "edits": [e.to_dict() for e in self.edits],
+            "changed_tables": [t.to_dict() for t in self.changed_tables],
+        }
+
+    def to_json(self) -> str:
+        """Deterministic JSON — sorted keys, so identical builds serialize
+        byte-identically (the cross-runtime golden gate compares this)."""
+        return json.dumps(self.to_dict(), indent=2, sort_keys=True)
+
+
+# --------------------------------------------------------------------------- #
+# the service
+# --------------------------------------------------------------------------- #
+def build_revision(
+    tune: Tune,
+    revision: str,
+    *,
+    staging_dir: Union[str, Path],
+    reference_bin: Union[str, Path],
+    bin_name: str = "",
+    source_bin: Optional[Union[str, Path]] = None,
+    extra_allowances: Sequence[audit.Allowance] = (),
+    write_json: bool = True,
+) -> BuildReport:
+    """Run the full gate chain over ``tune`` and return a :class:`BuildReport`.
+
+    Writes the candidate bin into ``staging_dir`` (the gates read it back off
+    disk) and, unless ``write_json`` is false, a ``build_report.json`` beside
+    it. Returns the report for *both* a passed and a failed build — a failed
+    build is a report with :attr:`~BuildReport.verified` false and
+    :attr:`~BuildReport.share_path` ``None``, never an exception.
+
+    ``reference_bin`` is required: the service's contract is to audit an edit
+    against its source, and for v1 the imported bin is both the baseline and the
+    byte-audit reference. A build with no reference makes no byte-level claim,
+    which is not something this service will present as verified — that path is
+    :func:`simoscal.tune.build`, for a first-ever revision on the desktop.
+    """
+    staging_dir = Path(staging_dir)
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    bin_path = staging_dir / (bin_name or f"{revision}.bin")
+
+    outcome = run_gates(
+        tune, bin_path,
+        reference_bin=reference_bin, extra_allowances=extra_allowances,
+    )
+    report = build_report(
+        tune, revision, outcome,
+        source_bin=source_bin, reference_bin=reference_bin,
+    )
+    if write_json:
+        (staging_dir / "build_report.json").write_text(
+            report.to_json(), encoding="utf-8"
+        )
+    return report
+
+
+def build_report(
+    tune: Tune,
+    revision: str,
+    outcome: GateOutcome,
+    *,
+    source_bin: Optional[Union[str, Path]] = None,
+    reference_bin: Optional[Union[str, Path]] = None,
+) -> BuildReport:
+    """Assemble the report model from a :class:`GateOutcome` and the journal.
+
+    Split out from :func:`build_revision` so the model can be built (and tested)
+    from any gate outcome without re-running the gates.
+    """
+    verified = outcome.ok
+    # Shareable is stricter than verified: it also requires the byte audit to
+    # have actually run, so a report carrying no byte-level claim is never handed
+    # onward — even though build_revision already requires a reference to
+    # guarantee the audit ran.
+    shareable = verified and outcome.diff is not None
+    journal = tune.journal
+
+    report = BuildReport(
+        schema_version=SCHEMA_VERSION,
+        revision=revision,
+        verified=verified,
+        summary=_summary(revision, outcome),
+        problems=outcome.problems,
+        staged_bin=str(outcome.bin_path),
+        # The one structural share gate: a failed or unaudited build hands
+        # nothing onward.
+        share_path=str(outcome.bin_path) if shareable else None,
+        source_bin=str(source_bin) if source_bin is not None else None,
+        reference_bin=str(reference_bin) if reference_bin is not None else None,
+        checksum_state=outcome.checksum_state,
+        gates=_gates(tune, outcome),
+        checksums=tuple(_checksum_model(c) for c in outcome.checksums),
+        readback_failures=outcome.readback_failures,
+        audit=_audit_model(outcome),
+        counts=journal.summary_counts(),
+        edits=_edit_models(journal),
+        changed_tables=_changed_tables(journal),
+    )
+    return report
+
+
+# --------------------------------------------------------------------------- #
+# model derivation (all pure functions of the journal + outcome)
+# --------------------------------------------------------------------------- #
+def _summary(revision: str, outcome: GateOutcome) -> str:
+    if outcome.ok:
+        return (
+            f"{revision}: verified — every gate passed. This makes the bin "
+            "reviewable, not approved: read the journal before flashing. This "
+            "tool never flashes."
+        )
+    n = len(outcome.problems)
+    return (
+        f"{revision}: NOT verified — {n} gate(s) failed. DO NOT FLASH: "
+        f"{'; '.join(outcome.problems)}."
+    )
+
+
+def _gates(tune: Tune, outcome: GateOutcome) -> tuple[GateResult, ...]:
+    """The named gates, reconstructed as uniform pass/fail rows for the UI.
+
+    Every verdict here is re-derived from the same data ``run_gates`` used —
+    the checksum reports, readback failures, journal, and audit — so the rows a
+    reviewer sees are the votes the build actually cast.
+    """
+    gates: list[GateResult] = []
+
+    names = ", ".join(c.name for c in outcome.checksums) or "none verifiable"
+    gates.append(GateResult(
+        name="Checksums",
+        passed=outcome.checksum_state == CHECKSUM_CLEAN,
+        ran=True,
+        detail=f"{outcome.checksum_state} ({names})",
+    ))
+
+    rb = outcome.readback_failures
+    gates.append(GateResult(
+        name="Final-bin readback",
+        passed=not rb,
+        ran=True,
+        detail=(
+            f"{len(tune.journal.tables_touched())} table(s) re-read off the "
+            "saved bin and matched the journal"
+            if not rb else f"{len(rb)} table(s) did not survive the save"
+        ),
+    ))
+
+    blocked = tune.journal.blocked()
+    gates.append(GateResult(
+        name="Blocked writes",
+        passed=not blocked,
+        ran=True,
+        detail=(
+            "no guard rejected an intended write"
+            if not blocked
+            else "a guard blocked: " + ", ".join(e.label for e in blocked)
+        ),
+    ))
+
+    coherence = tune.recipe_report.coherence() if tune.recipe_report else None
+    if coherence is None:
+        gates.append(GateResult(
+            name="Recipe coherence", passed=True, ran=False,
+            detail="not run — no SOP recipe in this build",
+        ))
+    else:
+        do_not_flash = [f for f in coherence if f.severity == "DO NOT FLASH"]
+        gates.append(GateResult(
+            name="Recipe coherence",
+            passed=not do_not_flash,
+            ran=True,
+            detail=(
+                "no coherence conflict"
+                if not do_not_flash
+                else "; ".join(f.message for f in do_not_flash)
+            ),
+        ))
+
+    # Post-save checks were journaled as KIND_CHECK entries; surface each.
+    for entry in tune.journal:
+        if entry.kind != KIND_CHECK:
+            continue
+        gates.append(GateResult(
+            name=entry.name,
+            passed=entry.verdict != VERDICT_BLOCKED,
+            ran=True,
+            detail=entry.detail,
+        ))
+
+    diff = outcome.diff
+    if diff is None:
+        gates.append(GateResult(
+            name="Raw-diff audit", passed=False, ran=False,
+            detail="not run — no reference bin declared, so no byte-level claim",
+        ))
+    else:
+        gates.append(GateResult(
+            name="Raw-diff audit",
+            passed=diff.clean,
+            ran=True,
+            detail=diff.summary(),
+        ))
+    return tuple(gates)
+
+
+def _checksum_model(report: ChecksumReport) -> ChecksumModel:
+    return ChecksumModel(
+        name=report.name,
+        can_verify=report.can_verify,
+        is_stale=report.is_stale,
+        stored_hex=None if report.stored is None else hex(report.stored),
+        computed_hex=None if report.computed is None else hex(report.computed),
+        detail=report.detail,
+    )
+
+
+def _audit_model(outcome: GateOutcome) -> AuditModel:
+    diff = outcome.diff
+    if diff is None:
+        return AuditModel(
+            ran=False, clean=False, reference=None, changed=0,
+            unexplained_count=0, unexplained_sample_hex=(), attributed={},
+        )
+    return AuditModel(
+        ran=True,
+        clean=diff.clean,
+        reference=str(Path(diff.reference).name),
+        changed=diff.changed,
+        unexplained_count=len(diff.unexplained),
+        unexplained_sample_hex=tuple(
+            hex(o) for o in diff.unexplained[:_UNEXPLAINED_SAMPLE]
+        ),
+        attributed=dict(diff.attributed),
+    )
+
+
+def _edit_models(journal: Journal) -> tuple[EditModel, ...]:
+    """Every journal entry as UI data, with the superseded substitution applied.
+
+    Mirrors ``render_report`` / ``render_report_html``: a bulk-SOP skip a later
+    applied write covers is shown as :data:`VERDICT_SUPERSEDED`, so the model
+    matches the Markdown and HTML the desktop path renders from the same journal.
+    """
+    superseded = journal.superseded()
+    models: list[EditModel] = []
+    for i, entry in enumerate(journal):
+        verdict = VERDICT_SUPERSEDED if i in superseded else entry.verdict
+        models.append(EditModel(
+            label=entry.label,
+            name=entry.name,
+            kind=entry.kind,
+            verdict=verdict,
+            units=entry.units,
+            intent=entry.intent,
+            scope=entry.scope_text(),
+            before=entry.before_text(),
+            after=entry.after_text(),
+            detail=entry.detail,
+            warning=entry.warning,
+            moved_bytes=len(entry.offsets),
+            cells_changed=entry.cells_changed,
+        ))
+    return tuple(models)
+
+
+def _changed_tables(journal: Journal) -> tuple[TableRef, ...]:
+    """The tables that moved bytes, each with its `ID` — Description label.
+
+    Keyed on ``(space, XDF key)`` like :meth:`Journal.tables_touched`, so one
+    table journaled under both a logical name and its symbol appears once. The
+    label is taken from the first entry that names that key.
+    """
+    label_for: dict[tuple[str, object], str] = {}
+    for entry in journal.touching():
+        label_for.setdefault((entry.space, entry.key), entry.label)
+    return tuple(
+        TableRef(space=space, key=str(key), label=label_for.get((space, key), ""))
+        for space, key in journal.tables_touched()
+    )
