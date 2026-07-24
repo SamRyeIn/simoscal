@@ -59,6 +59,12 @@ chaquopy {
         buildPython("/opt/homebrew/opt/python@3.13/bin/python3.13")
 
         pip {
+            // Pin the exact Android NumPy runtime exercised by the V0 parity
+            // gate. The library's desktop requirement stays broad, but the
+            // embedded safety kernel must not change under an unchanged APK
+            // build merely because a newer compatible wheel was published.
+            install("numpy==1.26.2")
+
             // Installs simoscal from the repo working tree, so the device runs
             // *this* checkout rather than a published copy. Core deps are
             // numpy-only by design (see Code/pyproject.toml), which is what

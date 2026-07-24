@@ -168,6 +168,33 @@ def test_paste_writes_a_block() -> None:
 
 
 @requires_base
+def test_generic_axis_write_is_journaled_as_axis() -> None:
+    tune = _open_base()
+    before = tune.values("put_setpoint_rpm_axis")
+    target = before.copy()
+    target[0, 1] = (before[0, 0] + before[0, 2]) / 2
+    result = apply_op(
+        tune, "put_setpoint_rpm_axis", EditOp.SET, array=target,
+        intent="move one boost rpm breakpoint",
+    )
+    assert result.entry.kind == "axis"
+    assert np.all(np.diff(result.encoded.ravel()) > 0)
+
+
+@requires_base
+def test_nonmonotonic_generic_axis_write_is_rejected_atomically() -> None:
+    tune = _open_base()
+    before = tune.values("put_setpoint_rpm_axis")
+    n = len(tune.journal)
+    target = before.copy()
+    target[0, 1] = target[0, 0]
+    with pytest.raises(EditRejected, match="strictly increasing"):
+        apply_op(tune, "put_setpoint_rpm_axis", EditOp.SET, array=target)
+    assert np.array_equal(tune.values("put_setpoint_rpm_axis"), before)
+    assert len(tune.journal) == n
+
+
+@requires_base
 def test_generic_edit_never_modifies_source_bin() -> None:
     import hashlib
     before = hashlib.sha256(STOCK_BIN.read_bytes()).hexdigest()

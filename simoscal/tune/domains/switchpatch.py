@@ -210,14 +210,19 @@ class SwitchPatch(Domain):
                 detail += f", {result.differ_from_stock} table(s) differ from stock"
             return result.plausible, detail
 
-        self._tune.post_checks.append(
-            self._post_check("switch-patch sanity", run)
-        )
+        self._tune.post_checks.append(self._post_check(
+            "switch-patch sanity",
+            run,
+            recovery_key="switch_patch_sanity",
+            recovery_params={
+                "stock_bin": str(Path(stock_bin)) if stock_bin is not None else None,
+            },
+        ))
 
-    def _post_check(self, name, run):
+    def _post_check(self, name, run, **kwargs):
         from ..project import PostCheck
 
-        return PostCheck(name=name, run=run)
+        return PostCheck(name=name, run=run, **kwargs)
 
     # -- helpers ---------------------------------------------------------------- #
     def _require_slot(self, slot: int) -> None:

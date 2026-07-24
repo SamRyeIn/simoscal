@@ -176,6 +176,26 @@ verdict** — `report.share_path` is the staged bin only when every gate passed
 *and* the byte audit ran, else `None`. A failed build has no shareable bin. The
 module imports no matplotlib, so it runs in the on-device engine unchanged.
 
+### Quick Edit bridge and recoverable sessions
+
+`simoscal.bridge.dispatch()` is the sole Python boundary the Android app calls.
+It accepts and returns deterministic, versioned JSON envelopes; files cross as
+app-private absolute paths plus SHA-256 hashes, never as base64 or Python
+objects. Session creation re-runs compatibility preflight itself. Supplying a
+switch-patch XDF for an unpatched bin is therefore a hard
+`PREFLIGHT_BLOCKED` result rather than a live session over invalid addresses.
+
+Recovery records pin the engine version, source-bin hash, and every XDF hash.
+They preserve the ordered journal, compact undo/redo snapshots, and registered
+finished-file safety gates. Restore refuses changed provenance or an unknown
+gate instead of silently weakening the reopened session. For Quick Edit v1 the
+imported bin is both the source and byte-audit reference; the bridge enforces
+that identity before `build_revision()` can expose a share path.
+
+The Kotlin `SimoscalBridge` facade queues all JSON calls on one background
+thread. Kotlin owns scheduling and lifecycle only; Python remains authoritative
+for preflight, edits, checksums, readback, byte audit, and the share verdict.
+
 ## API surface
 
 ### `CalFile`

@@ -13,8 +13,6 @@ import csv
 from pathlib import Path
 from typing import Optional, Sequence, Union
 
-import openpyxl
-
 from .calfile import CalFile, TableView
 from .render import RenderedTable, render_table
 
@@ -153,6 +151,13 @@ def write_xlsx(tables: Sequence[RenderedTable], path: Union[str, Path]) -> None:
             if cat not in seen:
                 seen.add(cat)
                 categories.append(cat)
+
+    try:
+        import openpyxl
+    except ImportError as exc:
+        raise ImportError(
+            "xlsx export requires the 'export' extra; install simoscal[export]"
+        ) from exc
 
     wb = openpyxl.Workbook()
     wb.remove(wb.active)

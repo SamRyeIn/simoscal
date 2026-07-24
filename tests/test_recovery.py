@@ -174,6 +174,32 @@ def test_unsupported_format_version_is_refused() -> None:
         restore_session(data)
 
 
+@requires_base
+def test_different_xdf_is_refused_on_restore() -> None:
+    alternate = CODE_ROOT / "xdf" / "SC8S50.ALL.xdf"
+    if not alternate.is_file():
+        pytest.skip("alternate real XDF absent")
+    data = serialize_session(_open_base())
+    with pytest.raises(RecoveryError, match="XDF has changed"):
+        restore_session(data, xdf_paths={"base": alternate})
+
+
+@requires_base
+def test_different_engine_version_is_refused() -> None:
+    data = serialize_session(_open_base())
+    data["engine_version"] = "0.0.0-incompatible"
+    with pytest.raises(RecoveryError, match="engine_version"):
+        restore_session(data)
+
+
+@requires_patch
+def test_switch_patch_post_check_survives_recovery() -> None:
+    tune = _open_patched()
+    tune.switchpatch.require_sanity()
+    restored = restore_session(serialize_session(tune))
+    assert [check.name for check in restored.post_checks] == ["switch-patch sanity"]
+
+
 # --------------------------------------------------------------------------- #
 # undo / redo
 # --------------------------------------------------------------------------- #
@@ -221,3 +247,23 @@ def test_commit_after_undo_discards_redo_tail() -> None:
     tune.limits.airmass_cap_mg(2000)  # a new branch
     history.commit()
     assert history.can_redo is False, "a commit after undo drops the redo tail"
+
+
+@requires_base
+def test_undo_redo_stack_survives_recovery() -> None:
+    tune = _open_base()
+    history = SessionHistory(tune)
+    tune.boost.put_ceiling_psi(30.0)
+    history.commit()
+    first = _buf_sha(tune)
+    tune.limits.airmass_cap_mg(2200)
+    history.commit()
+    second = _buf_sha(tune)
+
+    restored = restore_session(serialize_session(tune))
+    recovered_history = SessionHistory(restored)
+    assert recovered_history.can_undo is True
+    assert recovered_history.undo() is True
+    assert _buf_sha(restored) == first
+    assert recovered_history.redo() is True
+    assert _buf_sha(restored) == second

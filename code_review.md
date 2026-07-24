@@ -57,6 +57,17 @@ in place as they are fixed or dismissed.
 | CR-20260724-01 | High     | CONFIRMED | simoscal/tune/build_service.py                      | Extra allowances make unjournaled edits verified, shareable, and invisible  | Fixed (2026-07-24)  |
 | CR-20260724-02 | High     | CONFIRMED | simoscal/tune/build_service.py                      | Public report assembler can emit internally contradictory shareable reports | Fixed (2026-07-24)  |
 | CR-20260724-03 | Medium   | CONFIRMED | simoscal/tune/build_service.py                      | Unchanged declarations are reported as changed tables                       | Fixed (2026-07-24)  |
+| CR-20260724-04 | High     | CONFIRMED | simoscal/export.py                                  | Plot extra imports undeclared openpyxl dependency                           | Fixed (2026-07-24)  |
+| CR-20260724-05 | Medium   | CONFIRMED | android/engine/build.gradle.kts                     | Embedded NumPy runtime floats across unchanged APK builds                   | Fixed (2026-07-24)  |
+| CR-20260724-06 | High     | CONFIRMED | simoscal/tune/recovery.py                           | Recovery accepts changed XDF table definitions                              | Fixed (2026-07-24)  |
+| CR-20260724-07 | High     | CONFIRMED | simoscal/tune/recovery.py                           | Recovery silently drops finished-file safety gates                          | Fixed (2026-07-24)  |
+| CR-20260724-08 | Medium   | CONFIRMED | simoscal/tune/recovery.py                           | Recovery ignores its within-engine-version marker                           | Fixed (2026-07-24)  |
+| CR-20260724-09 | Medium   | CONFIRMED | simoscal/tune/recovery.py                           | Recovered sessions lose their undo/redo history                             | Fixed (2026-07-24)  |
+| CR-20260724-10 | High     | CONFIRMED | simoscal/bridge.py                                  | Session creation can bypass compatibility preflight                         | Fixed (2026-07-24)  |
+| CR-20260724-11 | High     | CONFIRMED | simoscal/tune/editing.py                            | Generic axis writes accept nonmonotonic breakpoints                         | Fixed (2026-07-24)  |
+| CR-20260724-12 | Medium   | CONFIRMED | tests/test_bridge.py                                | Edit tests fail before reaching the bridge dispatcher                       | Fixed (2026-07-24)  |
+| CR-20260724-13 | High     | CONFIRMED | simoscal/tune/recovery.py                           | Undo restores bytes but leaves profile views stale                          | Fixed (2026-07-24)  |
+| CR-20260724-14 | Medium   | CONFIRMED | android/README.md                                   | V0 declared GO before physical-arm64 and x86_64 parity gates ran            | Open                |
 
 ---
 
@@ -1159,3 +1170,105 @@ stays matplotlib-free.
   changed. The no-op edit still appears in the full `edits` journal as a 0-byte
   move; the no-reference path still lists every touched table. Test:
   `test_a_noop_declaration_is_not_a_changed_table`.
+
+---
+
+## Review 2026-07-24 — Quick Edit V1/V4/V5/V6 continuation
+
+- **Scope:** committed Quick Edit foundation through `284af5a`, plus Claude's
+  untracked `simoscal/bridge.py` and `tests/test_bridge.py` V6 draft.
+- **Method:** traced the V1/V4/V5/V6 acceptance criteria through packaging,
+  recovery, generic editing, the Python JSON boundary, and the Android facade;
+  ran focused suites and adversarial reproductions against the real SC8S50
+  files. No source or generated bin was modified.
+- **Headline:** eleven confirmed gaps. Six weakened a safety or provenance
+  guarantee; five broke reproducibility or executable acceptance coverage. Ten
+  were fixed in this continuation; the physical-arm64/x86_64 V0 gate remains
+  open because code cannot substitute for those device runs.
+- **Verification:** complete Python suite **655 passed** with the same four
+  expected `StaleChecksumWarning`s. Gradle compiled both the debug Kotlin source
+  and Android instrumentation source under the documented JDK 17, building the
+  embedded wheel and pinned NumPy runtime for arm64-v8a and x86_64.
+
+### CR-20260724-04 — Plot extra required undeclared openpyxl — High, CONFIRMED — Fixed (2026-07-24)
+
+`simoscal.plot` imported `select_tables` from `simoscal.export`, whose eager
+`openpyxl` import made `simoscal[plot]` unusable without the separate export
+extra. The lazy wrapper then incorrectly recommended installing the already
+installed plot extra. `openpyxl` now imports only inside `write_xlsx()`, with an
+export-specific actionable error, and an isolated dependency test blocks only
+openpyxl while importing the plot surface.
+
+### CR-20260724-05 — Android NumPy runtime was not reproducibly pinned — Medium, CONFIRMED — Fixed (2026-07-24)
+
+The Android build installed the working tree with `numpy>=1.24`; an unchanged
+APK build could therefore select a newer compatible wheel than V0 tested.
+Chaquopy now pins `numpy==1.26.2`, the device runtime recorded by the V0 parity
+report, and the packaging suite pins that declaration.
+
+### CR-20260724-06 — Recovery accepted different XDF definitions — High, CONFIRMED — Fixed (2026-07-24)
+
+Recovery pinned the source bin but stored only XDF paths. Replacing
+`SC8S50.V1.0.xdf` with a different parseable XDF successfully restored the same
+bytes under different table semantics. Format v2 now records and verifies the
+base and every extra-space XDF SHA-256 before opening a tune.
+
+### CR-20260724-07 — Recovery dropped finished-file safety gates — High, CONFIRMED — Fixed (2026-07-24)
+
+`restore_session()` recreated bytes and journal entries but reset
+`Tune.post_checks`, including switch-patch sanity. Recoverable checks now carry
+a declarative descriptor and are re-registered on restore; an unknown or
+non-recoverable check blocks serialization/restoration rather than disappearing.
+The optional sanity-reference bin is hash-pinned too.
+
+### CR-20260724-08 — Recovery ignored its engine-version marker — Medium, CONFIRMED — Fixed (2026-07-24)
+
+The serializer wrote `engine_version`, but restore validated only
+`format_version`. Recovery now requires the exact engine version promised by
+the v1 within-version contract.
+
+### CR-20260724-09 — Recovery reset undo/redo — Medium, CONFIRMED — Fixed (2026-07-24)
+
+A restored edit session opened at its current bytes with a fresh history, so
+the first post-restart Undo did nothing. Recovery format v2 now stores compact
+byte-diff snapshots plus their journal states and cursor, each hash-verified,
+and restores both undo and redo.
+
+### CR-20260724-10 — Session creation bypassed compatibility preflight — High, CONFIRMED — Fixed (2026-07-24)
+
+The bridge trusted the UI to have called preflight earlier. A stock, unpatched
+bin plus the switch-patch XDF produced a live session exposing patch addresses.
+`session_create` and `session_recover` now independently require an editable
+SC8S50 verdict and positive patch detection before opening the patch space.
+Build also requires the session's imported bin as both source and reference.
+
+### CR-20260724-11 — Generic axis writes accepted nonmonotonic breakpoints — High, CONFIRMED — Fixed (2026-07-24)
+
+Profile axis tables were editable through the generic cell path without the
+strictly-increasing rule used by the switch-patch domain. Profiles now tag axis
+vectors explicitly; generic editing rejects duplicate or descending
+breakpoints atomically and journals accepted writes as `axis`.
+
+### CR-20260724-12 — Bridge edit tests never reached dispatch — Medium, CONFIRMED — Fixed (2026-07-24)
+
+The test helper's positional argument was named `op`, colliding with the edit
+operation's `op="set"` parameter. Eight tests raised `TypeError` in the helper.
+Renaming it to `operation` made the intended bridge/edit/build/recovery paths
+execute; malformed nested parameter cases were added too.
+
+### CR-20260724-13 — Undo left profile-held decoded values stale — High, CONFIRMED — Fixed (2026-07-24)
+
+History restore wrote the correct prior bytes and cleared `CalFile._views`, but
+the resolved profile retained separate `TableView` objects with cached decoded
+values. The UI—and a following edit—could therefore see the pre-undo values
+despite the buffer having changed. Recovery now invalidates every profile-held
+view as well as the lookup cache; the bridge recovery test asserts decoded
+values change after Undo.
+
+### CR-20260724-14 — V0 GO declared before all runtime legs ran — Medium, CONFIRMED — Open
+
+The arm64 emulator produced a byte-identical parity digest, but the plan requires
+one physical-arm64 run and an x86_64 run before closing V0. The Android README
+called the go/no-go clause satisfied while also saying the physical run remained.
+It now records a provisional implementation GO and leaves the two objective
+runtime legs open. No code change can substitute for those device executions.

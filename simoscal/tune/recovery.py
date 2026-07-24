@@ -59,7 +59,7 @@ __all__ = [
 
 #: Serialized-form version. Bumped when the on-disk shape changes so an old blob
 #: cannot be silently misread by a newer loader.
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
 
 class RecoveryError(Exception):
@@ -140,6 +140,14 @@ def _buffer_bytes(tune: Tune) -> bytes:
     return _image(tune).to_bytes()
 
 
+def _invalidate_views(tune: Tune) -> None:
+    """Drop every cached decode, including profile-held TableView objects."""
+    for space in tune.spaces.values():
+        for name in space.tables.names():
+            space.tables[name].view.invalidate()
+        space.cal._views.clear()
+
+
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -193,6 +201,7 @@ def serialize_session(
     tune: Tune,
     *,
     patches: Sequence[PatchSpec] = (),
+    history: Optional["SessionHistory"] = None,
 ) -> dict:
     """Serialize a live ``Tune`` to a recovery record (a JSON-safe ``dict``).
 
@@ -204,11 +213,43 @@ def serialize_session(
     Nothing is written; the tune is only read.
     """
     base = tune.space(BASE_SPACE)
+    if tune.recipe_report is not None:
+        raise RecoveryError(
+            "sessions with a bulk SOP recipe report cannot be recovered yet; "
+            "refusing to save a session that would silently lose coherence gates"
+        )
     extra_spaces = {
-        name: {"profile": space.profile.name, "xdf": str(space.xdf)}
+        name: {
+            "profile": space.profile.name,
+            "xdf": str(space.xdf),
+            "xdf_sha256": _sha256_file(space.xdf),
+        }
         for name, space in tune.spaces.items()
         if name != BASE_SPACE
     }
+
+    post_checks = []
+    for check in tune.post_checks:
+        if not check.recovery_key:
+            raise RecoveryError(
+                f"post-build check {check.name!r} has no recovery descriptor; "
+                "refusing to save a session that would silently lose a safety gate"
+            )
+        params = dict(check.recovery_params)
+        stock_bin = params.get("stock_bin")
+        if stock_bin is not None:
+            stock_path = Path(str(stock_bin))
+            if not stock_path.is_file():
+                raise RecoveryError(
+                    f"post-build check {check.name!r} references missing stock bin "
+                    f"{stock_path}"
+                )
+            params["stock_bin_sha256"] = _sha256_file(stock_path)
+        post_checks.append({
+            "name": check.name,
+            "key": check.recovery_key,
+            "params": params,
+        })
 
     # The journal minus patch entries: Tune.open re-creates the patch entries
     # when it re-applies the patches, so persisting them would double them.
@@ -218,13 +259,20 @@ def serialize_session(
 
     buffer_sha = _sha256_bytes(_buffer_bytes(tune))
 
+    if history is None:
+        history = getattr(tune, "_session_history", None)
+
     return {
         "format_version": FORMAT_VERSION,
         "engine_version": __version__,
         "source": {
             "bin": str(tune.source_bin),
             "bin_sha256": _sha256_file(Path(tune.source_bin)),
-            "base": {"profile": base.profile.name, "xdf": str(base.xdf)},
+            "base": {
+                "profile": base.profile.name,
+                "xdf": str(base.xdf),
+                "xdf_sha256": _sha256_file(base.xdf),
+            },
             "extra_spaces": extra_spaces,
             "patches": [
                 {"label": p.label, "path": str(p.path), "description": p.description}
@@ -234,6 +282,8 @@ def serialize_session(
         "buffer_sha256": buffer_sha,
         "byte_diff": _byte_diff(tune),
         "journal": journal_entries,
+        "post_checks": post_checks,
+        "history": history._to_record() if history is not None else None,
     }
 
 
@@ -274,6 +324,13 @@ def restore_session(
             f"recovery format_version {fmt!r} is not supported by this build "
             f"(expected {FORMAT_VERSION})."
         )
+    engine_version = data.get("engine_version")
+    if engine_version != __version__:
+        raise RecoveryError(
+            f"recovery engine_version {engine_version!r} does not match this "
+            f"engine ({__version__!r}); recovery is supported only within one "
+            "engine version"
+        )
 
     src = data["source"]
     bin_path = _resolve_path(src["bin"], source_bin)
@@ -298,6 +355,21 @@ def restore_session(
         )
         for name, spec in src.get("extra_spaces", {}).items()
     }
+    xdf_specs = {"base": (base_xdf, src["base"]), **{
+        name: (extra_spaces[name][1], spec)
+        for name, spec in src.get("extra_spaces", {}).items()
+    }}
+    for name, (path, spec) in xdf_specs.items():
+        if not path.is_file():
+            raise RecoveryError(f"{name} XDF not found for restore: {path}")
+        expected = spec.get("xdf_sha256")
+        actual = _sha256_file(path)
+        if actual != expected:
+            raise RecoveryError(
+                f"{name} XDF has changed since the session was saved ({path}): "
+                f"recorded {str(expected)[:12]}…, found {actual[:12]}…. "
+                "Refusing to restore with different table definitions."
+            )
     patches = tuple(
         PatchSpec(label=p["label"], path=Path(p["path"]),
                   description=p.get("description", ""))
@@ -337,9 +409,33 @@ def restore_session(
     for obj in data.get("journal", []):
         tune.journal.record(_entry_from_json(obj))
 
+    for check in data.get("post_checks", []):
+        key = check.get("key")
+        params = check.get("params") or {}
+        if key == "switch_patch_sanity":
+            stock_bin = params.get("stock_bin")
+            if stock_bin is not None:
+                stock_path = Path(str(stock_bin))
+                if (
+                    not stock_path.is_file()
+                    or _sha256_file(stock_path) != params.get("stock_bin_sha256")
+                ):
+                    raise RecoveryError(
+                        "switch-patch sanity reference bin changed since the "
+                        "session was saved"
+                    )
+            tune.switchpatch.require_sanity(stock_bin=stock_bin)
+        else:
+            raise RecoveryError(
+                f"unknown post-build recovery check {key!r}; refusing to "
+                "restore without a registered safety gate"
+            )
+
+    if data.get("history") is not None:
+        tune._recovered_history = data["history"]
+
     # Invalidate any cached decodes so table reads reflect the applied diff.
-    for space in tune.spaces.values():
-        space.cal._views.clear()
+    _invalidate_views(tune)
 
     return tune
 
@@ -386,8 +482,9 @@ class SessionHistory:
     exact for every table kind, the same discipline the persistence path uses.
 
     This is deliberately in-memory: it makes an open session's undo stack work.
-    Surviving a process kill is the persistence path's job (:func:`save_session`),
-    and a restored session starts a fresh history at its current state.
+    The compact snapshot stack is included in recovery data, so a restored
+    session keeps its undo/redo cursor rather than merely reopening the current
+    bytes.
     """
 
     def __init__(self, tune: Tune) -> None:
@@ -396,11 +493,62 @@ class SessionHistory:
             tune.space(BASE_SPACE).cal.binimage.region_start,
             tune.space(BASE_SPACE).cal.binimage.region_end,
         )
-        self._stack: list[tuple[bytes, tuple[EditEntry, ...]]] = [self._snapshot()]
-        self._cursor = 0
+        recovered = getattr(tune, "_recovered_history", None)
+        if recovered is None:
+            self._stack = [self._snapshot()]
+            self._cursor = 0
+        else:
+            self._stack = self._from_record(recovered)
+            self._cursor = int(recovered["cursor"])
+            if not (0 <= self._cursor < len(self._stack)):
+                raise RecoveryError("recovered undo cursor is outside its snapshot stack")
+            if self._stack[self._cursor][0] != _buffer_bytes(tune):
+                raise RecoveryError(
+                    "recovered undo cursor does not match the restored session buffer"
+                )
+            delattr(tune, "_recovered_history")
+        tune._session_history = self
 
     def _snapshot(self) -> tuple[bytes, tuple[EditEntry, ...]]:
         return (_buffer_bytes(self._tune), self._tune.journal.entries)
+
+    def _to_record(self) -> dict:
+        """Compact undo snapshots as diffs from the immutable session source."""
+        base = self._tune.source_snapshot
+        snapshots = []
+        for buf, entries in self._stack:
+            diff = {
+                str(i): value
+                for i, (source, value) in enumerate(zip(base, buf))
+                if source != value
+            }
+            snapshots.append({
+                "buffer_sha256": _sha256_bytes(buf),
+                "byte_diff": diff,
+                "journal": [_entry_to_json(entry) for entry in entries],
+            })
+        return {"cursor": self._cursor, "snapshots": snapshots}
+
+    def _from_record(self, record: Mapping) -> list[tuple[bytes, tuple[EditEntry, ...]]]:
+        base = self._tune.source_snapshot
+        stack: list[tuple[bytes, tuple[EditEntry, ...]]] = []
+        for obj in record.get("snapshots", []):
+            buf = bytearray(base)
+            for start, run in _contiguous_runs(obj.get("byte_diff", {})):
+                end = start + len(run)
+                if start < 0 or end > len(buf):
+                    raise RecoveryError(
+                        f"undo snapshot byte run [{start:#x}, {end:#x}) is outside the bin"
+                    )
+                buf[start:end] = run
+            frozen = bytes(buf)
+            if _sha256_bytes(frozen) != obj.get("buffer_sha256"):
+                raise RecoveryError("recovered undo snapshot failed its buffer hash")
+            entries = tuple(_entry_from_json(entry) for entry in obj.get("journal", []))
+            stack.append((frozen, entries))
+        if not stack:
+            raise RecoveryError("recovered undo history has no snapshots")
+        return stack
 
     def _restore(self, snapshot: tuple[bytes, tuple[EditEntry, ...]]) -> None:
         buf_bytes, entries = snapshot
@@ -409,8 +557,7 @@ class SessionHistory:
         # Only the in-region bytes ever change under edits; restore that slice.
         image.write(start, buf_bytes[start:end])
         self._tune.journal._entries = list(entries)
-        for space in self._tune.spaces.values():
-            space.cal._views.clear()
+        _invalidate_views(self._tune)
 
     @property
     def can_undo(self) -> bool:

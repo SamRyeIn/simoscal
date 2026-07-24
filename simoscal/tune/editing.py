@@ -32,7 +32,8 @@ from typing import Optional, Sequence, Union
 
 import numpy as np
 
-from .journal import EditEntry, KIND_CELLS, VERDICT_BLOCKED
+from .journal import EditEntry, KIND_AXIS, KIND_CELLS, VERDICT_BLOCKED
+from .profile import TAG_AXIS
 from .project import Tune
 
 __all__ = ["EditOp", "Selection", "EditResult", "EditRejected", "apply_op"]
@@ -265,13 +266,18 @@ def apply_op(
 
     if not np.all(np.isfinite(target)):
         raise EditRejected("result contains non-finite values")
+    is_axis = resolved.has(TAG_AXIS)
+    if is_axis and np.any(np.diff(target.ravel()) <= 0):
+        raise EditRejected(
+            f"{resolved.label}: axis breakpoints must be strictly increasing"
+        )
 
     # Atomic write. A guard rejection journals a blocked entry and leaves the
     # table byte-identical; we roll that entry back so the failed edit leaves no
     # trace — the definition of atomic here.
     n_before = len(tune.journal)
     entry = tune.write(
-        name, target, space=space, kind=KIND_CELLS,
+        name, target, space=space, kind=KIND_AXIS if is_axis else KIND_CELLS,
         intent=intent or f"{op.value} over {_describe(sel)}",
     )
     if entry.verdict == VERDICT_BLOCKED:

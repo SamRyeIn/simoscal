@@ -13,7 +13,7 @@ Bindings were verified against both switch-patch XDFs on 2026-07-11; see
 
 from __future__ import annotations
 
-from ..profile import TAG_NO_SYMBOL, Profile, TableSpec
+from ..profile import TAG_AXIS, TAG_NO_SYMBOL, Profile, TableSpec
 
 #: Slot count the 29.33 patch provides.
 SLOTS = (1, 2, 3, 4, 5)
@@ -39,7 +39,7 @@ _specs = [
         name="slot_put_rpm_axis", key="0x7d7dc",
         description="PUT SP RPM Axis — engine-speed breakpoints shared by all "
                     "five slot PUT setpoint grids",
-        units="rpm", shape=(1, 12), tags=frozenset({TAG_NO_SYMBOL}),
+        units="rpm", shape=(1, 12), tags=frozenset({TAG_AXIS, TAG_NO_SYMBOL}),
     ),
     TableSpec(
         name="slot_put_rpm_axis_header", key="0x7d7da",

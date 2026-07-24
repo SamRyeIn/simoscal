@@ -33,6 +33,7 @@ from ..model import AmbiguousTableError, SimosCalError
 
 __all__ = [
     "TAG_FLOAT_BUG",
+    "TAG_AXIS",
     "TAG_KG_PER_STROKE",
     "TAG_NO_SYMBOL",
     "Profile",
@@ -60,6 +61,10 @@ TAG_KG_PER_STROKE = "kg_per_stroke"
 
 #: Patch-added table with no A2L symbol — addressable only by uniqueid.
 TAG_NO_SYMBOL = "no_symbol"
+
+#: Breakpoint vector. Generic writes must preserve a strictly increasing axis;
+#: a non-monotonic axis makes every table sharing it ambiguous or unreachable.
+TAG_AXIS = "axis"
 
 
 @dataclass(frozen=True)

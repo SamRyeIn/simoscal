@@ -89,6 +89,12 @@ def test_heavy_dependencies_live_behind_extras() -> None:
     assert "openpyxl" in export, "openpyxl must be declared in the 'export' extra"
 
 
+def test_android_numpy_is_pinned_to_the_v0_runtime() -> None:
+    """The embedded kernel must use the exact NumPy proven by V0 parity."""
+    gradle = (CODE_ROOT / "android/engine/build.gradle.kts").read_text(encoding="utf-8")
+    assert 'install("numpy==1.26.2")' in gradle
+
+
 # A subprocess runs a fresh interpreter with matplotlib/openpyxl hard-blocked at
 # import, proving the closure holds independent of what the test env happens to
 # have installed. The blocker is a meta-path finder that raises ImportError for
@@ -123,15 +129,21 @@ _CLOSURE_SCRIPT = textwrap.dedent(
         else:
             raise SystemExit(f"blocker failed: {mod} imported")
 
-    # Touching a plot/export symbol must raise an actionable ImportError that
-    # names the extra to install, not a bare ModuleNotFoundError.
-    for sym, extra in (("plot_table", "plot"), ("write_xlsx", "export")):
+    # Touching a plot symbol and invoking the xlsx writer must raise actionable
+    # errors that name the extra, not a bare ModuleNotFoundError.
+    for sym, extra in (("plot_table", "plot"),):
         try:
             getattr(simoscal, sym)
         except ImportError as exc:
             assert extra in str(exc), (sym, str(exc))
         else:
             raise SystemExit(f"{sym} did not raise without its extra")
+    try:
+        simoscal.write_xlsx([], "never-written.xlsx")
+    except ImportError as exc:
+        assert "export" in str(exc), str(exc)
+    else:
+        raise SystemExit("write_xlsx did not raise without its extra")
 
     print("MOBILE_CLOSURE_OK")
     """
@@ -149,4 +161,33 @@ def test_library_imports_and_operates_without_heavy_extras() -> None:
         "importing simoscal (+ tune + analysis) with matplotlib/openpyxl blocked "
         f"must succeed and give actionable errors.\nSTDOUT:\n{proc.stdout}\n"
         f"STDERR:\n{proc.stderr}"
+    )
+
+
+def test_plot_extra_does_not_require_openpyxl() -> None:
+    """Plotting must import with matplotlib present and only openpyxl blocked."""
+    script = textwrap.dedent(
+        """
+        import sys, importlib.abc
+
+        class _Blocker(importlib.abc.MetaPathFinder):
+            def find_spec(self, name, path=None, target=None):
+                if name.split(".")[0] == "openpyxl":
+                    raise ImportError(f"blocked for plot-extra test: {name}")
+                return None
+
+        sys.meta_path.insert(0, _Blocker())
+        from simoscal import plot_table
+        assert callable(plot_table)
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=str(CODE_ROOT),
+    )
+    assert proc.returncode == 0, (
+        "the plot extra must not import the xlsx-only openpyxl dependency.\n"
+        f"STDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
     )

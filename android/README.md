@@ -7,15 +7,16 @@ here does bin math in Kotlin.
 
 ## Status
 
-| Piece                                   | State                                        |
-| --------------------------------------- | -------------------------------------------- |
-| Parity payload (`simoscal_v0_parity.py`) | Done, deterministic, verified on host         |
-| Host runner + golden                     | Done (`parity/run_host_parity.py`)            |
-| Engine decoupled from matplotlib/openpyxl | Done (see "Ordering note")                   |
-| Gradle/Chaquopy project                  | Builds (AGP 7.4.2 / Gradle 7.6.4 — see below) |
-| On-device parity verdict                 | **PASS** — digest match (2026-07-23)          |
+| Piece                                     | State                                         |
+| ----------------------------------------- | --------------------------------------------- |
+| Parity payload (`simoscal_v0_parity.py`)  | Done, deterministic, verified on host         |
+| Host runner + golden                      | Done (`parity/run_host_parity.py`)            |
+| Engine decoupled from matplotlib/openpyxl | Done (see "Ordering note")                    |
+| Gradle/Chaquopy project                   | Builds (AGP 7.4.2 / Gradle 7.6.4 — see below) |
+| Arm64-emulator parity verdict             | **PASS** — digest match (2026-07-23)          |
+| Physical-arm64 / x86_64 parity            | Pending — required to close V0                |
 
-## V0 verdict: GO
+## V0 verdict: provisional GO for implementation
 
 On a `Pixel 6 / API 35 / arm64` emulator, the embedded Chaquopy engine produced a
 parity report whose compared digest is **byte-for-byte identical** to the host
@@ -30,9 +31,10 @@ PARITY: MATCH — host and device agree on every compared field.
 That means, across all 3,814 tables decoded, the single-cell edit
 (`IP_PUT_SP` — Pressure up throttle setpoint, 1500 hPa → encoded
 1499.9780270084689), both checksum verdicts, the psi→hPa floor (10 psi → 1705
-hPa), and the `slot_curve()` boost edit, **the phone computes the same bytes as
-the desktop.** The plan's go/no-go clause is satisfied — continue with Chaquopy;
-the Kotlin-kernel port is **not** needed for v1.
+hPa), and the `slot_curve()` boost edit, **the arm64 emulator computes the same
+bytes as the desktop.** This is enough to continue implementation with
+Chaquopy, but it does not close the plan's full V0 gate: physical-arm64 and
+x86_64 parity runs remain required before v1 is declared runtime-complete.
 
 Measurements (emulator, arm64):
 
@@ -46,8 +48,7 @@ Measurements (emulator, arm64):
 | APK size (arm64 + x86_64)  | 54 MB (an arm64-only split is ~30 MB)    |
 
 All well within the "tolerable on your own phone in a garage" bar the plan set.
-Cold-start and a physical-device run remain to be measured by Sam; the emulator
-figures above are the parity-decisive ones.
+Cold-start, physical-arm64 parity, and x86_64 parity remain to be measured.
 
 ## The gate, in one sentence
 
