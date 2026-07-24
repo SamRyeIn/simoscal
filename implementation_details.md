@@ -207,8 +207,7 @@ future agent:
 - full V6 device execution and per-operation host/Android golden fixtures;
 - V7 Android import, navigation, review, and share UI;
 - V8 Compose boost-curve and generic calibration editors;
-- airplane-mode/process-death/device UI tests; and
-- a stronger standalone installed-wheel test boundary for V1.
+- airplane-mode/process-death/device UI tests.
 
 The implementation verifies software integrity only. It does not establish
 mechanical safety, and only human review plus real driving logs can validate a
@@ -242,6 +241,58 @@ The Python/Kotlin V6 facade and bridge instrumentation test were added, and the
 Android source compiled under JDK 17. The review log records these findings as
 `CR-20260724-04` through `CR-20260724-14`; all except the external V0 device
 gate are fixed.
+
+### 2026-07-24 — Independent cross-family review + installed-wheel closure
+
+Context: picking up the committed V4/V5/V6 continuation (`7f03e68`), which
+carried Codex's own review of its bridge/recovery work. The v1 plan reserves a
+cross-vendor adversarial pass on the byte-critical units (V0/V2/V3/V5/V6); this
+entry records that pass, performed by a different model family (Opus) than the
+author.
+
+Decision and rationale: the full suite was re-run and confirmed green (655
+passed, four expected `StaleChecksumWarning`s) rather than trusted from the
+prior writeup, then `simoscal/bridge.py` and `simoscal/tune/recovery.py` were
+read independently. No confirmed safety or provenance defect surfaced — the
+recovery reconstruction is content-addressed and fail-loud at every step
+(source-bin hash, per-space XDF hash, engine version, full-buffer hash, and
+per-undo-snapshot hash all raise `RecoveryError` on mismatch), generic edits are
+atomic, axis writes carry the strictly-increasing invariant, and `build` refuses
+any reference/source bin whose hash is not the session's imported bin.
+
+Two Low findings resulted (`code_review.md`, CR-20260724-15/16):
+
+- CR-15 (Fixed) — the mobile-closure tests imported from the source checkout, so
+  no test proved a *built and installed* wheel still carries the whole on-device
+  closure. Added `test_built_wheel_installs_and_imports_the_whole_mobile_closure`
+  in `tests/test_packaging.py`: it builds a wheel, installs only `simoscal`
+  (`--no-deps`) into an isolated target, and imports the numpy-only closure from
+  that installed tree, asserting each module's `__file__` resolves under the
+  target. This closes the V1 installed-wheel strength gap this document
+  previously listed as remaining, at the blast radius of CR-20260720-03.
+- CR-16 (Open, Low) — `_op_bridge_info` is gated by the same version check it is
+  meant to bootstrap; it fails closed and the engine version is still recoverable
+  from the `VERSION_MISMATCH` error's advanced detail, so this is left as a
+  contract decision for the author, not fixed unilaterally.
+
+Safety/provenance impact: none negative. The installed-wheel test strengthens
+the guarantee that the on-device artifact cannot silently omit a safety-relevant
+module. No source bin or generated bin was modified; the recovery image stayed
+`d61a6e29…`.
+
+Files changed: `tests/test_packaging.py` (new test + `os` import),
+`code_review.md` (review section + two index rows), this file. Commits
+`7f03e68` (the reviewed continuation) and `1edb59d` (this review + test).
+
+Verification: `tests/test_packaging.py` 8 passed; the new test passes in ~2.6 s;
+full suite green at 655 as above.
+
+Remaining risks or follow-up: the plan's cross-runtime golden gate (per-op host-
+vs-Android byte-identical fixtures) still does not exist; its host side needs the
+bridge's nondeterministic response fields (uuid `session_id`, temp paths)
+normalized before capture, and its Android side needs the open CR-20260724-14
+device runs. That is the next byte-critical unit; V7/V8 Android UI remains the
+next visible unit and is Sonnet-delegated under Opus review.
 
 ### Future entry template
 
