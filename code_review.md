@@ -54,6 +54,9 @@ in place as they are fixed or dismissed.
 | CR-20260720-02 | High     | CONFIRMED | simoscal/tune/project.py                            | Intentional restoration to stock fails as unexplained bytes                 | Fixed (2026-07-20)  |
 | CR-20260720-03 | Medium   | CONFIRMED | pyproject.toml                                      | Installed distributions omit all tune domain modules                        | Fixed (2026-07-20)  |
 | CR-20260720-04 | Medium   | CONFIRMED | ../Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R13.py | R13 template omits the required explicit intent on most domain calls        | Fixed (2026-07-20)  |
+| CR-20260724-01 | High     | CONFIRMED | simoscal/tune/build_service.py                      | Extra allowances make unjournaled edits verified, shareable, and invisible  | Fixed (2026-07-24)  |
+| CR-20260724-02 | High     | CONFIRMED | simoscal/tune/build_service.py                      | Public report assembler can emit internally contradictory shareable reports | Fixed (2026-07-24)  |
+| CR-20260724-03 | Medium   | CONFIRMED | simoscal/tune/build_service.py                      | Unchanged declarations are reported as changed tables                       | Fixed (2026-07-24)  |
 
 ---
 
@@ -987,3 +990,172 @@ Four findings: 2 High and 2 Medium, all CONFIRMED and Open. The complete existin
 suite passes, but it has no regression coverage for restoring a previous edit to
 stock, treating unverifiable checksums as a failed build, or importing the domain
 facades from an installed distribution.
+
+---
+
+## Review 2026-07-24 — Quick Edit V3 renderer-independent build service
+
+- **Scope:** commit `fa59007` relative to parent `d9f43eb`, reviewed as one V3
+  unit. Priority was the extraction in `simoscal/tune/pipeline.py`, followed by
+  `simoscal/tune/build_service.py` and `tests/test_build_service.py`; the V3
+  plan unit, `README.md` safety/build-service sections, and this findings index
+  supplied the acceptance contract.
+- **Method:** compared the old inline `build()` spine statement-for-statement
+  with `run_gates()`, traced all `BuildReport` construction and sharing paths,
+  inspected journal/audit semantics, ran focused adversarial reproductions, ran
+  the focused build suites, and ran the complete test suite.
+- **Verification:** the extraction preserved the complete gate set, order,
+  problem strings, accumulate-all behavior, and final raise-after-render
+  behavior. Focused suites completed with **42 passed**. The complete suite
+  completed with **597 passed** and the same 4 expected
+  `StaleChecksumWarning`s.
+- **Headline:** the gate extraction itself is behavior-identical, but the new
+  public model boundary does not enforce its own journal-derived/shareable
+  claims. An arbitrary audit allowance can make an unjournaled edit shareable
+  while the model lists no edit, and direct `build_report()` use can return a
+  share path for an audit its own gate row says failed. The existing ten service
+  tests do not exercise either path.
+
+### CR-20260724-01 — Extra allowances make unjournaled edits verified, shareable, and invisible — High, CONFIRMED — Fixed (2026-07-24)
+
+`simoscal/tune/build_service.py:246-270` exposes `extra_allowances` on the Quick
+Edit service and passes them unchanged into the raw-diff audit. The later model
+is derived only from `tune.journal` (`:320-322`), while shareability depends on
+the resulting outcome being problem-free and having any audit (`:295-312`).
+Nothing requires an extra allowance to correspond to a journal entry or causes
+its attributed bytes to appear in `edits` or `changed_tables`.
+
+**Reproduction:** edited `IP_TQI_REF_MAX_MON` — Maximum reference indicated
+engine torque directly through the underlying `CalFile`, bypassing `Tune.write`,
+then supplied that table's byte extent as a caller-defined `Allowance`. The
+service returned `verified=True`, a non-null `share_path`, and a clean audit
+covering 22 changed bytes (8 checksum-storage bytes plus 14 caller-allowed
+bytes), while reporting zero edits and zero changed tables.
+
+**Failure scenario:** a bridge caller, future app integration, or mistaken
+internal caller covers an unjournaled calibration write with an extra allowance.
+The byte audit calls it attributed, so the bin becomes shareable, but the review
+model gives the human no table-level claim to inspect. This violates V3's
+requirement that allowances come from journal entries plus stored checksum
+bytes, and reopens the exact “bin changed but report did not” hole the service
+claims to close.
+
+**Suggested fix:** remove arbitrary `extra_allowances` from `build_revision()`,
+or replace it with typed, journal/model-visible allowance evidence whose changed
+bytes are included in the report. Add the reproduced zero-journal smuggled-write
+case and require `verified=False` plus `share_path=None`.
+
+### CR-20260724-02 — Public report assembler can emit internally contradictory shareable reports — High, CONFIRMED — Fixed (2026-07-24)
+
+`simoscal/tune/build_service.py:282-324` exports `build_report()` as a public
+assembler over a caller-supplied, mutable `GateOutcome` and the tune's current,
+mutable journal. It defines `verified` only as `not outcome.problems` and
+`shareable` only as `verified and outcome.diff is not None` (`:295-300`); it
+does not require a clean audit or revalidate the other recorded gate facts.
+The gate rows and edit model are then re-derived later from the potentially
+inconsistent outcome and live tune (`:316-322`).
+
+**Reproductions:**
+
+1. Took a clean no-reference outcome, attached a `RawDiffAudit` with one
+   unexplained byte, and called `build_report()`. The result had
+   `verified=True` and a non-null `share_path` while `audit.clean=False` and its
+   own `Raw-diff audit` gate row had `passed=False`.
+2. Ran a clean audited gate chain, wrote
+   `IP_PQ_CHA_MAX` — Maximum allowed pressure quotient at turbo charger
+   compressor to the tune *after* the gates, then called `build_report()`. The
+   staged bin/audit had zero changed bytes, but the verified, shareable report
+   listed the post-gate journal entry and table as changes.
+
+**Failure scenario:** direct use—the path the public API and its dedicated test
+explicitly support—produces a report whose action fields disagree with its own
+evidence, or whose claimed changes were never verified against the staged bin.
+`share_path = verified AND audit.ran` therefore does not close the no-byte-level-
+claim hole; a failed audit can still count as “ran.”
+
+**Suggested fix:** make a gate outcome immutable and self-contained, snapshot
+the journal-derived model during `run_gates()`, and derive both `verified` and
+`share_path` from explicit immutable gate verdicts. At minimum, sharing must
+require `outcome.ok`, checksum-clean, no readback failures, `diff is not None`,
+and `diff.clean`; reject a tune/journal state that differs from the one gated.
+Add adversarial direct-assembler tests for an unclean audit and post-gate journal
+mutation.
+
+### CR-20260724-03 — Unchanged declarations are reported as changed tables — Medium, CONFIRMED — Fixed (2026-07-24)
+
+`simoscal/tune/build_service.py:491-504` builds `changed_tables` from
+`Journal.tables_touched()`. That method intentionally includes declarations
+that moved no bytes so restore-to-source readback remains safe, but the desktop
+HTML renderer already distinguishes those declarations from actual changes by
+intersecting their extent with `RawDiffAudit.changed_offsets`
+(`simoscal/tune/report_html.py:267-301`). The service model does not.
+
+**Reproduction:** journaled a write of the current value back to
+`IP_PQ_CHA_MAX` — Maximum allowed pressure quotient at turbo charger compressor
+and built against the unchanged source. The entry verdict was `unchanged`, its
+`moved_bytes` was 0, and the audit found 0 changed bytes, yet
+`changed_tables` contained that table.
+
+**Failure scenario:** the Compose review UI presents a carried-forward/no-op
+declaration as a table changed in this flash, contradicting the byte audit and
+adding review noise to the highest-value list. The model can therefore describe
+a change the build did not make even on the normal `build_revision()` path.
+
+**Suggested fix:** when an audit ran, include a table in `changed_tables` only
+when its journaled offset/declared extent intersects `outcome.diff.changed_offsets`,
+matching the desktop HTML logic. Retain a documented no-reference fallback if
+the lower-level assembler continues to support one, and add a no-op declaration
+regression test.
+
+### Open questions / assumptions
+
+- `extra_allowances` may be needed by the desktop build for explicit patch
+  transitions, but V3's app service contract says the imported bin is both
+  source and reference and names only journal/checksum allowances. This review
+  therefore treats arbitrary service-level allowances as outside that contract,
+  not as an accepted escape hatch.
+- `verified=True` without an audit remains the documented lower-level
+  `build_report()` meaning, provided `share_path` stays `None`. The High finding
+  is the stronger contradiction: an audit that ran and failed can still yield
+  both `verified=True` and a share path through that same direct API.
+
+### Summary
+
+Three findings: 2 High and 1 Medium, all CONFIRMED and Open. The
+`run_gates()` extraction is behavior-identical to the old inline build spine;
+the defects are in the new report/share boundary and are not caught by the
+otherwise-green 597-test suite.
+
+### Resolution (2026-07-24)
+
+All three fixed in `simoscal/tune/build_service.py` (+ a supporting snapshot in
+`simoscal/tune/pipeline.py`), with an adversarial regression test per finding in
+`tests/test_build_service.py`. Full suite green at **601 passed** (was 597; +4
+new tests, same 4 expected `StaleChecksumWarning`s), and the service import path
+stays matplotlib-free.
+
+- **CR-20260724-01** — Removed the `extra_allowances` parameter from
+  `build_revision()` entirely. The app service now derives every audit allowance
+  itself (journaled edits, declared restores, stored checksums); there is no
+  caller-supplied door through which an unjournaled write could be forgiven and
+  hidden from the model. The desktop `build()` / `run_gates()` keep their
+  `extra_allowances` for legitimate patch transitions. Test:
+  `test_service_offers_no_caller_supplied_allowance`.
+- **CR-20260724-02** — Two changes. (a) `share_path` is now derived from the
+  explicit gate facts — `outcome.ok` **and** checksum `CLEAN` **and** no readback
+  failures **and** the audit ran **and** `diff.clean` — not from an empty problem
+  list, so an audit that *ran and failed* can no longer license a share path.
+  (b) `run_gates()` now captures a `JournalFingerprint` (entry count + measured +
+  declared offset sets) of the journal it gated, stored on `GateOutcome.journal`.
+  `build_report()` compares it to the live journal and, on any drift, marks the
+  build neither verified nor shareable and records why — a journal mutated after
+  the gates ran can no longer produce a report describing an unverified bin.
+  Tests: `test_an_unclean_audit_is_never_shareable`,
+  `test_journal_mutated_after_gates_is_rejected`.
+- **CR-20260724-03** — `_changed_tables()` now takes the audit diff and, when one
+  ran, keeps a table only where its measured/declared byte extent intersects
+  `diff.changed_offsets` — the same logic `report_html._changed_tables_section`
+  uses — so a re-declared table that moved no bytes is no longer listed as
+  changed. The no-op edit still appears in the full `edits` journal as a 0-byte
+  move; the no-reference path still lists every touched table. Test:
+  `test_a_noop_declaration_is_not_a_changed_table`.

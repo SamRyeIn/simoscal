@@ -35,6 +35,7 @@ from simoscal.tune import (
     build_revision,
     run_gates,
 )
+from simoscal.tune.audit import RawDiffAudit
 
 
 @pytest.fixture
@@ -260,6 +261,105 @@ def test_build_report_without_a_reference_is_verified_but_not_shareable(
     assert report.share_path is None  # but nothing to share without an audit
     audit_gate = next(g for g in report.gates if g.name == "Raw-diff audit")
     assert not audit_gate.passed and not audit_gate.ran
+
+
+# --------------------------------------------------------------------------- #
+# the report/share boundary — the V3 cross-vendor review findings
+# --------------------------------------------------------------------------- #
+def test_service_offers_no_caller_supplied_allowance(tune: Tune) -> None:
+    """CR-20260724-01: the app service must not expose ``extra_allowances``.
+
+    An arbitrary allowance could forgive an unjournaled write in the byte audit
+    and leave it invisible in the model — a bin changed but the report did not.
+    That escape hatch stays on the desktop build; the service has no such door.
+    """
+    import inspect
+
+    assert "extra_allowances" not in inspect.signature(build_revision).parameters
+    with pytest.raises(TypeError):
+        build_revision(  # type: ignore[call-arg]
+            tune, "R01", staging_dir="x", reference_bin="x", extra_allowances=(),
+        )
+
+
+def test_an_unclean_audit_is_never_shareable(
+    tune: Tune, tmp_path: Path
+) -> None:
+    """CR-20260724-02: a failed audit that ``ran`` must not yield a share path.
+
+    The direct assembler is handed a clean gate outcome, then an audit carrying
+    an unexplained byte is attached — the exact inconsistency a hand-built or
+    mistaken caller can present. ``share_path`` must stay ``None``: an audit that
+    ran and *failed* is not a licence to share, even if the problem list is empty.
+    """
+    tune.write_cells("pressure_quotient_max", {(0, 0): 1.7}, intent="lower")
+    outcome = run_gates(tune, tmp_path / "r01.bin", reference_bin=None)
+    assert outcome.ok  # every gate that ran passed; no reference, so no audit
+
+    # Attach an audit that ran and found an unexplained byte, but leave the
+    # problem list untouched — the contradiction the finding describes.
+    outcome.diff = RawDiffAudit(
+        reference="stock.bin", candidate=str(outcome.bin_path),
+        changed=1, unexplained=(0x1234,), changed_offsets=frozenset({0x1234}),
+    )
+    report = build_report(tune, "R01", outcome)
+
+    assert report.share_path is None                 # the safety property
+    assert report.audit.ran and not report.audit.clean
+    audit_gate = next(g for g in report.gates if g.name == "Raw-diff audit")
+    assert not audit_gate.passed                     # the row agrees with the model
+
+
+def test_journal_mutated_after_gates_is_rejected(
+    tune: Tune, tmp_path: Path, real_bin: Path
+) -> None:
+    """CR-20260724-02: a post-gate journal edit invalidates the whole report.
+
+    The gates run and pass against one journal; another table is then written to
+    the tune, so the live journal no longer matches the saved bin. The report is
+    built from that live journal — it must be neither verified nor shareable, and
+    must say why, rather than describe changes the gated bin never contained.
+    """
+    tune.write_cells("pressure_quotient_max", {(0, 0): 1.7}, intent="gated edit")
+    outcome = run_gates(tune, tmp_path / "r01.bin", reference_bin=real_bin)
+    assert outcome.ok and outcome.diff is not None and outcome.diff.clean
+
+    # Mutate the journal *after* the gates saved and audited the bin.
+    tune.write_cells("pressure_quotient_max", {(1, 0): 1.6}, intent="post-gate")
+    report = build_report(tune, "R01", outcome, reference_bin=real_bin)
+
+    assert not report.verified
+    assert report.share_path is None
+    assert any("journal changed after the gates" in p for p in report.problems)
+
+
+def test_a_noop_declaration_is_not_a_changed_table(
+    tune: Tune, tmp_path: Path, real_bin: Path
+) -> None:
+    """CR-20260724-03: a re-declared table that moved no bytes is not "changed".
+
+    Writing a table's current value back journals it (the readback needs the
+    declaration) but changes nothing versus the source. The byte audit finds zero
+    changed bytes, so the model's ``changed_tables`` — the highest-value review
+    list — must not list it, matching the desktop HTML renderer and the audit.
+    The no-op edit still appears in the full ``edits`` journal, as a 0-byte move.
+    """
+    view = tune.space("base").cal.get("IP_PQ_CHA_MAX")
+    current = float(np.asarray(view.values)[0, 0])
+    tune.write_cells("pressure_quotient_max", {(0, 0): current},
+                     intent="re-declare the current value — no change")
+
+    report = build_revision(
+        tune, "R01", staging_dir=tmp_path, reference_bin=real_bin,
+    )
+
+    assert report.verified
+    assert report.audit.ran and report.audit.clean
+    # Not in the changed list — nothing moved versus the reference.
+    assert not any("IP_PQ_CHA_MAX" in t.label for t in report.changed_tables)
+    # But still journaled, as a zero-byte declaration.
+    noop = next(e for e in report.edits if "IP_PQ_CHA_MAX" in e.label)
+    assert noop.moved_bytes == 0
 
 
 # --------------------------------------------------------------------------- #

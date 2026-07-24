@@ -34,10 +34,10 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional, Sequence, Union
+from typing import Optional, Union
 
 from ..checksum import ChecksumReport
-from . import audit
+from .audit import RawDiffAudit
 from .journal import (
     KIND_CHECK,
     VERDICT_BLOCKED,
@@ -47,6 +47,7 @@ from .journal import (
 from .pipeline import (
     CHECKSUM_CLEAN,
     GateOutcome,
+    JournalFingerprint,
     run_gates,
 )
 from .project import Tune
@@ -243,7 +244,6 @@ def build_revision(
     reference_bin: Union[str, Path],
     bin_name: str = "",
     source_bin: Optional[Union[str, Path]] = None,
-    extra_allowances: Sequence[audit.Allowance] = (),
     write_json: bool = True,
 ) -> BuildReport:
     """Run the full gate chain over ``tune`` and return a :class:`BuildReport`.
@@ -259,15 +259,19 @@ def build_revision(
     byte-audit reference. A build with no reference makes no byte-level claim,
     which is not something this service will present as verified — that path is
     :func:`simoscal.tune.build`, for a first-ever revision on the desktop.
+
+    The service deliberately exposes **no** caller-supplied audit allowance. The
+    only bytes the audit may forgive are the journaled edits, declared restores,
+    and stored checksums :func:`~simoscal.tune.run_gates` derives itself; an
+    arbitrary allowance could forgive an unjournaled write and leave it invisible
+    in the model, so that escape hatch stays on the desktop build only
+    (CR-20260724-01).
     """
     staging_dir = Path(staging_dir)
     staging_dir.mkdir(parents=True, exist_ok=True)
     bin_path = staging_dir / (bin_name or f"{revision}.bin")
 
-    outcome = run_gates(
-        tune, bin_path,
-        reference_bin=reference_bin, extra_allowances=extra_allowances,
-    )
+    outcome = run_gates(tune, bin_path, reference_bin=reference_bin)
     report = build_report(
         tune, revision, outcome,
         source_bin=source_bin, reference_bin=reference_bin,
@@ -291,24 +295,56 @@ def build_report(
 
     Split out from :func:`build_revision` so the model can be built (and tested)
     from any gate outcome without re-running the gates.
+
+    Both :attr:`~BuildReport.verified` and :attr:`~BuildReport.share_path` are
+    derived from the gate verdicts here, not merely from ``outcome.ok`` — an
+    outcome whose problem list disagrees with its own gate facts (an unclean
+    audit, a stale checksum) cannot slip through as verified/shareable. And
+    because this assembler reads the *live* journal, it first checks that journal
+    still matches the one the gates ran against; a post-gate mutation makes the
+    build neither verified nor shareable (CR-20260724-02).
     """
-    verified = outcome.ok
-    # Shareable is stricter than verified: it also requires the byte audit to
-    # have actually run, so a report carrying no byte-level claim is never handed
-    # onward — even though build_revision already requires a reference to
-    # guarantee the audit ran.
-    shareable = verified and outcome.diff is not None
     journal = tune.journal
+
+    # Freshness: the model below is derived from the live journal, but the gate
+    # verdicts describe the journal as it stood when the bin was saved. If those
+    # differ, the journal was edited after the gates ran and the model would
+    # describe a bin nothing verified — reject it rather than present it.
+    drifted = (
+        outcome.journal is not None
+        and JournalFingerprint.of(journal) != outcome.journal
+    )
+
+    problems = outcome.problems
+    if drifted:
+        problems = problems + (
+            "journal changed after the gates ran — the report would describe a "
+            "bin that was never verified",
+        )
+
+    verified = outcome.ok and not drifted
+    # Shareable is stricter than verified: every real gate verdict must be clean
+    # (not just an empty problem list), the byte audit must have actually run,
+    # and it must be clean. A failed, unaudited, or drifted build hands nothing
+    # onward — this predicate does not trust that ``problems`` was populated
+    # consistently with the gate facts.
+    shareable = (
+        verified
+        and outcome.checksum_state == CHECKSUM_CLEAN
+        and not outcome.readback_failures
+        and outcome.diff is not None
+        and outcome.diff.clean
+    )
 
     report = BuildReport(
         schema_version=SCHEMA_VERSION,
         revision=revision,
         verified=verified,
-        summary=_summary(revision, outcome),
-        problems=outcome.problems,
+        summary=_summary(revision, verified, problems),
+        problems=problems,
         staged_bin=str(outcome.bin_path),
-        # The one structural share gate: a failed or unaudited build hands
-        # nothing onward.
+        # The one structural share gate: a failed, unaudited, or drifted build
+        # hands nothing onward.
         share_path=str(outcome.bin_path) if shareable else None,
         source_bin=str(source_bin) if source_bin is not None else None,
         reference_bin=str(reference_bin) if reference_bin is not None else None,
@@ -319,7 +355,7 @@ def build_report(
         audit=_audit_model(outcome),
         counts=journal.summary_counts(),
         edits=_edit_models(journal),
-        changed_tables=_changed_tables(journal),
+        changed_tables=_changed_tables(journal, outcome.diff),
     )
     return report
 
@@ -327,17 +363,16 @@ def build_report(
 # --------------------------------------------------------------------------- #
 # model derivation (all pure functions of the journal + outcome)
 # --------------------------------------------------------------------------- #
-def _summary(revision: str, outcome: GateOutcome) -> str:
-    if outcome.ok:
+def _summary(revision: str, verified: bool, problems: tuple[str, ...]) -> str:
+    if verified:
         return (
             f"{revision}: verified — every gate passed. This makes the bin "
             "reviewable, not approved: read the journal before flashing. This "
             "tool never flashes."
         )
-    n = len(outcome.problems)
     return (
-        f"{revision}: NOT verified — {n} gate(s) failed. DO NOT FLASH: "
-        f"{'; '.join(outcome.problems)}."
+        f"{revision}: NOT verified — {len(problems)} gate(s) failed. DO NOT "
+        f"FLASH: {'; '.join(problems)}."
     )
 
 
@@ -488,17 +523,37 @@ def _edit_models(journal: Journal) -> tuple[EditModel, ...]:
     return tuple(models)
 
 
-def _changed_tables(journal: Journal) -> tuple[TableRef, ...]:
-    """The tables that moved bytes, each with its `ID` — Description label.
+def _changed_tables(
+    journal: Journal, diff: Optional[RawDiffAudit]
+) -> tuple[TableRef, ...]:
+    """The tables that changed *this* build, each with its `ID` — Description label.
 
     Keyed on ``(space, XDF key)`` like :meth:`Journal.tables_touched`, so one
     table journaled under both a logical name and its symbol appears once. The
     label is taken from the first entry that names that key.
+
+    When a byte audit ran, :meth:`Journal.tables_touched` overstates the answer:
+    it includes declarations that moved no bytes (a restore-to-source re-write),
+    which the readback needs but which did *not* change versus the reference. So
+    a table is kept only when its measured/declared extent intersects the audit's
+    changed-offset set — the bytes that actually differ from the reference bin —
+    matching the desktop HTML renderer (``report_html._changed_tables_section``)
+    and the byte audit itself (CR-20260724-03). With no reference (no audit),
+    there is no previous flash to diff against, so every touched table is kept.
     """
     label_for: dict[tuple[str, object], str] = {}
+    extent_for: dict[tuple[str, object], frozenset[int]] = {}
     for entry in journal.touching():
-        label_for.setdefault((entry.space, entry.key), entry.label)
-    return tuple(
-        TableRef(space=space, key=str(key), label=label_for.get((space, key), ""))
-        for space, key in journal.tables_touched()
-    )
+        key = (entry.space, entry.key)
+        label_for.setdefault(key, entry.label)
+        extent_for[key] = extent_for.get(key, frozenset()) | entry.offsets | entry.declared
+
+    delta = diff.changed_offsets if diff is not None else None
+    refs: list[TableRef] = []
+    for space, key in journal.tables_touched():
+        if delta is not None and not (extent_for.get((space, key), frozenset()) & delta):
+            continue  # declared but no byte differs from the reference — not a change
+        refs.append(
+            TableRef(space=space, key=str(key), label=label_for.get((space, key), ""))
+        )
+    return tuple(refs)

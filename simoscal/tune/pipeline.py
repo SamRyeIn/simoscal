@@ -53,7 +53,14 @@ from .journal import (
 )
 from .project import BASE_SPACE, Tune
 
-__all__ = ["BuildFailed", "BuildResult", "GateOutcome", "build", "run_gates"]
+__all__ = [
+    "BuildFailed",
+    "BuildResult",
+    "GateOutcome",
+    "JournalFingerprint",
+    "build",
+    "run_gates",
+]
 
 #: Physical-unit tolerance for the final-bin readback. A table is stored
 #: quantized, so a written 3.1 reads back as 3.100098; anything past this is a
@@ -102,6 +109,34 @@ class BuildFailed(SimosCalError):
         )
 
 
+@dataclass(frozen=True)
+class JournalFingerprint:
+    """A cheap identity of the journal at gate time.
+
+    :func:`run_gates` derives the audit allowances from the journal and captures
+    this alongside the verdicts. A renderer that builds its model from the *live*
+    journal (:mod:`simoscal.tune.build_service`) compares this to the journal it
+    is about to read: if they differ, the journal was mutated after the gates
+    ran, so the model would describe a bin the gates never saw — and the build
+    must not be presented as verified (CR-20260724-02).
+
+    ``entry_count`` catches an appended entry; the two offset sets catch a value
+    change to an existing entry (measured moves) or a re-declared extent.
+    """
+
+    entry_count: int
+    changed_offsets: frozenset[int]
+    declared_offsets: frozenset[int]
+
+    @classmethod
+    def of(cls, journal: Journal) -> "JournalFingerprint":
+        return cls(
+            entry_count=len(journal),
+            changed_offsets=journal.changed_offsets(),
+            declared_offsets=journal.declared_offsets(),
+        )
+
+
 @dataclass
 class GateOutcome:
     """The verified core of a build: the bin was saved and every mandatory gate
@@ -114,6 +149,9 @@ class GateOutcome:
     Because it imports no matplotlib, an embedded runtime (the Android engine)
     can run the full gate chain and read the verdicts without the desktop plotting
     stack — which is what :mod:`simoscal.tune.build_service` is built on.
+
+    :attr:`journal` fingerprints the journal the gates were computed against, so
+    a downstream model derived from a later, mutated journal is detectable.
     """
 
     bin_path: Path
@@ -122,6 +160,10 @@ class GateOutcome:
     readback_failures: tuple[str, ...]
     diff: Optional[audit.RawDiffAudit]
     problems: tuple[str, ...]
+    #: The journal at the instant the gates finished (after post-save checks were
+    #: journaled). ``None`` only for a hand-constructed outcome that never ran the
+    #: gates — the freshness check is skipped then, so it never masks a real drift.
+    journal: Optional[JournalFingerprint] = None
 
     @property
     def ok(self) -> bool:
@@ -345,6 +387,9 @@ def run_gates(
         readback_failures=readback_failures,
         diff=diff,
         problems=tuple(problems),
+        # Captured last: the post-save checks above appended KIND_CHECK entries,
+        # so this fingerprints the journal the returned model will be built from.
+        journal=JournalFingerprint.of(tune.journal),
     )
 
 
