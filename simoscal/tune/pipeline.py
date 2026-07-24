@@ -40,12 +40,13 @@ import numpy as np
 from ..calfile import CalFile
 from ..checksum import ChecksumReport, StaleChecksumWarning
 from ..model import SimosCalError
-from ..plot import TableMismatchError, compare_tables
 from ..render import render_table
 from . import audit
+from .report_html import render_report_html
 from .journal import (
     KIND_CHECK,
     VERDICT_BLOCKED,
+    VERDICT_SUPERSEDED,
     VERDICT_UNCHANGED,
     EditEntry,
     Journal,
@@ -114,7 +115,17 @@ class BuildResult:
     readback_failures: tuple[str, ...] = ()
     diff: Optional[audit.RawDiffAudit] = None
     plots: tuple[Path, ...] = ()
+    #: Comparison plots grouped by the ``(space, XDF key)`` of the table they
+    #: depict, in the order tables were touched. The flat :attr:`plots` is the
+    #: same paths ungrouped; this mapping lets a reviewer-facing renderer show a
+    #: changed table's plot next to that table without re-resolving names.
+    plots_by_table: dict[tuple[str, Union[str, int]], tuple[Path, ...]] = None  # type: ignore[assignment]
+    html_report_path: Optional[Path] = None
     problems: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.plots_by_table is None:
+            self.plots_by_table = {}
 
     @property
     def checksum_state(self) -> str:
@@ -226,9 +237,10 @@ def build(
             problems.append(f"{len(diff.unexplained)} unexplained changed byte(s)")
 
     # 5. comparison plots ---------------------------------------------------- #
-    plot_paths: tuple[Path, ...] = ()
+    plots_by_table: dict[tuple[str, Union[str, int]], tuple[Path, ...]] = {}
     if plots and reference_bin is not None:
-        plot_paths = _compare_plots(tune, reference_bin, bin_path, out_dir / "compare")
+        plots_by_table = _compare_plots(tune, reference_bin, bin_path, out_dir / "compare")
+    plot_paths = tuple(p for group in plots_by_table.values() for p in group)
 
     # 6. report --------------------------------------------------------------- #
     result = BuildResult(
@@ -241,10 +253,19 @@ def build(
         readback_failures=readback_failures,
         diff=diff,
         plots=plot_paths,
+        plots_by_table=plots_by_table,
+        html_report_path=out_dir / "report.html",
         problems=tuple(problems),
     )
     result.report_path.write_text(
         render_report(tune, result, title=title, summary=summary), encoding="utf-8"
+    )
+    # The reviewer-facing page: same journal and gate verdicts as report.md,
+    # laid out for a browser at the flash gate. Rendered from the journal too,
+    # so it cannot drift from report.md or from what the build did.
+    result.html_report_path.write_text(
+        render_report_html(tune, result, title=title, summary=summary),
+        encoding="utf-8",
     )
 
     if problems:
@@ -298,14 +319,27 @@ def _readback(tune: Tune, bin_path: Path) -> tuple[str, ...]:
 
 def _compare_plots(
     tune: Tune, reference_bin: Union[str, Path], bin_path: Path, png_dir: Path
-) -> tuple[Path, ...]:
+) -> dict[tuple[str, Union[str, int]], tuple[Path, ...]]:
     """Before/after PNGs for each changed table, reference bin vs this build.
+
+    Returns the written PNGs grouped by the ``(space, XDF key)`` of the table
+    they depict — the association is exact here, where the plot's name is
+    resolved, so a reviewer-facing renderer never has to guess which file goes
+    with which table.
 
     A table whose own axis was re-breakpointed raises
     :class:`TableMismatchError` — a composite of two different axes would be
-    misleading, so it is skipped here and covered by the report's text instead.
+    misleading, so it is skipped here (an empty entry) and covered by the
+    report's text instead.
     """
-    paths: list[Path] = []
+    # Imported here rather than at module scope so that building, verifying, and
+    # auditing a bin never require matplotlib. Only *rendering* PNGs does, and
+    # that is the one caller of this function. Embedded runtimes (the Android
+    # engine) carry no matplotlib at all, so a top-level import would make the
+    # whole pipeline unimportable there.
+    from ..plot import TableMismatchError, compare_tables
+
+    by_table: dict[tuple[str, Union[str, int]], tuple[Path, ...]] = {}
     before_cals: dict[str, CalFile] = {}
     after_cals: dict[str, CalFile] = {}
     for space_name, key in tune.journal.tables_touched():
@@ -314,14 +348,15 @@ def _compare_plots(
             before_cals[space_name] = CalFile.open(str(space.xdf), str(reference_bin))
             after_cals[space_name] = CalFile.open(str(space.xdf), str(bin_path))
         try:
-            paths.extend(compare_tables(
+            written = compare_tables(
                 render_table(before_cals[space_name].get(key)),
                 after_cals[space_name].get(key),
                 png_dir,
-            ))
+            )
         except TableMismatchError:
-            continue  # axis re-breakpointed; the report's detail covers it
-    return tuple(paths)
+            written = []  # axis re-breakpointed; the report's detail covers it
+        by_table[(space_name, key)] = tuple(written)
+    return by_table
 
 
 # --------------------------------------------------------------------------- #
@@ -350,7 +385,7 @@ def render_report(
         lines += [summary, ""]
 
     lines += ["## Edit journal", ""]
-    counts = tune.journal.counts()
+    counts = tune.journal.summary_counts()
     if counts:
         lines += [
             "  ".join(f"**{k}**: {v}" for k, v in counts.items()), "",
@@ -398,17 +433,23 @@ def render_report(
 
 def _journal_table(journal: Journal) -> str:
     headers = ["Table", "Change", "Verdict", "Before", "After", "Why / detail"]
+    superseded = journal.superseded()
     rows = []
-    for entry in journal:
+    for i, entry in enumerate(journal):
         detail = entry.intent
         if entry.detail:
             detail = f"{detail} — {entry.detail}" if detail else entry.detail
         if entry.warning:
             detail = f"{detail} ⚠ {entry.warning}".strip()
+        verdict = entry.verdict
+        if i in superseded:
+            verdict = VERDICT_SUPERSEDED
+            note = _superseded_note(superseded[i])
+            detail = f"{note}{' — ' + detail if detail else ''}"
         rows.append([
             entry.label,
             entry.scope_text(),
-            entry.verdict,
+            verdict,
             entry.before_text(),
             entry.after_text(),
             detail,
@@ -416,6 +457,15 @@ def _journal_table(journal: Journal) -> str:
     if not rows:
         return "_No edits were journaled — this build changed nothing._"
     return _md_table(headers, rows)
+
+
+def _superseded_note(writers: Sequence[EditEntry]) -> str:
+    """Prose linking a deferred SOP skip to the writes that stand in its place."""
+    names = ", ".join(dict.fromkeys(f"`{w.name}`" for w in writers))
+    return (
+        "the base recipe deferred this; this revision writes it below "
+        f"({names})"
+    )
 
 
 def _md_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:

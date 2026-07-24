@@ -37,6 +37,7 @@ __all__ = [
     "VERDICT_BLOCKED",
     "VERDICT_GUARDED_SKIP",
     "VERDICT_SKIPPED",
+    "VERDICT_SUPERSEDED",
     "VERDICT_UNCHANGED",
     "summarize",
 ]
@@ -58,6 +59,14 @@ VERDICT_GUARDED_SKIP = "guarded_skip"    # a guard declined to lower/alter a val
 VERDICT_BLOCKED = "blocked"              # a guard rejected the write outright
 VERDICT_SKIPPED = "skipped"              # deliberately not done; reason recorded
 
+#: Display-only pseudo-verdict — never stored on an :class:`EditEntry`. The
+#: report substitutes it for a bulk-SOP skip whose tables a later applied write
+#: covers (see :meth:`Journal.superseded`), so a "skipped" row and an "applied"
+#: row for the same table do not read as a contradiction. It is deliberately
+#: absent from :data:`_ORDER` so :meth:`Journal.counts` — the raw verdict tally —
+#: is unaffected; :meth:`Journal.summary_counts` is the count that reflects it.
+VERDICT_SUPERSEDED = "superseded"
+
 _ORDER = (
     VERDICT_APPLIED,
     VERDICT_UNCHANGED,
@@ -65,6 +74,26 @@ _ORDER = (
     VERDICT_BLOCKED,
     VERDICT_SKIPPED,
 )
+
+
+def _symbol_tokens(entry: "EditEntry") -> frozenset[str]:
+    """The symbol names an entry pertains to.
+
+    A domain write names one symbol in :attr:`~EditEntry.name`; a bulk-SOP skip
+    that covers several tables joins them ``"A, B, C"`` there. Splitting on
+    commas recovers the set for both. The XDF ``key`` is folded in too so a
+    write whose logical name differs from its symbol still matches.
+    """
+    tokens: set[str] = set()
+    fields = [entry.name or ""]
+    if isinstance(entry.key, str):
+        fields.append(entry.key)
+    for field in fields:
+        for part in field.split(","):
+            part = part.strip()
+            if part:
+                tokens.add(part)
+    return frozenset(tokens)
 
 
 def summarize(values: Optional[np.ndarray], *, max_inline: int = 12) -> str:
@@ -247,6 +276,59 @@ class Journal:
         return {v: counts[v] for v in _ORDER if v in counts} | {
             k: v for k, v in counts.items() if k not in _ORDER
         }
+
+    def superseded(self) -> dict[int, tuple[EditEntry, ...]]:
+        """Map each bulk-SOP skip index to the later applied writes that cover it.
+
+        The basics SOP is a bulk pass and is *expected* to skip tables a
+        revision then writes deliberately by another route (see
+        :meth:`blocked`). When that happens the report would otherwise show a
+        ``skipped`` row and an ``applied`` row for the same table and read as a
+        contradiction. This pairs them — keyed by the skip entry's position — so
+        the skip can be shown as :data:`VERDICT_SUPERSEDED` and pointed at the
+        write that stands. Only writes *after* the skip count, so the ordering
+        the journal preserves (recipe first, override second) is respected.
+        """
+        writers = [
+            (i, _symbol_tokens(e))
+            for i, e in enumerate(self._entries)
+            if e.verdict == VERDICT_APPLIED and (e.touched_bytes or e.declares_table)
+        ]
+        out: dict[int, tuple[EditEntry, ...]] = {}
+        for i, entry in enumerate(self._entries):
+            if entry.kind != KIND_SOP:
+                continue
+            if entry.verdict not in (VERDICT_SKIPPED, VERDICT_GUARDED_SKIP):
+                continue
+            symbols = _symbol_tokens(entry)
+            if not symbols:
+                continue
+            covering = tuple(
+                self._entries[j] for j, wsyms in writers
+                if j > i and (wsyms & symbols)
+            )
+            if covering:
+                out[i] = covering
+        return out
+
+    def summary_counts(self) -> dict[str, int]:
+        """Verdict tally with superseded SOP skips moved to their own bucket.
+
+        :meth:`counts` is the raw verdict tally; this is the count the report
+        header shows, so a skip a later write superseded is not counted among
+        the held-back skips (it was not held back). The moved entries collect
+        under :data:`VERDICT_SUPERSEDED`.
+        """
+        counts = dict(self.counts())
+        superseded = self.superseded()
+        for i in superseded:
+            verdict = self._entries[i].verdict
+            counts[verdict] = counts.get(verdict, 0) - 1
+            if counts[verdict] <= 0:
+                counts.pop(verdict, None)
+        if superseded:
+            counts[VERDICT_SUPERSEDED] = len(superseded)
+        return counts
 
     def blocked(self) -> tuple[EditEntry, ...]:
         """Directly-authored writes a guard rejected — a build gate.
