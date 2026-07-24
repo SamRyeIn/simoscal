@@ -13,6 +13,7 @@ omission fails here instead of at a user's first ``tune.boost`` access.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import textwrap
@@ -161,6 +162,105 @@ def test_library_imports_and_operates_without_heavy_extras() -> None:
         "importing simoscal (+ tune + analysis) with matplotlib/openpyxl blocked "
         f"must succeed and give actionable errors.\nSTDOUT:\n{proc.stdout}\n"
         f"STDERR:\n{proc.stderr}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Installed-wheel closure (Quick Edit V1) — the strong boundary
+# --------------------------------------------------------------------------- #
+# The closure tests above import from the *source checkout* (cwd=CODE_ROOT), so
+# every subpackage is present on disk regardless of what a real wheel would
+# carry. `test_every_source_package_is_declared_for_distribution` catches a
+# declaration mismatch, but nothing above proves an actually-built wheel, once
+# installed into a clean location, still imports the whole on-device closure.
+# implementation_details.md flagged this exact gap ("checks package declarations
+# and import closure rather than installing a wheel in a separate environment").
+#
+# This test builds a wheel, installs ONLY simoscal (--no-deps) into an isolated
+# target, then imports the mobile closure from *that installed tree* — cwd is a
+# neutral dir so the source checkout can never satisfy the import, and it asserts
+# `simoscal.__file__` resolves under the install target. A subpackage dropped
+# from the wheel (the CR-20260720-03 failure mode) fails here at its real blast
+# radius, not only at the declaration level.
+
+# Every module the Android engine must be able to import with numpy only. Any
+# subpackage silently dropped from the wheel makes one of these fail on-device.
+_MOBILE_CLOSURE_MODULES = (
+    "simoscal",
+    "simoscal.preflight",
+    "simoscal.bridge",
+    "simoscal.tune",
+    "simoscal.tune.domains",
+    "simoscal.tune.domains.switchpatch",
+    "simoscal.tune.profiles",
+    "simoscal.tune.recovery",
+    "simoscal.analysis",
+)
+
+_INSTALLED_CLOSURE_SCRIPT = textwrap.dedent(
+    """
+    import importlib, sys, importlib.abc
+
+    _BLOCKED = {"matplotlib", "openpyxl"}
+
+    class _Blocker(importlib.abc.MetaPathFinder):
+        def find_spec(self, name, path=None, target=None):
+            if name.split(".")[0] in _BLOCKED:
+                raise ImportError(f"blocked for installed-wheel test: {name}")
+            return None
+
+    sys.meta_path.insert(0, _Blocker())
+
+    target = sys.argv[1]
+    modules = sys.argv[2:]
+    for name in modules:
+        mod = importlib.import_module(name)
+        origin = getattr(mod, "__file__", "") or ""
+        # Prove we imported the INSTALLED wheel, not any source tree that may
+        # linger on sys.path — every closure module must live under the target.
+        if not origin.startswith(target):
+            raise SystemExit(f"{name} imported from {origin!r}, not the wheel at {target!r}")
+
+    print("INSTALLED_CLOSURE_OK")
+    """
+)
+
+
+def test_built_wheel_installs_and_imports_the_whole_mobile_closure(tmp_path) -> None:
+    """Build a real wheel, install it isolated, import the on-device closure from it.
+
+    Stronger than the source-tree closure test: it fails if the wheel omits a
+    subpackage even though that package is present on disk.
+    """
+    wheel_dir = tmp_path / "wheels"
+    built = subprocess.run(
+        [sys.executable, "-m", "pip", "wheel", "--no-deps",
+         "--wheel-dir", str(wheel_dir), str(CODE_ROOT)],
+        capture_output=True, text=True,
+    )
+    assert built.returncode == 0, f"wheel build failed:\n{built.stdout}\n{built.stderr}"
+    wheels = sorted(wheel_dir.glob("simoscal-*.whl"))
+    assert len(wheels) == 1, f"expected exactly one simoscal wheel, found {wheels}"
+
+    target = tmp_path / "site"
+    installed = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--no-deps",
+         "--target", str(target), str(wheels[0])],
+        capture_output=True, text=True,
+    )
+    assert installed.returncode == 0, f"wheel install failed:\n{installed.stdout}\n{installed.stderr}"
+
+    # Run from a neutral cwd with the install target leading sys.path (PYTHONPATH
+    # is prepended before site-packages, so the wheel's simoscal wins; numpy is
+    # supplied by the ambient env exactly as Chaquopy supplies it on-device).
+    env = {**os.environ, "PYTHONPATH": str(target)}
+    proc = subprocess.run(
+        [sys.executable, "-c", _INSTALLED_CLOSURE_SCRIPT, str(target), *_MOBILE_CLOSURE_MODULES],
+        capture_output=True, text=True, cwd=str(tmp_path), env=env,
+    )
+    assert proc.returncode == 0 and "INSTALLED_CLOSURE_OK" in proc.stdout, (
+        "an installed wheel must import the whole numpy-only mobile closure "
+        f"from the wheel itself.\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
     )
 
 

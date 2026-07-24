@@ -68,6 +68,8 @@ in place as they are fixed or dismissed.
 | CR-20260724-12 | Medium   | CONFIRMED | tests/test_bridge.py                                | Edit tests fail before reaching the bridge dispatcher                       | Fixed (2026-07-24)  |
 | CR-20260724-13 | High     | CONFIRMED | simoscal/tune/recovery.py                           | Undo restores bytes but leaves profile views stale                          | Fixed (2026-07-24)  |
 | CR-20260724-14 | Medium   | CONFIRMED | android/README.md                                   | V0 declared GO before physical-arm64 and x86_64 parity gates ran            | Open                |
+| CR-20260724-15 | Low      | CONFIRMED | tests/test_packaging.py                             | No test installs a built wheel; the closure test imports the source tree    | Fixed (2026-07-24)  |
+| CR-20260724-16 | Low      | PLAUSIBLE | simoscal/bridge.py                                  | `bridge_info` handshake is gated by the version check it is meant to bootstrap | Open             |
 
 ---
 
@@ -1272,3 +1274,66 @@ one physical-arm64 run and an x86_64 run before closing V0. The Android README
 called the go/no-go clause satisfied while also saying the physical run remained.
 It now records a provisional implementation GO and leaves the two objective
 runtime legs open. No code change can substitute for those device executions.
+
+---
+
+## Review 2026-07-24 — Quick Edit V6 bridge independent cross-family pass (Opus)
+
+- **Scope:** the committed V4/V5/V6 continuation (`7f03e68`), read as an
+  independent second pass by a different model family from the author (the
+  cross-vendor review the v1 plan reserves for byte-critical units V0/V2/V3/V5/
+  V6). Focus: `simoscal/bridge.py` and `simoscal/tune/recovery.py` — the two
+  surfaces every phone byte decision flows through.
+- **Method:** traced the dispatch boundary, the path+hash file contract, the
+  session/edit/boost ops, and the recovery reconstruction (pristine-buffer
+  reopen → verbatim byte-diff → full-buffer SHA-256 verify → journal/undo
+  rebuild). Ran the full suite (655 passed) and the focused bridge/recovery/
+  packaging suites (67 passed). No source or generated bin was modified during
+  review; the recovery image stayed `d61a6e29…`.
+- **Headline:** no confirmed safety or provenance defect. The byte-critical
+  reconstruction is content-addressed and fail-loud at every step — a moved
+  source bin, a changed XDF, an engine-version drift, a mismatched full-buffer
+  hash, or a per-snapshot hash mismatch each raise `RecoveryError` rather than
+  restoring wrong bytes; generic edits are atomic and axis writes carry the
+  strictly-increasing invariant; `build` refuses any reference/source bin whose
+  hash is not the session's imported bin. Two Low findings only, one already
+  fixed here.
+
+### CR-20260724-15 — No installed-wheel closure test — Low, CONFIRMED — Fixed (2026-07-24)
+
+The mobile-closure tests import from the source checkout (`cwd=CODE_ROOT`),
+where every subpackage is on disk regardless of what a real wheel carries.
+`test_every_source_package_is_declared_for_distribution` catches a *declaration*
+mismatch, but nothing built and installed a wheel into a clean location and
+imported the on-device closure from it — the exact strength gap
+`implementation_details.md` flagged for V1, and the blast radius of the earlier
+CR-20260720-03 (`simoscal.tune.domains` dropped from the wheel). Added
+`test_built_wheel_installs_and_imports_the_whole_mobile_closure`: it builds a
+wheel, installs only `simoscal` (`--no-deps`) into an isolated `--target`, then
+imports the whole numpy-only closure (incl. `simoscal.bridge`,
+`simoscal.preflight`, `simoscal.tune.domains`, `simoscal.tune.recovery`) from a
+neutral cwd, asserting each module's `__file__` resolves under the install
+target so the source tree cannot satisfy the import. Passes in ~2.6 s.
+
+### CR-20260724-16 — `bridge_info` handshake is gated by the version check it bootstraps — Low, PLAUSIBLE — Open
+
+`_op_bridge_info` is documented as the handshake "the app checks it speaks this
+engine's version before anything," but `dispatch_obj` rejects every op —
+including `bridge_info` — with `VERSION_MISMATCH` when `request.bridge_version`
+does not equal `BRIDGE_VERSION`. So an app on a different bridge version cannot
+reach `bridge_info` on the happy path; it can only recover the engine's version
+from the `VERSION_MISMATCH` error's `advanced` string (`…engine={BRIDGE_VERSION}`),
+which the error path does expose. Not a safety issue — the boundary still fails
+closed — but the intended handshake op is partially defeated by the global gate.
+Recommendation (a contract decision, left to the author): exempt `bridge_info`
+(and only it) from the version gate so version discovery works on the happy
+path, keeping its response shape frozen forever as the price of that exemption.
+
+### Remaining objective gate (unchanged, not a new finding)
+
+The plan's cross-runtime golden gate — per-operation host-vs-Android byte-
+identical request/response fixtures — still does not exist, and its Android leg
+needs the open CR-20260724-14 device runs. Building the host-side canonical
+fixtures first requires normalizing the bridge's nondeterministic response
+fields (uuid `session_id`, temp paths) before they can be frozen; noted here as
+the next byte-critical unit after the device gate, not a defect in this code.
