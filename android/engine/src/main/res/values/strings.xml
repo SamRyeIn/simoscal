@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Quick Edit</string>
+
+    <!--
+      The disclaimer is required on the Build screen. It draws the line the whole
+      product depends on: the gates prove the *file* is what the journal says it
+      is, and say nothing about whether the calibration is safe for an engine.
+    -->
+    <string name="build_disclaimer">
+        Software verification is not mechanical safety. These checks prove the file
+        changed only where you said it should and that its checksums are correct.
+        They cannot tell you whether this calibration is safe for your engine —
+        only logging on the car can.
+    </string>
+
+    <string name="preflight_blocked_title">This bin cannot be edited</string>
+    <string name="choose_another_bin">Choose another bin</string>
+    <string name="cancel">Cancel</string>
+</resources>

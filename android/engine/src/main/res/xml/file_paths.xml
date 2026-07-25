@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Only the staging directory is shareable, and only the built candidate bin ever
+  lands there. The imports directory — which holds the person's source bin and
+  XDFs — is deliberately absent: nothing Quick Edit imported can be handed to
+  another app through this provider.
+-->
+<paths>
+    <files-path
+        name="staged_bins"
+        path="staging/" />
+</paths>

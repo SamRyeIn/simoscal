@@ -294,6 +294,80 @@ normalized before capture, and its Android side needs the open CR-20260724-14
 device runs. That is the next byte-critical unit; V7/V8 Android UI remains the
 next visible unit and is Sonnet-delegated under Opus review.
 
+### 2026-07-25 — V7: Compose shell and the Quick Edit flow
+
+Context: V0 (Chaquopy parity) and V6 (bridge) were done and committed, leaving
+V7 — "Import → preflight → edit → review → share, on a phone" — as the next
+visible unit of the Quick Edit v1 plan. Sam chose V7 over the deferred
+golden-fixture normalization, and authorized pushing the branch.
+
+Decision and rationale:
+
+- **One module, not two.** The UI lives in `:engine` alongside the Chaquopy
+  runtime, in package `com.simoscal.quickedit`. Chaquopy's Gradle plugin applies
+  to the *application* module, so a separate `:app` would have to carry its own
+  Python runtime or demote `engine` to a library Chaquopy does not support.
+  Keeping one module also leaves the V0 parity evidence — taken against
+  `applicationId com.simoscal.engine` — describing the artifact the UI ships in.
+- **Safety rules live in pure data, not in composables.** `QuickEditState.kt`
+  holds every gate (`canOpenSession`, `exportVisible`, `destinationEnabled`,
+  `invalidatingBuild`, `retractingBlocker`) as pure Kotlin, so they are pinned by
+  JVM tests rather than by a screen test that only proves a button was drawn.
+- **DataStore, not Room**, for recovery: one record, no relations, no queries.
+  The hard half is already the engine's (`session_serialize`/`session_recover`);
+  the app persists that record plus verified path+hash pointers.
+- **`material-icons-core`, not `-extended`**: the extended artifact measured
+  5.4 MB of APK (71.2 → 65.8 MB) for three navigation glyphs.
+
+Two bridge-contract mismatches were found while wiring the ViewModel and fixed
+against the engine rather than papered over: no op returns an edit count (an
+assumed `entries` field does not exist), so `hasEdits` now derives from the
+engine's `can_undo`; and the engine's bad-request envelope carries no `op` or
+`request_id`, which the app's call-identity check would have discarded as a
+mismatch — it now delivers the real `BAD_REQUEST` reason.
+
+Safety/provenance impact: positive, and no Python touched. The manifest declares
+no permissions, enforced by a new `verify<Variant>NoPermissions` Gradle task that
+reads the **merged** manifest (so a library-contributed permission fails too) and
+is wired into `check`. Its first real run caught
+`DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, an AndroidX-Core signature permission
+the app defines for itself; it is allowed by exact name with the reasoning
+recorded, not by pattern. The FileProvider exposes only `staging/`, so imported
+bins and XDFs cannot leave through the share sheet. Imports stream into
+app-private content-addressed copies hashed from the bytes actually written, and
+a picked URI is never edited in place. The recovery image stayed `d61a6e29…`.
+
+One genuine defect was found in review of the delegated UI work and fixed: the
+non-dismissible blocked-preflight dialog had no action that cleared
+`PreflightState.Blocked`, so both its buttons left it on screen covering the file
+pickers — a permanent trap rather than a dead end. `retractingBlocker()` now
+returns the state to un-checked (granting nothing, since `canOpenSession` still
+requires `Passed`), the dialog owns its own picker launcher, and a test pins it.
+
+Files changed: new `android/engine/src/main/java/com/simoscal/quickedit/`
+(`BridgeProtocol.kt`, `BridgeClient.kt`, `ImportStore.kt`, `QuickEditState.kt`,
+`QuickEditViewModel.kt`, `RecoveryStore.kt`, `ShareBin.kt`, `MainActivity.kt`,
+`ui/` shell + four screens); new `src/main/res/` and `src/test/`; modified
+`android/engine/build.gradle.kts`, `android/engine/src/main/AndroidManifest.xml`,
+`android/README.md`, this file.
+
+Verification: `:engine:testDebugUnitTest` **36 passed** (13 `BridgeProtocolTest`,
+17 `QuickEditStateTest`, 6 `ImportNamingTest`); `:engine:verifyDebugNoPermissions`
+passes with a receipt; `:engine:assembleDebug` produces a 65.8 MB APK. Note that
+`lintDebug` is **not** a meaningful gate here: AGP 7.4.2's lint bundles a Kotlin
+1.7.1 UAST analyzer against this project's Kotlin 1.9.24, so its Kotlin source
+analysis does not run (18 warnings remain, all deliberate version pins or
+targetSdk 33). A Gradle fix was also needed: `.kts` scripts compile at Kotlin
+apiVersion 1.4, so `replaceFirstChar` is unavailable in the build script.
+
+Remaining risks or follow-up: every V7 leg that needs hardware is unverified and
+is listed, not claimed — airplane-mode import/edit/export, the SAF picker and the
+real share hand-off to SimosTools, process-death recovery during copy/edit/build,
+and rotation/low-storage behaviour. No Compose UI test exists yet; the pure rules
+are covered instead. V8 (the boost-curve canvas and the real editors) is the next
+visible unit, and the cross-runtime golden fixtures remain the next byte-critical
+one.
+
 ### Future entry template
 
 ```markdown

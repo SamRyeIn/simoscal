@@ -1,9 +1,10 @@
-# `Code/android` — Quick Edit v1 Android engine (V0 feasibility gate)
+# `Code/android` — Quick Edit v1 Android app (V0 parity gate + V7 shell)
 
-Implements **V0** of `Docs/plans/2026-07-21-002-feat-simoscal-quickedit-v1-plan.md`:
-prove the Python engine runs under Chaquopy with **byte-for-byte parity** against
-host Python before any UI work exists. Nothing here flashes an ECU, and nothing
-here does bin math in Kotlin.
+Implements **V0** and **V7** of
+`Docs/plans/2026-07-21-002-feat-simoscal-quickedit-v1-plan.md`: first prove the
+Python engine runs under Chaquopy with **byte-for-byte parity** against host
+Python, then build the Compose shell that drives it. Nothing here flashes an
+ECU, and nothing here does bin math in Kotlin.
 
 ## Status
 
@@ -15,6 +16,94 @@ here does bin math in Kotlin.
 | Gradle/Chaquopy project                   | Builds (AGP 7.4.2 / Gradle 7.6.4 — see below) |
 | Arm64-emulator parity verdict             | **PASS** — digest match (2026-07-23)          |
 | Physical-arm64 / x86_64 parity            | Pending — required to close V0                |
+| V7 Compose shell + Quick Edit flow        | Built; host-verifiable half green (see V7)    |
+| V7 on-device legs (SAF, share, recovery)  | Pending — needs Sam's hardware                |
+
+## V7 — the Compose shell
+
+The app lives in **one module**, `:engine`, alongside the Chaquopy runtime. That
+is not tidiness lost: Chaquopy's Gradle plugin applies to the *application*
+module, so a separate `:app` would have to either carry its own Python runtime or
+demote `engine` to a library Chaquopy does not support. Keeping one module also
+leaves the V0 parity evidence (taken against `applicationId com.simoscal.engine`)
+describing the same artifact the UI ships in.
+
+UI code is `com.simoscal.quickedit`; the V0/V6 engine plumbing stays in
+`com.simoscal.engine`.
+
+| File                    | What it is responsible for                                       |
+| ----------------------- | ---------------------------------------------------------------- |
+| `BridgeProtocol.kt`     | Envelope build/parse; version and call-identity checks. Pure.     |
+| `BridgeClient.kt`       | Suspending front door; cancellation never aborts an in-flight op. |
+| `ImportStore.kt`        | SAF URI → app-private content-addressed copy, hashed while streaming. |
+| `QuickEditState.kt`     | Every gate rule, as pure data. Where the safety invariants live.  |
+| `QuickEditViewModel.kt` | Sequences bridge calls; persists recovery after each mutation.    |
+| `RecoveryStore.kt`      | DataStore pointer wrapping the engine's own session record.       |
+| `ShareBin.kt`           | FileProvider grant; takes a `Verified` build and nothing else.    |
+| `ui/`                   | Compose shell, navigation, and the four screens.                  |
+
+### The rules the shell enforces
+
+- **No "continue anyway".** A blocked preflight renders a dialog that cannot be
+  dismissed by back-press or outside-tap, offering only *Choose another bin* and
+  *Cancel*. Both retract the verdict; neither opens a session, because
+  `canOpenSession` requires `PreflightState.Passed`.
+- **Export exists only in the verified state** — absent, not disabled. Any edit,
+  undo, or redo invalidates a completed build (`invalidatingBuild()`), so a
+  Share button can never point at a candidate bin that predates the current
+  journal.
+- **`Simple | Advanced` changes visible controls only.** No `canX` value reads
+  `Mode`; a test sweeps the state space to keep it that way.
+- **A gate that did not run is not a pass.** `GateResult.ran` is rendered as its
+  own third state.
+- **No permissions.** Enforced by `verifyDebugNoPermissions`, which reads the
+  *merged* manifest — so a permission contributed by a library fails the build
+  too — and is wired into `check`.
+
+### Why DataStore rather than Room
+
+There is exactly one recovery record, with no relations and no queries. The hard
+half of recovery is the engine's (`session_serialize` / `session_recover`); the
+app only stores that record plus verified pointers to the input files. Room would
+add an annotation processor to persist a single JSON string. Revisit at Phase 2
+if projects and revision lineage arrive.
+
+### Verifying V7 on this machine
+
+```bash
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17
+export ANDROID_HOME="$HOME/Library/Android/sdk"
+./gradlew :engine:testDebugUnitTest :engine:verifyDebugNoPermissions
+```
+
+Expect **36 unit tests passing** (13 `BridgeProtocolTest`, 17
+`QuickEditStateTest`, 6 `ImportNamingTest`) and a receipt at
+`engine/build/reports/permissions/debug.txt`.
+
+The unit tests are deliberately JVM-only and cover the pure layers: the envelope
+contract against the real `org.json`, every state gate, and the import naming and
+hashing rules. They need no device.
+
+`./gradlew :engine:assembleDebug` builds the whole APK (Compose + Chaquopy):
+**65.8 MB** for arm64 + x86_64, against V0's 54 MB — Compose costs ~12 MB. The
+`material-icons-extended` artifact accounted for 5.4 MB of that on its own for
+three glyphs, so the navigation bar uses `material-icons-core` instead.
+
+> **`lintDebug` is not a meaningful gate here.** AGP 7.4.2's lint bundles a
+> Kotlin 1.7.1 UAST analyzer, and the project compiles with Kotlin 1.9.24, so
+> lint emits `Module was compiled with an incompatible version of Kotlin` and its
+> Kotlin *source* analysis does not run. It still checks Gradle, manifest, and
+> resources (currently 18 warnings, all deliberate pins or targetSdk 33). Do not
+> read a clean `lintDebug` as a statement about the Kotlin code.
+
+### What V7 still owes, and why it needs hardware
+
+None of these have a host-side substitute; they are listed rather than claimed:
+
+- airplane-mode import → edit → export on a real phone;
+- the SAF picker and the share hand-off to SimosTools with the real bin and XDF;
+- process-death recovery during copy, edit, and build;
+- rotation and low-storage behaviour.
 
 ## V0 verdict: provisional GO for implementation
 

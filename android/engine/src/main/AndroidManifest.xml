@@ -2,7 +2,47 @@
 <!--
   The engine module declares no permissions at all — no INTERNET, no Bluetooth,
   no location, no USB. That is a v1 product requirement (key design decision 7:
-  "No network or vehicle permissions"), not an oversight, and V7 adds a test that
-  asserts the merged manifest still looks like this.
+  "No network or vehicle permissions"), not an oversight. It is enforced by the
+  `verifyDebugNoPermissions` Gradle task, which reads the *merged* manifest and
+  fails the build if any permission appears — including one contributed by a
+  library.
+
+  Files are read through the Storage Access Framework, which grants access to
+  exactly the file the person picked and needs no storage permission, and the
+  built bin leaves through a FileProvider grant on the share sheet.
 -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:allowBackup="false"
+        android:icon="@android:drawable/ic_menu_edit"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.QuickEdit">
+
+        <activity
+            android:name="com.simoscal.quickedit.MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          Grants read access to a single built bin, per share, for the app the
+          person picks. Nothing is world-readable and nothing is exported: the
+          staged bin lives in app-private storage until it is deliberately shared.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>

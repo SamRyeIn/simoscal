@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A bare Material3 parent: the app's real colours come from the Compose theme, so
+  this only needs to keep the system from drawing an ActionBar over the Compose
+  content while the activity starts.
+-->
+<resources>
+    <style name="Theme.QuickEdit" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
