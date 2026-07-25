@@ -1,6 +1,6 @@
-# `Code/android` — Quick Edit v1 Android app (V0 parity gate + V7 shell)
+# `Code/android` — Quick Edit v1 Android app (V0 parity gate + V7 shell + V8 editors)
 
-Implements **V0** and **V7** of
+Implements **V0**, **V7**, and **V8** of
 `Docs/plans/2026-07-21-002-feat-simoscal-quickedit-v1-plan.md`: first prove the
 Python engine runs under Chaquopy with **byte-for-byte parity** against host
 Python, then build the Compose shell that drives it. Nothing here flashes an
@@ -18,6 +18,8 @@ ECU, and nothing here does bin math in Kotlin.
 | Physical-arm64 / x86_64 parity            | Pending — required to close V0                |
 | V7 Compose shell + Quick Edit flow        | Built; host-verifiable half green (see V7)    |
 | V7 on-device legs (SAF, share, recovery)  | Pending — needs Sam's hardware                |
+| V8 boost canvas + calibration editors     | Built; pure rules green (see V8)              |
+| V8 on-device legs (drag, screenshots)     | Pending — needs Sam's hardware                |
 
 ## V7 — the Compose shell
 
@@ -40,6 +42,10 @@ UI code is `com.simoscal.quickedit`; the V0/V6 engine plumbing stays in
 | `QuickEditViewModel.kt` | Sequences bridge calls; persists recovery after each mutation.    |
 | `RecoveryStore.kt`      | DataStore pointer wrapping the engine's own session record.       |
 | `ShareBin.kt`           | FileProvider grant; takes a `Verified` build and nothing else.    |
+| `BoostCurve.kt`         | Boost read model + the two ceilings and every clamp. Pure.        |
+| `BoostUiState.kt`       | Staged boost draft and its transitions. Pure.                     |
+| `BoostPlot.kt`          | Canvas coordinate math, Compose-free so it is JVM-testable.       |
+| `TablesUiState.kt`      | Catalog, table draft, selection, and batch operations. Pure.      |
 | `ui/`                   | Compose shell, navigation, and the four screens.                  |
 
 ### The rules the shell enforces
@@ -76,8 +82,9 @@ export ANDROID_HOME="$HOME/Library/Android/sdk"
 ./gradlew :engine:testDebugUnitTest :engine:verifyDebugNoPermissions
 ```
 
-Expect **36 unit tests passing** (13 `BridgeProtocolTest`, 17
-`QuickEditStateTest`, 6 `ImportNamingTest`) and a receipt at
+Expect **93 unit tests passing** (13 `BridgeProtocolTest`, 17
+`QuickEditStateTest`, 6 `ImportNamingTest`, 18 `BoostCurveTest`, 13
+`BoostUiStateTest`, 7 `BoostPlotTest`, 19 `TablesUiStateTest`) and a receipt at
 `engine/build/reports/permissions/debug.txt`.
 
 The unit tests are deliberately JVM-only and cover the pure layers: the envelope
@@ -85,7 +92,7 @@ contract against the real `org.json`, every state gate, and the import naming an
 hashing rules. They need no device.
 
 `./gradlew :engine:assembleDebug` builds the whole APK (Compose + Chaquopy):
-**65.8 MB** for arm64 + x86_64, against V0's 54 MB — Compose costs ~12 MB. The
+**65.8 MB** for arm64 + x86_64 — unchanged by V8, which adds no dependency — against V0's 54 MB — Compose costs ~12 MB. The
 `material-icons-extended` artifact accounted for 5.4 MB of that on its own for
 three glyphs, so the navigation bar uses `material-icons-core` instead.
 
@@ -104,6 +111,95 @@ None of these have a host-side substitute; they are listed rather than claimed:
 - the SAF picker and the share hand-off to SimosTools with the real bin and XDF;
 - process-death recovery during copy, edit, and build;
 - rotation and low-storage behaviour.
+
+## V8 — the boost canvas and the calibration editors
+
+### Two ceilings, not one
+
+The single most important thing in this unit. `min(base ceiling, slot)` produces
+**two different limits**, and the editor draws both because conflating them
+would either block edits the engine accepts or forward edits it rejects:
+
+| Limit                                | What it is                                                        | In the UI                    |
+| ------------------------------------ | ----------------------------------------------------------------- | ---------------------------- |
+| `BoostCurveModel.baseCeilingPsi`     | `IP_PUT_SP` — Pressure up throttle setpoint full-load row, interpolated onto the slot rpm axis. Per-rpm. | Solid line + shaded band above it |
+| `BoostCurveModel.refusalCeilingPsi`  | The **scalar maximum** of that same row — what `switchpatch._check_below_base_ceiling` compares against. | Dashed error-coloured line   |
+
+Between them lies a real region where an edit is **accepted and then ignored**:
+the base caps the slot at that rpm, so the change never shows on a log. That band
+is shaded and counted in words on the screen, because a silently ineffective
+boost edit is the failure a person would otherwise diagnose from a datalog.
+
+`maxSettablePsi` backs off one `PSI_STEP` below refusal. The engine's test is
+`>=`, and psi is *floored* on its way to stored hPa, so any value strictly below
+the ceiling in psi is also strictly below it in hPa — one step is sufficient,
+not merely cautious. `BoostCurveTest` sweeps the drag range and asserts no
+reachable fingertip position produces a cap the engine would refuse.
+
+### Dragged values are clamped; typed values are refused
+
+The distinction is deliberate and applies to both editors:
+
+- A **drag** never stated an exact number, so snapping it into the legal range
+  alters nothing anyone asked for.
+- A **typed** number is a stated intent. Silently storing 20.99 for a typed 21.00
+  would be this library's cardinal sin — quietly altering a value — committed one
+  layer up. So typed entry is *validated* and the entry is left untouched with a
+  message naming the ceiling.
+
+### Edits are staged, and one deliberate change is one journal entry
+
+A drag moves a local draft; **Apply** sends it as a single engine op. Continuous
+committing would turn one gesture into dozens of journal entries and undo points,
+on a bin that gets flashed to a real ECU. The table editor works the same way:
+cell edits and the batch operations (fill / offset / scale / ramp) compose a
+draft, and Apply sends one `paste` over the whole grid.
+
+Two consequences worth knowing:
+
+- **Switching slots with an unapplied draft is refused**, not auto-discarded. The
+  alternative silently drops an edit on the way to another slot.
+- **Undo and redo re-read whatever editor is open** (`refreshOpenViews`). Without
+  it a grid would keep showing values the session no longer holds, and the diff
+  someone reviewed before Apply would not be the diff they made.
+
+### What each editor will not let you do
+
+- A **non-reversible** table (non-linear scaling, or no embedded data) is
+  presented read-only. `canApply` is gated on `reversible`, so a proposal that
+  could only ever end in an engine refusal cannot be composed and sent.
+- An **axis** edit that breaks strict monotonicity is refused at the keystroke.
+  The engine enforces it regardless — this only makes the refusal arrive while
+  the value is still on screen.
+- **Restore** is a real `restore` op, never a local reset: only the journal knows
+  what a table held at session start, and it is journaled like any other change
+  so the build's byte audit can still explain it.
+
+### One bridge op was added: `boost_rpm_axis`
+
+The shared slot rpm axis is routed through `switchpatch.slot_rpm_axis` rather
+than reached with the generic `edit` op, because only the domain call enforces
+strictly-increasing breakpoints *and* checks the patch's separate axis-length
+header. One axis serves all five slots, so a bad breakpoint reinterprets every
+slot curve at once — silently, since the stored grids do not change.
+
+Adding an op does **not** bump `BRIDGE_VERSION`: an older app never names it, and
+a newer app against an older engine gets a clean `UNKNOWN_OP` rather than a field
+read two different ways, which is what the version gate exists to prevent.
+
+`simoscal.tune.catalog.TableInfo` also gained `is_axis`, so the editor can label
+an axis and pre-validate it.
+
+### What V8 still owes, and why it needs hardware
+
+- Dragging on a real touchscreen: whether 12 breakpoints across a phone-width
+  plot are separable by a fingertip, and whether the grab-at-touch-down rule
+  feels right in practice.
+- **No Compose screenshot tests.** The plan asks for light/dark screenshot tests;
+  the pure state and coordinate math are covered instead. This is a known gap,
+  carried over from V7's decision not to stand up a Compose test harness.
+- The on-device parity pull: a boost-only diff on the real SC8S50 bin,
+  hand-reviewed against a desktop `simoscal` build of the same edit.
 
 ## V0 verdict: provisional GO for implementation
 

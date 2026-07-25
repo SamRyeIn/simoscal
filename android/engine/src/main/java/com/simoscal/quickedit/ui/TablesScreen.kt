@@ -1,66 +1,468 @@
 package com.simoscal.quickedit.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.simoscal.quickedit.CellRef
 import com.simoscal.quickedit.Mode
+import com.simoscal.quickedit.display
 import com.simoscal.quickedit.QuickEditViewModel
+import com.simoscal.quickedit.TableSummary
+import kotlin.math.abs
 
 /**
- * Table editing, honestly deferred.
+ * The generic calibration editor: browse the curated table set, edit one table.
  *
- * V8 fills this in with the real calibration editors. Faking a table grid here
- * would be worse than an empty screen: it would look editable before the
- * engine plumbing behind it exists, and a person could believe they changed a
- * value that was never touched. This screen only shows what is *actually*
- * true right now — provenance and history controls — plus a plain statement
- * of what is missing.
+ * The catalog is the profile-resolved set, not the XDF's ~3,800 tables — every
+ * table reachable here came through a profile map, so its description, units, and
+ * guard tags are in force. A stranger table with a surprising layout is simply
+ * not offered.
+ *
+ * Like the boost editor, changes are staged: cell edits and the batch operations
+ * build a draft, and Apply sends one `paste` op so one deliberate change is one
+ * journal entry and one undo point.
  */
 @Composable
 fun TablesScreen(viewModel: QuickEditViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val advanced = state.mode == Mode.ADVANCED
+    val tables = state.tables
 
+    LaunchedEffect(state.sessionId) {
+        if (state.sessionId != null && tables.catalog.isEmpty()) viewModel.loadCatalog()
+    }
+
+    val detail = tables.detail
+    if (detail == null) {
+        TableBrowser(
+            query = tables.query,
+            loading = tables.loading,
+            summaries = tables.visibleCatalog,
+            binName = state.bin?.displayName,
+            shortHash = state.bin?.shortHash,
+            advanced = advanced,
+            onQueryChanged = viewModel::onTableQueryChanged,
+            onOpen = viewModel::openTable,
+        )
+        return
+    }
+
+    TableEditor(viewModel = viewModel, advanced = advanced)
+}
+
+@Composable
+private fun TableBrowser(
+    query: String,
+    loading: Boolean,
+    summaries: List<TableSummary>,
+    binName: String?,
+    shortHash: String?,
+    advanced: Boolean,
+    onQueryChanged: (String) -> Unit,
+    onOpen: (TableSummary) -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Tables", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
 
-        SessionProvenanceCard(binName = state.bin?.displayName, shortHash = state.bin?.shortHash, advanced = advanced)
+        SessionProvenanceCard(binName = binName, shortHash = shortHash, advanced = advanced)
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { viewModel.undo() }, enabled = state.canUndo) {
-                Text("Undo")
+        OutlinedTextField(
+            value = query,
+            onValueChange = onQueryChanged,
+            label = { Text("Search by ID, description, or category") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        if (loading && summaries.isEmpty()) {
+            Text("Reading the table catalog…", style = MaterialTheme.typography.bodyMedium)
+        }
+
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(summaries, key = { "${it.space}/${it.name}" }) { summary ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpen(summary) },
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        // ID — Description, always both: an ID alone means nothing
+                        // in a change list, and a description alone does not say
+                        // which of several similar tables was touched.
+                        Text(summary.idAndDescription, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            buildString {
+                                append("${summary.rows}×${summary.cols}")
+                                if (summary.units.isNotBlank()) append(" · ${summary.units}")
+                                if (summary.space != "base") append(" · ${summary.space}")
+                                if (summary.isAxis) append(" · axis")
+                                if (!summary.reversible) append(" · read-only")
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
             }
-            OutlinedButton(onClick = { viewModel.redo() }, enabled = state.canRedo) {
-                Text("Redo")
+        }
+    }
+}
+
+@Composable
+private fun TableEditor(viewModel: QuickEditViewModel, advanced: Boolean) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val tables = state.tables
+    val detail = tables.detail ?: return
+    val summary = detail.summary
+
+    var editingCell by remember { mutableStateOf<CellRef?>(null) }
+    var batch by remember { mutableStateOf<BatchOperation?>(null) }
+    var intent by remember { mutableStateOf("") }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = viewModel::onTableClosed) { Text("Back") }
+            Text(
+                summary.units.ifBlank { "no units" },
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(top = 12.dp),
+            )
+        }
+
+        Text(summary.idAndDescription, style = MaterialTheme.typography.titleMedium)
+
+        if (!summary.reversible) {
+            NoticeCard(
+                title = "Read-only",
+                body = "This table's scaling is non-linear or has no embedded data, so a " +
+                    "physical-unit write cannot round-trip. The engine refuses generic " +
+                    "edits to it, and it is shown here for reference only.",
+            )
+        }
+
+        TableGrid(
+            values = tables.draft,
+            committed = tables.committed,
+            selection = tables.selection,
+            xAxisValues = detail.xAxis?.values.orEmpty(),
+            yAxisValues = detail.yAxis?.values.orEmpty(),
+            editable = summary.reversible,
+            onCellLongPress = { cell -> viewModel.onCellToggled(cell) },
+            onCellTap = { cell -> if (summary.reversible) editingCell = cell else Unit },
+        )
+
+        Text(
+            "Tap a cell to type a value · long-press to select it for a batch operation. " +
+                "${tables.selection.size} selected, ${tables.changedCells.size} changed.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+
+        if (summary.reversible) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = viewModel::onSelectAllCells) { Text("All") }
+                OutlinedButton(onClick = viewModel::onClearSelection) { Text("None") }
+                OutlinedButton(onClick = viewModel::onInterpolateSelection) { Text("Ramp") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                BatchOperation.values().forEach { operation ->
+                    OutlinedButton(onClick = { batch = operation }) { Text(operation.label) }
+                }
+            }
+
+            ChangeSummaryCard(viewModel)
+
+            OutlinedTextField(
+                value = intent,
+                onValueChange = { intent = it },
+                label = { Text("Why this change (recorded in the journal)") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = {
+                        viewModel.applyTableDraft(
+                            intent.ifBlank { "edit ${summary.idAndDescription} from Quick Edit" }
+                        )
+                        intent = ""
+                    },
+                    enabled = tables.canApply && !state.busy,
+                ) {
+                    Text(if (tables.dirty) "Apply" else "No change")
+                }
+                OutlinedButton(onClick = viewModel::onTableDiscard, enabled = tables.dirty) { Text("Discard") }
+                if (advanced) {
+                    // Restore goes to the engine, not to a local copy: only the
+                    // journal knows what this table held when the session opened.
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.restoreTable("restore ${summary.idAndDescription} to its session-start values")
+                        },
+                        enabled = !state.busy,
+                    ) { Text("Restore") }
+                }
             }
         }
 
-        Card {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Table editors arrive in V8", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    "This screen only tracks session provenance and history for now. " +
-                        "No calibration table is editable here yet.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+        tables.notice?.let { notice -> NoticeCard(title = "Not applied", body = notice, emphasise = true) }
+
+        tables.lastEdit?.let { receipt ->
+            Card {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Applied", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        if (receipt.quantized) {
+                            "Quantized: the encoding moved a value by up to " +
+                                "${receipt.maxAbsQuantization.display()} ${summary.units}"
+                        } else {
+                            "Stored exactly as requested."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    if (receipt.warning.isNotBlank()) {
+                        Text(receipt.warning, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
             }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = viewModel::undo, enabled = state.canUndo) { Text("Undo") }
+            OutlinedButton(onClick = viewModel::redo, enabled = state.canRedo) { Text("Redo") }
+        }
+    }
+
+    editingCell?.let { cell ->
+        NumericEntryDialog(
+            title = "Row ${cell.row + 1}, column ${cell.col + 1}",
+            supporting = buildString {
+                append(summary.units.ifBlank { "physical units" })
+                val before = tables.committed.getOrNull(cell.row)?.getOrNull(cell.col)
+                if (before != null) append(" · currently ${before.display()}")
+            },
+            initial = tables.draft.getOrNull(cell.row)?.getOrNull(cell.col)?.let { it.display() } ?: "",
+            onDismiss = { editingCell = null },
+            onConfirm = { value ->
+                viewModel.onCellTyped(cell, value)
+                editingCell = null
+            },
+        )
+    }
+
+    batch?.let { operation ->
+        NumericEntryDialog(
+            title = "${operation.label} ${tables.selection.size} selected cell(s)",
+            supporting = operation.supporting,
+            initial = operation.initial,
+            onDismiss = { batch = null },
+            onConfirm = { value ->
+                when (operation) {
+                    BatchOperation.FILL -> viewModel.onFillSelection(value)
+                    BatchOperation.OFFSET -> viewModel.onOffsetSelection(value)
+                    BatchOperation.SCALE -> viewModel.onScaleSelection(value)
+                }
+                batch = null
+            },
+        )
+    }
+}
+
+private enum class BatchOperation(val label: String, val supporting: String, val initial: String) {
+    FILL("Fill", "Set every selected cell to this value.", ""),
+    OFFSET("Offset", "Add this signed amount to every selected cell.", "0"),
+    SCALE("Scale", "Multiply every selected cell by this factor.", "1.0"),
+}
+
+/**
+ * The grid, with the source value under every changed cell.
+ *
+ * Showing before-and-after in place rather than as a separate diff view is
+ * deliberate: the decision a person is making is "is this new number right for
+ * this cell", and that question is unanswerable without the old number beside it.
+ */
+@Composable
+private fun TableGrid(
+    values: List<List<Double>>,
+    committed: List<List<Double>>,
+    selection: Set<CellRef>,
+    xAxisValues: List<Double>,
+    yAxisValues: List<Double>,
+    editable: Boolean,
+    onCellTap: (CellRef) -> Unit,
+    onCellLongPress: (CellRef) -> Unit,
+) {
+    val selectedColor = MaterialTheme.colorScheme.primaryContainer
+    val changedColor = MaterialTheme.colorScheme.tertiaryContainer
+    val surface = MaterialTheme.colorScheme.surface
+
+    // No inner vertical scroll: the screen already scrolls vertically, and nesting
+    // a second one on the same axis makes which container reacts to a swipe a
+    // coin toss. Horizontal scrolling is a different axis and composes cleanly.
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+            Column {
+                if (xAxisValues.isNotEmpty()) {
+                    Row {
+                        // Corner spacer, so the x-axis header lines up with the grid.
+                        if (yAxisValues.isNotEmpty()) AxisCell("")
+                        xAxisValues.forEach { value -> AxisCell(value.display()) }
+                    }
+                }
+                values.indices.forEach { row ->
+                    Row {
+                        if (yAxisValues.isNotEmpty()) {
+                            AxisCell(yAxisValues.getOrNull(row)?.let { it.display() } ?: "")
+                        }
+                        values[row].indices.forEach { col ->
+                            val cell = CellRef(row, col)
+                            val proposed = values[row][col]
+                            val before = committed.getOrNull(row)?.getOrNull(col)
+                            val changed = before != null && abs(proposed - before) > 1e-12
+                            GridCell(
+                                proposed = proposed,
+                                before = if (changed) before else null,
+                                background = when {
+                                    cell in selection -> selectedColor
+                                    changed -> changedColor
+                                    else -> surface
+                                },
+                                editable = editable,
+                                onTap = { onCellTap(cell) },
+                                onLongPress = { onCellLongPress(cell) },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AxisCell(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelSmall,
+        fontFamily = FontFamily.Monospace,
+        textAlign = TextAlign.Center,
+        modifier = Modifier
+            .width(72.dp)
+            .padding(4.dp),
+    )
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun GridCell(
+    proposed: Double,
+    before: Double?,
+    background: androidx.compose.ui.graphics.Color,
+    editable: Boolean,
+    onTap: () -> Unit,
+    onLongPress: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .width(72.dp)
+            .padding(1.dp)
+            .background(background, RoundedCornerShape(4.dp))
+            .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(4.dp))
+            .then(
+                if (editable) {
+                    Modifier.combinedClickable(
+                        onClick = onTap,
+                        onClickLabel = "Edit cell",
+                        onLongClick = onLongPress,
+                        onLongClickLabel = "Select cell",
+                    )
+                } else {
+                    Modifier
+                }
+            )
+            .padding(4.dp),
+    ) {
+        Text(
+            proposed.display(),
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = FontFamily.Monospace,
+        )
+        if (before != null) {
+            Text(
+                "was ${before.display()}",
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** How far the proposal moves the table — the number reviewed before Apply. */
+@Composable
+private fun ChangeSummaryCard(viewModel: QuickEditViewModel) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val tables = state.tables
+    if (!tables.dirty) return
+
+    val deltas = tables.changedCells.mapNotNull { tables.delta(it) }
+    val largest = deltas.maxByOrNull { abs(it) } ?: 0.0
+
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("Proposed change", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "${tables.changedCells.size} cell(s), largest delta " +
+                    "${largest.display("%+.6g")} ${tables.detail?.summary?.units.orEmpty()}",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                "Applying sends the whole grid as one paste op — one journal entry, " +
+                    "one undo point.",
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }

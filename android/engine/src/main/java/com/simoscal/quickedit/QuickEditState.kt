@@ -84,6 +84,8 @@ data class QuickEditUiState(
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
     val build: BuildState = BuildState.NotBuilt,
+    val boost: BoostUiState = BoostUiState(),
+    val tables: TablesUiState = TablesUiState(),
     val busy: Boolean = false,
     val error: UserFacingError? = null,
 ) {
@@ -160,38 +162,37 @@ fun QuickEditUiState.retractingBlocker(): QuickEditUiState =
     if (preflight is PreflightState.Blocked) copy(preflight = PreflightState.NotRun) else this
 
 /**
+ * Drop everything that describes the *previous* inputs.
+ *
+ * Written once and shared by all three input setters rather than repeated in
+ * each: the failure mode here is forgetting one field, and a stale boost model
+ * or table grid left over from another bin would show a person values that are
+ * not in the file they now have open. The verdict, the session, the build, and
+ * every decoded value all belong to the bytes they were read from.
+ */
+private fun QuickEditUiState.forgettingPreviousInputs(): QuickEditUiState = copy(
+    preflight = PreflightState.NotRun,
+    sessionId = null,
+    canUndo = false,
+    canRedo = false,
+    build = BuildState.NotBuilt,
+    boost = BoostUiState(),
+    tables = TablesUiState(),
+    error = null,
+)
+
+/**
  * Choosing a different bin resets everything downstream of it.
  *
  * The session, the preflight verdict, and any build all describe the *old* bin;
  * carrying any of them across would let a verdict vouch for bytes it never saw.
  */
-fun QuickEditUiState.withBin(imported: ImportedFile): QuickEditUiState = copy(
-    bin = imported,
-    preflight = PreflightState.NotRun,
-    sessionId = null,
-    canUndo = false,
-    canRedo = false,
-    build = BuildState.NotBuilt,
-    error = null,
-)
+fun QuickEditUiState.withBin(imported: ImportedFile): QuickEditUiState =
+    copy(bin = imported).forgettingPreviousInputs()
 
 /** Same reasoning as [withBin]: a different definition re-reads every table. */
-fun QuickEditUiState.withXdf(imported: ImportedFile): QuickEditUiState = copy(
-    xdf = imported,
-    preflight = PreflightState.NotRun,
-    sessionId = null,
-    canUndo = false,
-    canRedo = false,
-    build = BuildState.NotBuilt,
-    error = null,
-)
+fun QuickEditUiState.withXdf(imported: ImportedFile): QuickEditUiState =
+    copy(xdf = imported).forgettingPreviousInputs()
 
-fun QuickEditUiState.withSwitchPatchXdf(imported: ImportedFile?): QuickEditUiState = copy(
-    switchPatchXdf = imported,
-    preflight = PreflightState.NotRun,
-    sessionId = null,
-    canUndo = false,
-    canRedo = false,
-    build = BuildState.NotBuilt,
-    error = null,
-)
+fun QuickEditUiState.withSwitchPatchXdf(imported: ImportedFile?): QuickEditUiState =
+    copy(switchPatchXdf = imported).forgettingPreviousInputs()

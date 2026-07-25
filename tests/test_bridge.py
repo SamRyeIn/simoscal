@@ -358,6 +358,49 @@ def test_boost_edit_bad_slot_is_a_bad_param(boost_session: str):
         == ErrorCode.BAD_PARAMS.value
 
 
+def test_boost_rpm_axis_rewrites_the_shared_axis(boost_session: str):
+    before = ok_result(call("boost_curve", session_id=boost_session))["boost_curve"]
+    shifted = [v + 50.0 for v in before["rpm_axis"]]
+    res = ok_result(call("boost_rpm_axis", session_id=boost_session,
+                         breakpoints=shifted, intent="shift the slot axis up 50 rpm"))
+    assert res["rpm_axis"] == pytest.approx(shifted)
+    assert res["can_undo"] is True
+    # the model the editor re-reads reports the new axis, not a cached one
+    after = ok_result(call("boost_curve", session_id=boost_session))["boost_curve"]
+    assert after["rpm_axis"] == pytest.approx(shifted)
+
+
+def test_boost_rpm_axis_refuses_a_non_increasing_axis(boost_session: str):
+    # The guard that only the domain call applies. One axis serves all five
+    # slots, so a non-monotonic breakpoint reinterprets every curve at once.
+    axis = list(ok_result(call("boost_curve", session_id=boost_session))["boost_curve"]["rpm_axis"])
+    axis[5], axis[6] = axis[6], axis[5]
+    assert err_code(call("boost_rpm_axis", session_id=boost_session, breakpoints=axis)) \
+        == ErrorCode.EDIT_REJECTED.value
+
+
+def test_rejected_rpm_axis_leaves_no_undo_point(boost_session: str):
+    axis = list(ok_result(call("boost_curve", session_id=boost_session))["boost_curve"]["rpm_axis"])
+    axis[0] = axis[-1] + 1000.0
+    assert err_code(call("boost_rpm_axis", session_id=boost_session, breakpoints=axis)) \
+        == ErrorCode.EDIT_REJECTED.value
+    assert ok_result(call("undo", session_id=boost_session))["done"] is False
+
+
+def test_boost_rpm_axis_wrong_length_is_rejected(boost_session: str):
+    assert err_code(call("boost_rpm_axis", session_id=boost_session, breakpoints=[1000.0, 2000.0])) \
+        == ErrorCode.EDIT_REJECTED.value
+
+
+def test_boost_rpm_axis_on_a_base_only_session_is_a_tune_error(session: str):
+    assert err_code(call("boost_rpm_axis", session_id=session, breakpoints=[1000.0])) \
+        == ErrorCode.TUNE_ERROR.value
+
+
+def test_boost_rpm_axis_needs_breakpoints(boost_session: str):
+    assert err_code(call("boost_rpm_axis", session_id=boost_session)) == ErrorCode.BAD_PARAMS.value
+
+
 # --------------------------------------------------------------------------- #
 # build
 # --------------------------------------------------------------------------- #

@@ -256,8 +256,21 @@ class QuickEditViewModel(application: Application) : AndroidViewModel(applicatio
                     is BridgeOutcome.Failed -> state.copy(busy = false, error = outcome.toUserFacing())
                 }
             }
+            // Undo moves the session's values out from under whatever is on screen.
+            // Re-reading is not a refresh nicety: a grid still showing the undone
+            // values would let someone Apply a draft built on numbers the session
+            // no longer holds, and the diff they reviewed would not be the diff
+            // they made.
+            if (outcome is BridgeOutcome.Ok) refreshOpenViews()
             persistRecovery()
         }
+    }
+
+    /** Re-read whichever editor surfaces are currently showing engine values. */
+    private fun refreshOpenViews() {
+        val current = _state.value
+        if (current.boost.model != null) loadBoostCurve()
+        current.tables.detail?.summary?.let { openTable(it) }
     }
 
     // ------------------------------------------------------------------ build
@@ -300,6 +313,320 @@ class QuickEditViewModel(application: Application) : AndroidViewModel(applicatio
                         busy = false,
                         build = BuildState.NotBuilt,
                         error = outcome.toUserFacing(),
+                    )
+                }
+            }
+            persistRecovery()
+        }
+    }
+
+    // ------------------------------------------------------------------ boost
+
+    /** Pure draft manipulation — no engine call, nothing committed. */
+    fun onBoostSlotSelected(slot: Int) = _state.update { it.copy(boost = it.boost.selectingSlot(slot)) }
+
+    fun onBoostPointDragged(index: Int, psi: Double) =
+        _state.update { it.copy(boost = it.boost.withDraggedPoint(index, psi)) }
+
+    fun onBoostPointTyped(index: Int, psi: Double) =
+        _state.update { it.copy(boost = it.boost.withTypedPoint(index, psi)) }
+
+    fun onBoostFlatCap(psi: Double) = _state.update { it.copy(boost = it.boost.withFlatCap(psi)) }
+
+    fun onBoostSmooth() = _state.update { it.copy(boost = it.boost.smoothed()) }
+
+    fun onBoostCopyFrom(slot: Int) = _state.update { it.copy(boost = it.boost.copyingFrom(slot)) }
+
+    fun onBoostDiscard() = _state.update { it.copy(boost = it.boost.discardingDraft()) }
+
+    fun dismissBoostNotice() = _state.update { it.copy(boost = it.boost.copy(notice = null)) }
+
+    /**
+     * Read the whole boost model: rpm axis, five slot curves, base ceiling.
+     *
+     * A `TUNE_ERROR` here means the session has no switch-patch space, which is a
+     * *state* of this session rather than a failure of the call — so it lands in
+     * [BoostUiState.unavailable] and the screen explains it, instead of flashing
+     * an error snackbar the person can do nothing about.
+     */
+    fun loadBoostCurve() {
+        val sessionId = _state.value.sessionId ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(boost = it.boost.copy(loading = true, notice = null)) }
+            val outcome = bridge.call("boost_curve", params { put("session_id", sessionId) })
+            _state.update { state ->
+                when (outcome) {
+                    is BridgeOutcome.Ok -> {
+                        val payload = outcome.result.optJSONObject("boost_curve")
+                        if (payload == null) {
+                            state.copy(
+                                boost = state.boost.copy(
+                                    loading = false,
+                                    unavailable = "The engine returned no boost model.",
+                                ),
+                            )
+                        } else {
+                            state.copy(boost = state.boost.withModel(BoostCurveModel.fromJson(payload)))
+                        }
+                    }
+                    is BridgeOutcome.Failed -> state.copy(
+                        boost = state.boost.copy(loading = false, unavailable = outcome.message),
+                        error = if (outcome.code == "TUNE_ERROR") null else outcome.toUserFacing(),
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Commit the active slot's draft as one journaled boost edit.
+     *
+     * The whole curve goes in a single op even when one breakpoint moved: the
+     * engine writes the slot grid atomically and journals one entry, so one
+     * deliberate change stays one undo point.
+     */
+    fun applyBoostDraft(intent: String) {
+        val current = _state.value
+        val sessionId = current.sessionId ?: return
+        val boost = current.boost
+        if (!boost.canApply) return
+
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            val outcome = bridge.call(
+                op = "boost_edit",
+                params = params {
+                    put("session_id", sessionId)
+                    put("slot", boost.activeSlot)
+                    put("psi", boost.draft.toJsonArray())
+                    put("intent", intent)
+                },
+            )
+            _state.update { state ->
+                when (outcome) {
+                    is BridgeOutcome.Ok -> {
+                        val receipt = BoostEditReceipt(
+                            slot = outcome.result.optInt("slot", boost.activeSlot),
+                            requestedPsi = outcome.result.doubleList("requested_psi"),
+                            encodedPsi = outcome.result.doubleList("encoded_psi"),
+                            floored = outcome.result.optBoolean("floored", false),
+                        )
+                        state.copy(
+                            busy = false,
+                            canUndo = outcome.result.optBoolean("can_undo", state.canUndo),
+                            canRedo = outcome.result.optBoolean("can_redo", state.canRedo),
+                            boost = state.boost.applied(receipt),
+                        ).invalidatingBuild()
+                    }
+                    // A guard refusal is the editor's business, not a global error:
+                    // it names a value the person can still change, and it belongs
+                    // beside the curve rather than in a snackbar that scrolls away.
+                    is BridgeOutcome.Failed -> state.copy(
+                        busy = false,
+                        boost = state.boost.copy(notice = outcome.message),
+                        error = if (outcome.code == "EDIT_REJECTED") null else outcome.toUserFacing(),
+                    )
+                }
+            }
+            persistRecovery()
+        }
+    }
+
+    /**
+     * Re-breakpoint the rpm axis shared by all five slots (Advanced).
+     *
+     * The model is re-read rather than patched locally afterwards, because moving
+     * the axis re-interpolates the base ceiling onto it — and that interpolation
+     * is the engine's, not something the app should reproduce.
+     */
+    fun applySlotRpmAxis(breakpoints: List<Double>, intent: String) {
+        val sessionId = _state.value.sessionId ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            val outcome = bridge.call(
+                op = "boost_rpm_axis",
+                params = params {
+                    put("session_id", sessionId)
+                    put("breakpoints", breakpoints.toJsonArray())
+                    put("intent", intent)
+                },
+            )
+            _state.update { state ->
+                when (outcome) {
+                    is BridgeOutcome.Ok -> state.copy(
+                        busy = false,
+                        canUndo = outcome.result.optBoolean("can_undo", state.canUndo),
+                        canRedo = outcome.result.optBoolean("can_redo", state.canRedo),
+                    ).invalidatingBuild()
+                    is BridgeOutcome.Failed -> state.copy(
+                        busy = false,
+                        boost = state.boost.copy(notice = outcome.message),
+                        error = if (outcome.code == "EDIT_REJECTED") null else outcome.toUserFacing(),
+                    )
+                }
+            }
+            if (outcome is BridgeOutcome.Ok) loadBoostCurve()
+            persistRecovery()
+        }
+    }
+
+    // ----------------------------------------------------------------- tables
+
+    fun onTableQueryChanged(query: String) =
+        _state.update { it.copy(tables = it.tables.copy(query = query)) }
+
+    fun onTableClosed() = _state.update { it.copy(tables = it.tables.closingDetail()) }
+
+    fun onCellToggled(cell: CellRef) = _state.update { it.copy(tables = it.tables.togglingCell(cell)) }
+
+    fun onSelectAllCells() = _state.update { it.copy(tables = it.tables.selectingAll()) }
+
+    fun onClearSelection() = _state.update { it.copy(tables = it.tables.clearingSelection()) }
+
+    fun onCellTyped(cell: CellRef, value: Double) =
+        _state.update { it.copy(tables = it.tables.withTypedCell(cell, value)) }
+
+    fun onFillSelection(value: Double) = _state.update { it.copy(tables = it.tables.fillingSelection(value)) }
+
+    fun onOffsetSelection(delta: Double) = _state.update { it.copy(tables = it.tables.offsettingSelection(delta)) }
+
+    fun onScaleSelection(factor: Double) = _state.update { it.copy(tables = it.tables.scalingSelection(factor)) }
+
+    fun onInterpolateSelection() = _state.update { it.copy(tables = it.tables.interpolatingSelection()) }
+
+    fun onTableDiscard() = _state.update { it.copy(tables = it.tables.discardingDraft()) }
+
+    fun dismissTableNotice() = _state.update { it.copy(tables = it.tables.copy(notice = null)) }
+
+    /** List every table the profiles resolve — the curated set, not the whole XDF. */
+    fun loadCatalog() {
+        val sessionId = _state.value.sessionId ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(tables = it.tables.copy(loading = true)) }
+            val outcome = bridge.call("catalog", params { put("session_id", sessionId) })
+            _state.update { state ->
+                when (outcome) {
+                    is BridgeOutcome.Ok -> {
+                        val array = outcome.result.optJSONArray("tables")
+                        val tables = (0 until (array?.length() ?: 0)).mapNotNull { index ->
+                            array?.optJSONObject(index)?.let(TableSummary::fromJson)
+                        }
+                        state.copy(tables = state.tables.withCatalog(tables))
+                    }
+                    is BridgeOutcome.Failed -> state.copy(
+                        tables = state.tables.copy(loading = false),
+                        error = outcome.toUserFacing(),
+                    )
+                }
+            }
+        }
+    }
+
+    fun openTable(summary: TableSummary) {
+        val sessionId = _state.value.sessionId ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(tables = it.tables.copy(loading = true, notice = null)) }
+            val outcome = bridge.call(
+                op = "table_detail",
+                params = params {
+                    put("session_id", sessionId)
+                    put("name", summary.name)
+                    put("space", summary.space)
+                },
+            )
+            _state.update { state ->
+                when (outcome) {
+                    is BridgeOutcome.Ok -> {
+                        val payload = outcome.result.optJSONObject("table")
+                        if (payload == null) {
+                            state.copy(tables = state.tables.copy(loading = false, notice = "The engine returned no table."))
+                        } else {
+                            state.copy(tables = state.tables.withDetail(TableDetail.fromJson(payload)))
+                        }
+                    }
+                    is BridgeOutcome.Failed -> state.copy(
+                        tables = state.tables.copy(loading = false),
+                        error = outcome.toUserFacing(),
+                    )
+                }
+            }
+        }
+    }
+
+    /** Commit the open table's draft as a single `paste` op over the whole grid. */
+    fun applyTableDraft(intent: String) {
+        val current = _state.value
+        val sessionId = current.sessionId ?: return
+        val summary = current.tables.detail?.summary ?: return
+        if (!current.tables.canApply) return
+        val proposed = current.tables.draft
+
+        commitTableEdit(sessionId, summary, intent) {
+            put("op", "paste")
+            put("selection", JSONObject().put("kind", "all"))
+            put("array", proposed.toJsonArray())
+        }
+    }
+
+    /**
+     * Put a table back to the values it held when the session opened.
+     *
+     * A real engine op rather than a local reset: only the journal knows what the
+     * imported bin held, and after several edits the app's own copy no longer
+     * does. It is also journaled like any other change, which is what keeps the
+     * build's byte audit able to explain it.
+     */
+    fun restoreTable(intent: String) {
+        val current = _state.value
+        val sessionId = current.sessionId ?: return
+        val summary = current.tables.detail?.summary ?: return
+        if (!summary.reversible) return
+
+        commitTableEdit(sessionId, summary, intent) {
+            put("op", "restore")
+            put("selection", JSONObject().put("kind", "all"))
+        }
+    }
+
+    private fun commitTableEdit(
+        sessionId: String,
+        summary: TableSummary,
+        intent: String,
+        addOp: JSONObject.() -> Unit,
+    ) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null) }
+            val outcome = bridge.call(
+                op = "edit",
+                params = params {
+                    put("session_id", sessionId)
+                    put("name", summary.name)
+                    put("space", summary.space)
+                    put("intent", intent)
+                    addOp()
+                },
+            )
+            _state.update { state ->
+                when (outcome) {
+                    is BridgeOutcome.Ok -> {
+                        val receipt = TableEditReceipt(
+                            label = summary.idAndDescription,
+                            quantized = outcome.result.optBoolean("quantized", false),
+                            maxAbsQuantization = outcome.result.optDouble("max_abs_quantization", 0.0),
+                            warning = outcome.result.optString("warning", ""),
+                            encoded = outcome.result.grid("encoded"),
+                        )
+                        state.copy(
+                            busy = false,
+                            canUndo = outcome.result.optBoolean("can_undo", state.canUndo),
+                            canRedo = outcome.result.optBoolean("can_redo", state.canRedo),
+                            tables = state.tables.applied(receipt),
+                        ).invalidatingBuild()
+                    }
+                    is BridgeOutcome.Failed -> state.copy(
+                        busy = false,
+                        tables = state.tables.copy(notice = outcome.message),
+                        error = if (outcome.code == "EDIT_REJECTED") null else outcome.toUserFacing(),
                     )
                 }
             }

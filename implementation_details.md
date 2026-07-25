@@ -368,6 +368,83 @@ are covered instead. V8 (the boost-curve canvas and the real editors) is the nex
 visible unit, and the cross-runtime golden fixtures remain the next byte-critical
 one.
 
+### 2026-07-25 — V8: the boost canvas and the calibration editors
+
+Context: V7 left `TablesScreen` and `BoostScreen` as honest placeholders. V8 is
+the plan's next visible unit — the hero boost-curve surface plus the generic
+scalar/line/grid/axis editors — built on the V6 bridge and the V7 shell.
+
+Decision and rationale: the unit's real content turned out to be a *distinction*,
+not a drawing. `min(base ceiling, slot)` yields **two** limits, and the engine's
+guard uses only one of them: `switchpatch._check_below_base_ceiling` compares
+every point against the **scalar maximum** of the base full-load row, while what
+actually caps boost at a given rpm is the *per-rpm* interpolated value. Between
+them is a band where an edit is accepted and then ignored — the change never
+shows on a log. The canvas therefore draws both (solid per-rpm ceiling with a
+shaded band above it; dashed scalar refusal line) and the screen counts the
+capped breakpoints in words. A UI that enforced the per-rpm value as if it were
+the refusal limit would have blocked edits the engine accepts.
+
+Two more rules were made explicit and shared by both editors. **Dragged values
+are clamped, typed values are refused** — a fingertip never stated an exact
+number, so snapping it alters nothing anyone asked for, whereas silently storing
+20.99 for a typed 21.00 would be this library's cardinal sin committed one layer
+up. And **edits are staged**: a drag moves a local draft and Apply sends one op,
+so one deliberate change stays one journal entry and one undo point instead of a
+gesture becoming fifty. Switching slots with an unapplied draft is refused rather
+than auto-discarded, and undo/redo re-read whatever editor is open, because a
+grid still showing undone values would let someone Apply a draft built on numbers
+the session no longer holds.
+
+`maxSettablePsi` backs off exactly one `PSI_STEP` below refusal, which is
+sufficient rather than merely cautious: the engine's test is `>=` and psi is
+floored on its way to stored hPa, so strictly-below in psi implies
+strictly-below in hPa. A test sweeps the whole drag range and asserts no
+reachable fingertip position yields a cap the engine would refuse.
+
+Safety/provenance impact: two additive Python changes. A new bridge op
+`boost_rpm_axis` routes the shared slot rpm axis through
+`switchpatch.slot_rpm_axis` rather than the generic `edit` path, because only the
+domain call enforces strictly-increasing breakpoints *and* checks the patch's
+separate axis-length header — and one axis serves all five slots, so a bad
+breakpoint reinterprets every slot curve at once while the stored grids sit
+unchanged. `BRIDGE_VERSION` is deliberately **not** bumped: an older app never
+names a new op, and a newer app against an older engine gets a clean `UNKNOWN_OP`
+rather than a field read two ways. `TableInfo` gained `is_axis` so the editor can
+pre-validate monotonicity. Non-reversible tables are read-only in the UI
+(`canApply` is gated on `reversible`), Restore is a real journaled `restore` op
+rather than a local reset, and the manifest still declares no permissions. The
+recovery image stayed `d61a6e29…074ad69b` and the APK stayed 65.8 MB — V8 adds no
+dependency.
+
+Files changed: new `android/engine/src/main/java/com/simoscal/quickedit/`
+`BoostCurve.kt`, `BoostUiState.kt`, `BoostPlot.kt`, `TablesUiState.kt` and
+`ui/BoostCanvas.kt`; rewritten `ui/BoostScreen.kt` and `ui/TablesScreen.kt`;
+modified `QuickEditState.kt` (boost/tables state, and the three input setters now
+share one `forgettingPreviousInputs()` so a stale grid cannot survive a new bin)
+and `QuickEditViewModel.kt`; new tests `BoostCurveTest.kt`, `BoostUiStateTest.kt`,
+`BoostPlotTest.kt`, `TablesUiStateTest.kt`; modified `simoscal/bridge.py`,
+`simoscal/tune/catalog.py`, `tests/test_bridge.py`, `android/README.md`, this
+file.
+
+Verification: `:engine:testDebugUnitTest` **93 passed** (up from 36 — 18
+`BoostCurveTest`, 13 `BoostUiStateTest`, 7 `BoostPlotTest`, 19
+`TablesUiStateTest` added); `:engine:verifyDebugNoPermissions` passes with a
+receipt; `:engine:assembleDebug` produces a 65.8 MB APK. Python: the full
+`Code/tests` suite **662 passed, 4 `StaleChecksumWarning`** in ~10 min, up from a
+656-test baseline by the six new `boost_rpm_axis` cases. The canvas coordinate math was deliberately moved out
+of the `ui` package into `BoostPlot.kt` with plain floats so `psiAt` could be
+tested as the exact inverse of `y` — the step where a fingertip becomes a number
+written to a bin.
+
+Remaining risks or follow-up: **no Compose screenshot tests**, which the plan's
+V8 asks for; the pure state and coordinate math are covered instead, carrying
+forward V7's decision not to stand up a Compose test harness. Every on-device leg
+is owed and listed rather than claimed: dragging 12 breakpoints on a phone-width
+plot with a real fingertip, and the boost-only parity pull on the real SC8S50 bin
+hand-reviewed against a desktop `simoscal` build of the same edit. The
+cross-runtime golden fixtures remain the next byte-critical unit.
+
 ### Future entry template
 
 ```markdown

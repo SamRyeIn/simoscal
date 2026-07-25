@@ -19,6 +19,7 @@ from typing import Optional
 
 import numpy as np
 
+from .profile import TAG_AXIS
 from .project import Tune
 
 __all__ = ["AxisInfo", "TableInfo", "catalog", "table_detail"]
@@ -54,6 +55,7 @@ class TableInfo:
     shape: tuple[int, int]
     ndim: int                 # 0 scalar · 1 vector · 2 grid
     reversible: bool          # physical-unit writes round-trip (linear equation)
+    is_axis: bool             # a breakpoint axis: writes must strictly increase
     categories: tuple[str, ...]
     x_axis: Optional[AxisInfo]
     y_axis: Optional[AxisInfo]
@@ -120,6 +122,11 @@ def _table_info(tune: Tune, space: str, name: str) -> TableInfo:
         shape=shape,
         ndim=_ndim(shape),
         reversible=_reversible(view),
+        # Surfaced so an editor can label an axis and check monotonicity as the
+        # value is typed. The engine enforces it regardless (``apply_op`` rejects
+        # a non-increasing axis outright) — this only lets the refusal arrive at
+        # the keystroke instead of at Apply.
+        is_axis=bool(resolved.has(TAG_AXIS)),
         categories=categories,
         x_axis=_axis_info(view, "x"),
         y_axis=_axis_info(view, "y"),

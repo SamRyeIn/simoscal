@@ -615,6 +615,49 @@ def _op_boost_edit(params: dict) -> dict:
     }
 
 
+def _op_boost_rpm_axis(params: dict) -> dict:
+    """Re-breakpoint the rpm axis shared by all five slot grids (Advanced only).
+
+    Routed through ``switchpatch.slot_rpm_axis`` rather than reached with the
+    generic ``edit`` op on purpose. The domain call is the only thing that
+    enforces strictly-increasing breakpoints and checks the patch's separate
+    axis-length header; a generic grid write to the same table would satisfy
+    neither. That matters more here than for a normal table because one axis is
+    shared by all five slots, so a bad breakpoint reinterprets every slot curve
+    at once — silently, since the stored grids do not change.
+    """
+    sess = _session(params)
+    breakpoints = _require(params, "breakpoints")
+    intent = params.get("intent", "")
+    if PATCH_SPACE not in sess.tune.spaces:
+        raise BridgeError(
+            ErrorCode.TUNE_ERROR,
+            "this session has no switch-patch boost tables",
+            advanced="the tune was opened without the switch-patch profile",
+        )
+
+    try:
+        entry = sess.tune.switchpatch.slot_rpm_axis(breakpoints, intent=intent)
+    except (EditRejected, ValueError) as exc:
+        raise BridgeError(ErrorCode.EDIT_REJECTED, str(exc))
+    except (TuneError, KeyError, TypeError) as exc:
+        raise BridgeError(
+            ErrorCode.TUNE_ERROR,
+            "the shared slot rpm axis could not be written",
+            advanced=str(exc),
+        )
+
+    sess.history.commit()
+    axis = np.asarray(
+        sess.tune.values("slot_put_rpm_axis", space=PATCH_SPACE), dtype=np.float64
+    ).ravel()
+    return {
+        "rpm_axis": _jsonify(axis),
+        "entry": _entry_summary(entry),
+        **_history_state(sess),
+    }
+
+
 def _op_undo(params: dict) -> dict:
     """Step back one committed edit. ``done`` is false when there is nothing to undo."""
     sess = _session(params)
@@ -686,6 +729,11 @@ OPS: dict[str, Callable[[dict], dict]] = {
     "edit": _op_edit,
     "boost_curve": _op_boost_curve,
     "boost_edit": _op_boost_edit,
+    # Added for V8. Adding an op does not bump BRIDGE_VERSION: an older app never
+    # names it, and a newer app against an older engine gets a clean UNKNOWN_OP
+    # rather than a field read two different ways — which is what the version
+    # gate exists to prevent.
+    "boost_rpm_axis": _op_boost_rpm_axis,
     "undo": _op_undo,
     "redo": _op_redo,
     "build": _op_build,
