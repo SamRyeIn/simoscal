@@ -199,15 +199,26 @@ was reverted.
 
 ## Remaining work and explicit non-claims
 
-The following are not complete and must not be described as complete by a
-future agent:
+Last reconciled against the dated entries below on 2026-08-13. V0–V8 are all
+implemented and committed on `feat/quickedit-v1`; everything still owed needs
+either a real device or a Compose test harness. The following are not complete
+and must not be described as complete by a future agent:
 
 - physical-arm64 and x86_64 V0 parity execution;
 - cold-start and physical-device measurements;
-- full V6 device execution and per-operation host/Android golden fixtures;
-- V7 Android import, navigation, review, and share UI;
-- V8 Compose boost-curve and generic calibration editors;
-- airplane-mode/process-death/device UI tests.
+- full V6 device execution and per-operation host/Android golden fixtures —
+  still the next byte-critical unit;
+- the boost-only parity pull: an edit made on the phone against the real SC8S50
+  bin, hand-reviewed against a desktop `simoscal` build of the same edit;
+- on-device gesture verification — dragging the 12 boost breakpoints on a
+  phone-width plot with a real fingertip;
+- Compose UI and screenshot tests (light + dark) for the V7 shell and the V8
+  editors; only the pure state and coordinate math are covered today;
+- airplane-mode, process-death, rotation, low-storage, SAF-picker, and real
+  share-to-SimosTools device tests.
+
+Passing unit tests on the host prove the rules, not the phone: no leg of this
+list may be inferred from a green `:engine:testDebugUnitTest` run.
 
 The implementation verifies software integrity only. It does not establish
 mechanical safety, and only human review plus real driving logs can validate a
