@@ -37,6 +37,16 @@ data class TableSummary(
     val reversible: Boolean,
     val isAxis: Boolean,
     val categories: List<String>,
+    /**
+     * The domain call that owns writes to this table, or empty when the generic
+     * editor may write it.
+     *
+     * The engine keeps owned tables out of the catalog and refuses a generic edit
+     * to one outright, so this should never be non-empty here. It is carried and
+     * honoured anyway: if one ever does arrive, the editor must not let someone
+     * compose a proposal whose only possible outcome is a refusal.
+     */
+    val owner: String = "",
 ) {
 
     /**
@@ -70,6 +80,7 @@ data class TableSummary(
                 reversible = json.optBoolean("reversible", false),
                 isAxis = json.optBoolean("is_axis", false),
                 categories = json.stringList("categories"),
+                owner = json.optString("owner", ""),
             )
         }
     }
@@ -138,15 +149,20 @@ data class TablesUiState(
             }
 
     /**
-     * Apply is gated on reversibility, not only on dirtiness.
+     * Apply is gated on writability, not only on dirtiness.
      *
      * A non-linear or raw-only table cannot be written back from physical units,
-     * and the engine refuses such an edit outright. The editor therefore presents
-     * it read-only rather than letting someone compose a proposal that can only
-     * end in a refusal.
+     * and a domain-owned one carries structural rules the generic path cannot
+     * honour. The engine refuses both outright, so the editor presents them
+     * read-only rather than letting someone compose a proposal that can only end
+     * in a refusal.
      */
     val canApply: Boolean
-        get() = detail?.summary?.reversible == true && dirty
+        get() = writable && dirty
+
+    /** Whether the generic editor may write the open table at all. */
+    val writable: Boolean
+        get() = detail?.summary?.let { it.reversible && it.owner.isEmpty() } == true
 
     /** The cells whose proposed value differs from the committed one. */
     val changedCells: List<CellRef>

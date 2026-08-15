@@ -257,6 +257,95 @@ class QuickEditStateTest {
         }
     }
 
+    // ------------------------------------------------------------ dirty drafts
+
+    /**
+     * CR-20260813-04: a staged proposal must not vanish without a decision.
+     *
+     * Undo, Redo, Restore, and the shared-rpm-axis Apply all re-read the open
+     * editor from the engine when they succeed, replacing a draft with committed
+     * values. The slot switch has always refused while dirty; every other
+     * session-mutating action now obeys the same rule.
+     */
+    private val boostModel = BoostCurveModel(
+        rpmAxis = List(12) { 1000.0 + it * 500.0 },
+        slots = SLOT_IDS.map { slot -> SlotCurve(slot, List(12) { 8.0 + slot }) },
+        baseCeilingPsi = List(12) { 18.0 },
+        baseRpmAxis = listOf(1000.0, 6500.0),
+        baseCeilingOwnPsi = listOf(18.0, 18.0),
+    )
+
+    private fun tableSummary() = TableSummary(
+        space = "base", name = "pressure_quotient_max", symbol = "KFPQMAX",
+        title = "Maximum pressure quotient", description = "Maximum pressure quotient",
+        uniqueidHex = "0x1234", units = "-", rows = 1, cols = 2, ndim = 1,
+        reversible = true, isAxis = false, categories = emptyList(),
+    )
+
+    private fun sessionWithBoostDraft() = openSession().copy(
+        canUndo = true, canRedo = true,
+        boost = BoostUiState().withModel(boostModel).withDraggedPoint(3, 12.0),
+    )
+
+    private fun sessionWithTableDraft() = openSession().copy(
+        canUndo = true, canRedo = true,
+        tables = TablesUiState()
+            .withDetail(
+                TableDetail(tableSummary(), listOf(listOf(1.0, 2.0)), null, null)
+            )
+            .withTypedCell(CellRef(0, 1), 9.0),
+    )
+
+    @Test
+    fun `a clean session may run every session-mutating action`() {
+        val clean = openSession().copy(canUndo = true, canRedo = true)
+        assertNull(clean.dirtyDraft)
+        assertNull(clean.dirtyDraftRefusal)
+        assertTrue(clean.canMutateSession)
+    }
+
+    @Test
+    fun `an unapplied boost draft blocks undo, redo and the shared axis`() {
+        val dirty = sessionWithBoostDraft()
+        assertTrue(dirty.boost.dirty)
+        assertEquals(DirtyDraft.BOOST, dirty.dirtyDraft)
+        assertFalse(dirty.canMutateSession)
+        assertNotNull(dirty.dirtyDraftRefusal)
+        // Undo/redo are still *available* in the engine's sense — the rule is
+        // about not discarding the draft, not about the history being empty.
+        assertTrue(dirty.canUndo && dirty.canRedo)
+    }
+
+    @Test
+    fun `an unapplied table draft blocks them too`() {
+        val dirty = sessionWithTableDraft()
+        assertTrue(dirty.tables.dirty)
+        assertEquals(DirtyDraft.TABLE, dirty.dirtyDraft)
+        assertFalse(dirty.canMutateSession)
+        assertNotNull(dirty.dirtyDraftRefusal)
+    }
+
+    @Test
+    fun `applying or discarding the draft unblocks them again`() {
+        val discardedBoost = sessionWithBoostDraft().let {
+            it.copy(boost = it.boost.discardingDraft())
+        }
+        assertNull(discardedBoost.dirtyDraft)
+        assertTrue(discardedBoost.canMutateSession)
+
+        val discardedTable = sessionWithTableDraft().let {
+            it.copy(tables = it.tables.discardingDraft())
+        }
+        assertNull(discardedTable.dirtyDraft)
+        assertTrue(discardedTable.canMutateSession)
+    }
+
+    @Test
+    fun `a busy or closed session cannot be mutated either`() {
+        assertFalse(openSession().copy(busy = true).canMutateSession)
+        assertFalse(QuickEditUiState(bin = bin, xdf = xdf).canMutateSession)
+    }
+
     // ------------------------------------------------------------------ edits
 
     @Test

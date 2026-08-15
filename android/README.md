@@ -190,6 +190,25 @@ read two different ways, which is what the version gate exists to prevent.
 `simoscal.tune.catalog.TableInfo` also gained `is_axis`, so the editor can label
 an axis and pre-validate it.
 
+### Domain-owned tables are unreachable from the generic editor
+
+Routing the rpm axis through its own op is not enough on its own: the generic
+`edit` op could still reach the same table, and the five slot `PUT setpoint`
+grids too. A `TableSpec` now carries an `owner` — the domain call that is the
+only legitimate way to write it — and the whole switch-patch profile declares
+one. Three things follow, and all three are engine-side:
+
+- `apply_op()` refuses an owned table for **every** generic op, RESTORE included:
+  a partial restore breaks the eight-row tiling exactly as a partial write does.
+- `catalog()` omits owned tables, so the browser never offers a grid the engine
+  will refuse. `table_detail` still reads them — reading was never the hazard.
+- Every app build of a patched bin registers the switch-patch sanity gate, so the
+  finished file is re-checked whether the session was created or recovered.
+
+Without this, a one-cell edit to a slot grid — or a `12 → 13` write to the axis
+length header — was accepted, then reported `verified=True` with a share path
+(CR-20260813-01).
+
 ### What V8 still owes, and why it needs hardware
 
 - Dragging on a real touchscreen: whether 12 breakpoints across a phone-width

@@ -192,8 +192,12 @@ def test_report_is_json_serializable_and_round_trips(
     assert wire["verified"] is True
     assert wire["checksum_state"] == "CLEAN"
     assert isinstance(wire["edits"], list) and wire["edits"]
-    # The written artifact matches the returned model exactly.
-    on_disk = json.loads((tmp_path / "build_report.json").read_text())
+    # The written artifact matches the returned model exactly. It lives beside
+    # the candidate, in this build's own directory — not at the staging root,
+    # where the next build would overwrite it (CR-20260813-02).
+    build_dir = Path(report.staged_bin).parent
+    assert build_dir.parent == tmp_path
+    on_disk = json.loads((build_dir / "build_report.json").read_text())
     assert on_disk == wire
 
 
@@ -280,6 +284,82 @@ def test_service_offers_no_caller_supplied_allowance(tune: Tune) -> None:
         build_revision(  # type: ignore[call-arg]
             tune, "R01", staging_dir="x", reference_bin="x", extra_allowances=(),
         )
+
+
+def test_a_second_build_cannot_rewrite_the_first_candidate(
+    tune: Tune, tmp_path: Path, real_bin: Path
+) -> None:
+    """CR-20260813-02: a shared candidate's bytes must be immutable.
+
+    Once a verified bin's path has been handed to another app as a content URI,
+    that grant cannot be revoked. So a later build must not be able to write the
+    same path: the receiver could otherwise open the URI after the fact and read
+    a different — possibly mid-gate or failed — candidate than the one approved.
+    """
+    tune.write_cells("pressure_quotient_max", {(0, 0): 1.7}, intent="first")
+    first = build_revision(
+        tune, "R01", staging_dir=tmp_path, reference_bin=real_bin,
+        bin_name="candidate.bin",
+    )
+    assert first.share_path is not None
+    shared_bytes = Path(first.share_path).read_bytes()
+
+    # Same revision, same requested file name, same staging root — the exact
+    # repeat that used to overwrite the shared file.
+    tune.write_cells("pressure_quotient_max", {(0, 0): 1.9}, intent="second")
+    second = build_revision(
+        tune, "R01", staging_dir=tmp_path, reference_bin=real_bin,
+        bin_name="candidate.bin",
+    )
+
+    assert second.share_path is not None
+    assert second.share_path != first.share_path
+    assert Path(first.share_path).read_bytes() == shared_bytes
+    # Both live under the staging root the FileProvider shares, each in its own
+    # directory, so neither build's report can clobber the other's either.
+    first_dir, second_dir = Path(first.staged_bin).parent, Path(second.staged_bin).parent
+    assert first_dir != second_dir
+    assert first_dir.parent == tmp_path and second_dir.parent == tmp_path
+
+
+@pytest.mark.parametrize(
+    "bin_name",
+    ["../escaped.bin", "/tmp/escaped.bin", "sub/dir.bin", "..", ".", "   "],
+)
+def test_a_candidate_name_that_is_not_a_bare_file_name_is_refused(
+    tune: Tune, tmp_path: Path, real_bin: Path, bin_name: str
+) -> None:
+    """CR-20260813-05: an untrusted display name must never steer the path.
+
+    On Android ``bin_name`` originates as ``OpenableColumns.DISPLAY_NAME`` — text
+    a document provider chose. A provider returning ``../escaped.bin`` once put a
+    verified candidate outside the staging tree. Refused loudly, and nothing is
+    written: a silently sanitized name would be the same class of quiet
+    substitution this library refuses everywhere else.
+    """
+    tune.write_cells("pressure_quotient_max", {(0, 0): 1.7}, intent="lower")
+    staging = tmp_path / "staging"
+
+    with pytest.raises(ValueError):
+        build_revision(
+            tune, "R01", staging_dir=staging, reference_bin=real_bin,
+            bin_name=bin_name,
+        )
+
+    # No candidate anywhere: not outside the staging tree, and not inside it.
+    assert not list(tmp_path.rglob("*.bin"))
+
+
+def test_a_revision_label_that_is_not_a_bare_file_name_is_refused(
+    tune: Tune, tmp_path: Path, real_bin: Path
+) -> None:
+    """The revision names the build directory, so it is validated the same way."""
+    tune.write_cells("pressure_quotient_max", {(0, 0): 1.7}, intent="lower")
+    with pytest.raises(ValueError):
+        build_revision(
+            tune, "../R01", staging_dir=tmp_path, reference_bin=real_bin,
+        )
+    assert not list(tmp_path.rglob("*.bin"))
 
 
 def test_an_unclean_audit_is_never_shareable(

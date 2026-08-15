@@ -166,13 +166,26 @@ fun BoostScreen(viewModel: QuickEditViewModel) {
 
         boost.lastEdit?.let { receipt -> EncodedReceiptCard(receipt.slot, receipt.requestedPsi, receipt.encodedPsi, receipt.floored) }
 
+        // History and the shared axis are disabled while a draft is staged: both
+        // re-read this editor from the engine on success, which would replace the
+        // draft with committed values and drop the proposal without asking.
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = viewModel::undo, enabled = state.canUndo) { Text("Undo") }
-            OutlinedButton(onClick = viewModel::redo, enabled = state.canRedo) { Text("Redo") }
+            OutlinedButton(
+                onClick = viewModel::undo,
+                enabled = state.canUndo && state.canMutateSession,
+            ) { Text("Undo") }
+            OutlinedButton(
+                onClick = viewModel::redo,
+                enabled = state.canRedo && state.canMutateSession,
+            ) { Text("Redo") }
         }
 
         if (advanced) {
-            OutlinedButton(onClick = { axisOpen = true }, modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = { axisOpen = true },
+                enabled = state.canMutateSession,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
                 Text("Edit shared rpm breakpoints")
             }
             Text(
@@ -180,6 +193,10 @@ fun BoostScreen(viewModel: QuickEditViewModel) {
                     "slot curve at once, which is why it lives behind Advanced.",
                 style = MaterialTheme.typography.bodySmall,
             )
+        }
+
+        state.dirtyDraftRefusal?.let { reason ->
+            Text(reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
     }
 

@@ -69,7 +69,12 @@ in place as they are fixed or dismissed.
 | CR-20260724-13 | High     | CONFIRMED | simoscal/tune/recovery.py                           | Undo restores bytes but leaves profile views stale                          | Fixed (2026-07-24)  |
 | CR-20260724-14 | Medium   | CONFIRMED | android/README.md                                   | V0 declared GO before physical-arm64 and x86_64 parity gates ran            | Open                |
 | CR-20260724-15 | Low      | CONFIRMED | tests/test_packaging.py                             | No test installs a built wheel; the closure test imports the source tree    | Fixed (2026-07-24)  |
-| CR-20260724-16 | Low      | PLAUSIBLE | simoscal/bridge.py                                  | `bridge_info` handshake is gated by the version check it is meant to bootstrap | Open             |
+| CR-20260724-16 | Low      | PLAUSIBLE | simoscal/bridge.py                                  | `bridge_info` cannot discover a mismatched engine on its documented path    | Open                |
+| CR-20260813-01 | High     | CONFIRMED | android/.../QuickEditViewModel.kt                   | Generic patch edits bypass domain guards and produce shareable bins         | Fixed (2026-08-14)  |
+| CR-20260813-02 | High     | PLAUSIBLE | simoscal/tune/build_service.py                      | A later build can overwrite a candidate already granted to another app      | Fixed (2026-08-14)  |
+| CR-20260813-03 | Medium   | CONFIRMED | android/.../QuickEditViewModel.kt                   | SAF imports and SHA-256 hashing run synchronously on the main thread        | Fixed (2026-08-14)  |
+| CR-20260813-04 | Medium   | CONFIRMED | android/.../QuickEditViewModel.kt                   | Undo, redo, and rpm-axis apply silently discard unapplied editor drafts     | Fixed (2026-08-14)  |
+| CR-20260813-05 | Medium   | PLAUSIBLE | simoscal/tune/build_service.py                      | Unsanitized provider display names can escape the staging directory         | Fixed (2026-08-14)  |
 
 ---
 
@@ -1337,3 +1342,226 @@ needs the open CR-20260724-14 device runs. Building the host-side canonical
 fixtures first requires normalizing the bridge's nondeterministic response
 fields (uuid `session_id`, temp paths) before they can be frozen; noted here as
 the next byte-critical unit after the device gate, not a defect in this code.
+
+---
+
+## Review 2026-08-13 — Quick Edit V7/V8 Android app
+
+- **Scope:** V7 commit `b7e0224`, V8 commit `44c6d5f`, and the README-only
+  reconciliation in `46a4bbb`; reviewed the shipped V8 state with the V7 → V8
+  delta, surrounding Python bridge/build code, and existing tests.
+- **Method:** traced import → preflight → session → edit → recovery → build →
+  FileProvider share, reviewed the Compose state transitions and both editor
+  paths, ran the Android JVM/manifest/APK gates, ran the focused Python bridge
+  suite, and exercised adversarial edits against the real patched SC8S50 bin.
+- **Headline:** five findings: two High and three Medium. The release-blocking
+  issue is that V8's generic table editor exposes switch-patch implementation
+  tables and routes them around the domain guards, allowing structurally invalid
+  boost-patch edits to receive a verified, shareable build report.
+- **Verification:** `:engine:testDebugUnitTest` passed all **93** tests;
+  `:engine:verifyDebugNoPermissions` passed; `:engine:assembleDebug` produced a
+  65,775,186-byte APK; `tests/test_bridge.py` passed all **23** tests. The two
+  domain-bypass reproductions and the staging-escape reproduction wrote only to
+  temporary directories. The untouched recovery image remained
+  `d61a6e297b3ac1d25f60ec8cb3bb504ff47f2db603a960a56e6a6e34074ad69b`.
+
+### CR-20260813-01 — Generic patch-table edits bypass domain guards — High, CONFIRMED — Fixed (2026-08-14)
+
+`android/engine/src/main/java/com/simoscal/quickedit/QuickEditViewModel.kt:501-568`
+loads the catalog across every tune space and sends every table draft through
+the generic `edit` / `paste` operation. The catalog includes the switch-patch
+implementation tables, but `simoscal/bridge.py:520-564` routes that generic op
+to `apply_op()`, which enforces only reversibility, finite values, and generic
+axis monotonicity. It does not invoke `SwitchPatch.slot_curve()`, its eight-row
+tiling and below-base-ceiling rules, or `SwitchPatch.slot_rpm_axis()` and its
+separate header check.
+
+Two real-file reproductions confirmed the consequence:
+
+- `0x7d41a` — PUT setpoint, boost target grid for map slot 1: changed only the
+  first row/first column from about 4000 hPa to 5000 hPa, breaking the required
+  identical eight-row tiling. `build_revision()` returned `verified=True`, an
+  empty problem list, and a non-null `share_path`.
+- `0x7d7da` — PUT SP RPM Axis Header, breakpoint count, must remain 12: changed
+  the header from 12 to 13. The build again returned `verified=True`, an empty
+  problem list, and a non-null `share_path`.
+
+This is not merely a UI pre-validation gap: the engine accepts and certifies the
+unsafe route. The app can therefore hand SimosTools a bin that violates the
+switch patch's structural contract. Block generic bridge edits to domain-owned
+patch tables, remove those tables from the generic catalog, and require the
+switch-patch sanity check on every app build as defense in depth. Domain-owned
+edits should be reachable only through their guarded bridge operations.
+
+### CR-20260813-02 — A granted candidate remains mutable — High, PLAUSIBLE — Fixed (2026-08-14)
+
+`android/engine/src/main/java/com/simoscal/quickedit/QuickEditViewModel.kt:285-302`
+uses the imported bin's display name as `bin_name` for every build in a session,
+and `simoscal/tune/build_service.py:270-274` writes each candidate to the same
+`staging_dir / bin_name` path. `ShareBin.kt:26-43` grants another app a content
+URI to that path, not to an immutable snapshot.
+
+After a verified candidate is shared, a later edit correctly hides the Share
+button but cannot revoke a URI already granted to the receiver. A subsequent
+build overwrites the same file before its new gates finish. If SimosTools (or any
+selected receiver) defers opening the URI while its grant is live, it can read
+the later candidate, including during a failed or partial build, rather than the
+verified bytes the user chose to share. The overwrite is confirmed by the path
+construction; the receiver timing needs an on-device test, hence PLAUSIBLE.
+
+Give every build a unique, immutable output name independent of the imported
+display name, write through a temporary file plus atomic rename, and never reuse
+an exported path. A test should retain the first URI/file, run a second build,
+and prove the first bytes remain unchanged.
+
+### CR-20260813-03 — Imports block the Android main thread — Medium, CONFIRMED — Fixed (2026-08-14)
+
+`android/engine/src/main/java/com/simoscal/quickedit/QuickEditViewModel.kt:55-59`
+launches in `viewModelScope` and immediately calls `ImportStore.importFile()`.
+`viewModelScope` uses the main dispatcher by default, while
+`ImportStore.kt:66-81` opens the SAF stream, copies it, and computes SHA-256
+synchronously. No `withContext(Dispatchers.IO)` or other dispatcher handoff
+exists.
+
+A normal 4–6 MB local file freezes composition while it is copied; a cloud or
+slow-document provider can hold the UI long enough for an ANR. The busy state is
+set immediately beforehand but cannot render while the same thread is blocked.
+Run the entire open/copy/hash/rename operation on `Dispatchers.IO`, returning
+only the immutable `ImportedFile` to the main dispatcher, and add a ViewModel or
+instrumentation test with a deliberately blocking provider stream.
+
+### CR-20260813-04 — State-changing actions silently discard drafts — Medium, CONFIRMED — Fixed (2026-08-14)
+
+The editors refuse a slot switch while a boost draft is dirty, but other
+state-changing actions have no equivalent guard. `BoostScreen.kt:169-176` keeps
+Undo, Redo, and shared-rpm-axis Apply reachable while a draft exists;
+`TablesScreen.kt:272-274` likewise leaves Undo and Redo reachable with a dirty
+grid. A successful history operation calls `refreshOpenViews()` at
+`QuickEditViewModel.kt:264`, and a successful rpm-axis edit calls
+`loadBoostCurve()` at line 468. The resulting `withModel()` / `withDetail()`
+transition replaces the draft with freshly committed values.
+
+Thus a user can stage and review a curve or grid, tap Undo/Redo—or apply a shared
+axis—and lose the entire proposal without confirmation. Gate these operations
+while the open editor is dirty, or present an explicit Apply / Discard / Cancel
+decision before refreshing. Add state tests covering dirty drafts across every
+engine-mutating action, not only slot selection.
+
+### CR-20260813-05 — Provider display names escape the staging directory — Medium, PLAUSIBLE — Fixed (2026-08-14)
+
+`ImportStore.kt:61` accepts `OpenableColumns.DISPLAY_NAME` as untrusted display
+text, `QuickEditViewModel.kt:299` forwards it unchanged as `bin_name`, and
+`simoscal/tune/build_service.py:272` joins it directly to `staging_dir`. A
+provider can return `../escaped.bin` or an absolute path; `pathlib` then resolves
+the candidate outside the FileProvider staging tree.
+
+A direct reproduction with `bin_name="../escaped.bin"` returned
+`verified=True`, no problems, and a `share_path` whose resolved parent was
+outside `staging_dir`. On Android a hostile document provider could target other
+app-private files, including an imported source copy. The write happens before
+FileProvider later rejects sharing an out-of-root file. The path escape is
+confirmed; the malicious-provider prerequisite makes the app exploit PLAUSIBLE.
+
+Treat the provider name as display-only. Generate the physical candidate name
+from a safe revision/build identifier, reject path separators and absolute
+names at the Python boundary, and assert the resolved output remains a direct
+child of the resolved staging directory before writing.
+
+### Remaining gaps and assumptions
+
+- No Compose screenshot/UI tests or ViewModel tests exercise the interaction
+  paths above; the current 93 JVM tests cover pure rules and protocol parsing.
+- The documented physical-arm64, x86_64, SAF/share, process-death, low-storage,
+  touchscreen-drag, and on-device boost-parity legs remain open. This review did
+  not treat those already-declared hardware gaps as new findings.
+- The Gradle run emitted Chaquopy/Gradle implicit-task-dependency warnings and
+  disabled execution optimizations for affected tasks. The build completed, but
+  parallel/incremental task correctness remains a tooling risk outside the V7/V8
+  code findings above.
+
+### Resolution (2026-08-14)
+
+All five fixed. Every structural rule landed in the **engine**, with the app-side
+change as the second layer rather than the fix itself — a UI that merely stops
+offering a bad route is not a guard.
+
+Verification after the fixes: complete Python suite **681 passed** with the same
+four expected `StaleChecksumWarning`s (was 662; +19 regression tests, at least
+one adversarial reproduction per finding, all run against the real stock and
+patched SC8S50 bins). `:engine:testDebugUnitTest` **104 passed** (was 93; +11),
+`:engine:verifyDebugNoPermissions` passed, `:engine:assembleDebug` produced a
+65,775,188-byte APK under JDK 17.
+
+- **CR-20260813-01** — `TableSpec` gained an `owner`: the domain call that is the
+  only legitimate way to write that table. The whole `SwitchPatch2933` profile
+  declares one (`slot_curve()` for the five grids, `slot_rpm_axis()` for the
+  shared axis, `traction_control()` for the flags, and "never written" for the
+  axis-length header). `apply_op()` now refuses an owned table for **every**
+  generic op — RESTORE included, since a partial restore breaks the eight-row
+  tiling exactly as a partial write does — and `catalog()` omits owned tables, so
+  the app is never handed a grid the engine will refuse. `table_detail` still
+  reads them; reading was never the hazard, and the boost editor needs the
+  values. Defense in depth: `_op_build` registers the switch-patch sanity gate on
+  any session holding the patch space, idempotently, so a patched build re-checks
+  the finished file whether the session was created or recovered. The two
+  reproductions in the finding — the `0x7d41a` first-cell write and the
+  `0x7d7da` `12 → 13` header write — are now `EDIT_REJECTED` with no journal
+  entry and no undo point. Tests: `test_generic_edit_of_a_slot_grid_is_refused`,
+  `test_generic_edit_of_the_slot_rpm_axis_is_refused`,
+  `test_generic_edit_of_the_axis_length_header_is_refused`,
+  `test_generic_restore_of_a_domain_owned_table_is_refused`,
+  `test_the_catalog_does_not_offer_domain_owned_tables`,
+  `test_a_domain_owned_table_is_still_readable`,
+  `test_the_domain_call_still_writes_the_table_the_generic_path_cannot`,
+  `test_a_patched_build_always_runs_the_switch_patch_gate`.
+- **CR-20260813-02** — `build_revision()` now writes each build into its own
+  fresh `staging_dir/<revision>-<uuid12>/` directory (created with
+  `exist_ok=False`) and never reuses a path; `build_report.json` moved beside its
+  own candidate. That is a stronger guarantee than temp-file-plus-rename, which
+  would only have made one path's *replacement* atomic: no later build writes the
+  granted path at all, so a receiver holding a live URI cannot read a subsequent
+  or mid-gate candidate. Still under the `staging/` FileProvider root, which
+  matches by prefix, so sharing is unaffected. Test:
+  `test_a_second_build_cannot_rewrite_the_first_candidate`,
+  `test_two_builds_never_share_a_candidate_path`.
+- **CR-20260813-03** — `ImportStore.importFile` is now `suspend` and wraps the
+  whole open/copy/hash/rename in `withContext(io)` itself, with the dispatcher
+  injectable and defaulting to `Dispatchers.IO`, so a caller cannot forget. The
+  streaming copy was extracted as a pure `copyAndHash(InputStream, File)` and is
+  now covered on the JVM, including a provider that returns one byte per read —
+  a copy loop treating a short read as EOF would truncate the file *and* record a
+  hash matching the truncation. Tests: `the hash describes the bytes actually
+  written`, `a stream that dribbles bytes still hashes to the same value`. That
+  the work leaves the main thread still needs an on-device test; see the
+  remaining gap below.
+- **CR-20260813-04** — `QuickEditUiState` gained `dirtyDraft`, `canMutateSession`,
+  and `dirtyDraftRefusal`. Undo, Redo, Restore, and the shared-rpm-axis Apply are
+  now refused while either editor holds an unapplied draft — in the view model
+  (`refusingWhileDirty()`, which places the reason in the blocking editor) and in
+  both screens, which disable the controls and say why. A refusal rather than a
+  confirmation dialog: Apply and Discard are already on screen one tap away, so
+  there is nothing for a dialog to ask. Restore was not named in the finding but
+  discards a draft the same way, so it obeys the same rule. Tests: five new cases
+  in `QuickEditStateTest`.
+- **CR-20260813-05** — The provider display name no longer names any file. The
+  app stopped sending `bin_name` altogether (the build screen shows the
+  *candidate's* own name, read off the returned share path, which is the file
+  actually handed to SimosTools), and the engine validates both `bin_name` and
+  `revision` as bare filename components — separator, absolute, `.`/`..`, NUL,
+  and empty are all refused loudly, never sanitized, with a final assertion that
+  the candidate resolves to a direct child of this build's directory. The
+  finding's `bin_name="../escaped.bin"` reproduction is now `BAD_PARAMS` with no
+  file written anywhere under the staging root. Tests:
+  `test_a_candidate_name_that_is_not_a_bare_file_name_is_refused` (six traversal
+  and degenerate forms), `test_a_revision_label_that_is_not_a_bare_file_name_is_refused`,
+  `test_build_refuses_a_name_that_escapes_the_staging_directory`,
+  `test_build_refuses_a_revision_that_is_not_a_bare_file_name`.
+
+Still open after this pass: the dispatcher hand-off in CR-20260813-03 and the
+FileProvider grant timing in CR-20260813-02 are both proven only at the level the
+JVM can reach — the path and copy logic. Confirming them as *device* behavior
+(a deliberately blocking SAF provider; a receiver that defers opening a granted
+URI across a second build) still needs the instrumentation legs already listed
+as open above. Neither is a reason to keep the findings open: the mechanisms they
+depended on — a reused output path, a blocking call on the main dispatcher — are
+gone.

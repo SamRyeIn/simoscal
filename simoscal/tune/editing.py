@@ -19,9 +19,15 @@ Two properties matter and are guaranteed here:
   (1500 hPa → 1499.978). Every :class:`EditResult` carries both, so the UI can
   show "requested 1500, encoded 1499.98" rather than silently rounding.
 
-Non-reversible (non-linear) tables are refused here — they are raw-only, and a
-physical-unit edit of one would be off by the scaling. The catalog marks them
-``reversible=False`` so the UI never offers this path for them.
+Two classes of table are refused outright:
+
+* **Non-reversible (non-linear) tables** — they are raw-only, and a physical-unit
+  edit of one would be off by the scaling. The catalog marks them
+  ``reversible=False`` so the UI never offers this path for them.
+* **Domain-owned tables** — those whose :attr:`~simoscal.tune.profile.TableSpec.owner`
+  names a domain call. Their invariants are enforced in that call, not in the
+  byte writer, so a generic write would satisfy the guards this module knows
+  about and none of the ones that matter.
 """
 
 from __future__ import annotations
@@ -215,6 +221,20 @@ def apply_op(
     """
     op = EditOp(op)
     resolved = tune.table(name, space=space)
+    # A domain-owned table is refused before anything is computed. Its
+    # invariants (the switch patch's eight-row tiling, its below-base-ceiling
+    # rule, its separate axis-length header) live in the owning domain call, and
+    # nothing in this module can honour them — so a generic write here would
+    # produce a structurally invalid table that still passes every byte gate and
+    # is reported verified (CR-20260813-01). Every op is blocked, including
+    # RESTORE: a partial restore would break the same tiling a partial write does.
+    if resolved.spec.domain_owned:
+        raise EditRejected(
+            f"{resolved.label} is owned by {resolved.spec.owner}. Generic edits "
+            "to it are refused: it carries structural rules this path cannot "
+            "check, so writing it here could produce a bin that verifies clean "
+            "and is still wrong."
+        )
     if not _is_reversible(resolved.view):
         raise EditRejected(
             f"{resolved.label} is not reversible from physical units "

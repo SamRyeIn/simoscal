@@ -4,6 +4,7 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import java.io.File
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,8 +50,10 @@ class QuickEditViewModel(application: Application) : AndroidViewModel(applicatio
     /**
      * Copy a picked file in and attach it to the flow.
      *
-     * Runs off the main thread through the view-model scope; the copy is what
-     * hashes the bytes, so nothing downstream ever refers to the picker's URI.
+     * [ImportStore.importFile] moves itself to an IO dispatcher, so the copy —
+     * which is also what hashes the bytes, so nothing downstream ever refers to
+     * the picker's URI — never blocks composition, and the busy state set here
+     * can actually render while a slow provider streams.
      */
     fun onFilePicked(uri: Uri, kind: InputKind) {
         viewModelScope.launch {
@@ -243,6 +246,7 @@ class QuickEditViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun historyOp(op: String) {
         val sessionId = _state.value.sessionId ?: return
+        if (refusingWhileDirty()) return
         viewModelScope.launch {
             _state.update { it.copy(busy = true, error = null) }
             val outcome = bridge.call(op, params { put("session_id", sessionId) })
@@ -266,6 +270,27 @@ class QuickEditViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    /**
+     * Refuse an engine-mutating action while an editor holds an unapplied draft.
+     *
+     * Returns true when the action was refused, having placed the reason in the
+     * editor that is blocking. A confirmation dialog was the alternative; a
+     * refusal is better here because there is nothing to decide — Apply and
+     * Discard are both already on screen, one tap away, and neither loses work
+     * (CR-20260813-04).
+     */
+    private fun refusingWhileDirty(): Boolean {
+        val reason = _state.value.dirtyDraftRefusal ?: return false
+        _state.update { state ->
+            when (state.dirtyDraft) {
+                DirtyDraft.BOOST -> state.copy(boost = state.boost.copy(notice = reason))
+                DirtyDraft.TABLE -> state.copy(tables = state.tables.copy(notice = reason))
+                null -> state
+            }
+        }
+        return true
+    }
+
     /** Re-read whichever editor surfaces are currently showing engine values. */
     private fun refreshOpenViews() {
         val current = _state.value
@@ -281,6 +306,12 @@ class QuickEditViewModel(application: Application) : AndroidViewModel(applicatio
      * The imported bin is both the byte-audit reference and the source, which is
      * what makes the audit meaningful: every changed byte must be explained by
      * the journal, against the exact bytes that were imported.
+     *
+     * The candidate's *file name* is the engine's to choose. The imported bin's
+     * display name is whatever a document provider reported, which is untrusted
+     * text — passing it on as a name once let `../escaped.bin` place a candidate
+     * outside the shared staging tree (CR-20260813-05). It stays display-only,
+     * shown on the build screen; the file on disk is named from the revision.
      */
     fun build(revision: String) {
         val current = _state.value
@@ -296,7 +327,6 @@ class QuickEditViewModel(application: Application) : AndroidViewModel(applicatio
                     put("session_id", sessionId)
                     put("revision", revision)
                     put("staging_dir", imports.stagingDir().absolutePath)
-                    put("bin_name", bin.displayName)
                     putVerified("reference_bin", bin)
                     putVerified("source_bin", bin)
                 },
@@ -306,7 +336,7 @@ class QuickEditViewModel(application: Application) : AndroidViewModel(applicatio
                     is BridgeOutcome.Ok -> state.copy(
                         busy = false,
                         build = outcome.result.optJSONObject("report")
-                            ?.toBuildState(revision, bin.displayName)
+                            ?.toBuildState(revision)
                             ?: BuildState.Failed("The build produced no report.", emptyList()),
                     )
                     is BridgeOutcome.Failed -> state.copy(
@@ -441,6 +471,9 @@ class QuickEditViewModel(application: Application) : AndroidViewModel(applicatio
      */
     fun applySlotRpmAxis(breakpoints: List<Double>, intent: String) {
         val sessionId = _state.value.sessionId ?: return
+        // The axis apply re-reads the whole boost model on success, so a staged
+        // slot curve would vanish into it.
+        if (refusingWhileDirty()) return
         viewModelScope.launch {
             _state.update { it.copy(busy = true, error = null) }
             val outcome = bridge.call(
@@ -580,7 +613,12 @@ class QuickEditViewModel(application: Application) : AndroidViewModel(applicatio
         val current = _state.value
         val sessionId = current.sessionId ?: return
         val summary = current.tables.detail?.summary ?: return
-        if (!summary.reversible) return
+        // Restore is a generic `restore` op, so it is bound by the same two rules
+        // as any other generic write: reversible, and not domain-owned.
+        if (!current.tables.writable) return
+        // It also rewrites the grid from the journal, which would swallow a
+        // staged proposal exactly as Undo would.
+        if (refusingWhileDirty()) return
 
         commitTableEdit(sessionId, summary, intent) {
             put("op", "restore")
@@ -690,7 +728,7 @@ private fun JSONObject.toPreflightState(): PreflightState {
     }
 }
 
-private fun JSONObject.toBuildState(revision: String, binName: String): BuildState {
+private fun JSONObject.toBuildState(revision: String): BuildState {
     val gatesArray = optJSONArray("gates")
     val gates = (0 until (gatesArray?.length() ?: 0)).mapNotNull { index ->
         gatesArray?.optJSONObject(index)?.let { gate ->
@@ -717,7 +755,10 @@ private fun JSONObject.toBuildState(revision: String, binName: String): BuildSta
         BuildState.Verified(
             revision = optString("revision", revision),
             sharePath = sharePath,
-            binName = binName,
+            // The candidate's own file name, read off the path the engine
+            // returned — not the imported bin's display name. They are different
+            // files, and this card names the one about to be handed to SimosTools.
+            binName = File(sharePath).name,
             changedTables = changedTables,
             gates = gates,
         )

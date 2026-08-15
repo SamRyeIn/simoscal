@@ -89,6 +89,51 @@ class TablesUiStateTest {
         val state = open(detail(summary(reversible = false))).withTypedCell(CellRef(0, 0), 9.0)
         assertTrue("the draft may still be composed", state.dirty)
         assertFalse("but it can never be sent", state.canApply)
+        assertFalse(state.writable)
+    }
+
+    /**
+     * CR-20260813-01: a domain-owned table is not generically editable.
+     *
+     * The engine keeps these out of the catalog and refuses the edit outright, so
+     * one should never reach this screen. If one did, the editor must still not
+     * present it as writable — the switch patch's slot grids carry tiling and
+     * ceiling rules that only `slot_curve()` enforces.
+     */
+    @Test
+    fun `a domain-owned table can never be applied`() {
+        val owned = summary(name = "slot1_put_setpoint").copy(
+            owner = "tune.switchpatch.slot_curve() (bridge op `boost_edit`)",
+        )
+        val state = open(detail(owned)).withTypedCell(CellRef(0, 0), 9.0)
+        assertFalse(state.writable)
+        assertFalse(state.canApply)
+    }
+
+    @Test
+    fun `an ordinary table is writable and carries no owner`() {
+        val state = open()
+        assertTrue(state.writable)
+        assertEquals("", state.detail!!.summary.owner)
+    }
+
+    @Test
+    fun `a bridge payload carries the owner through`() {
+        val payload = JSONObject(
+            """
+            {
+              "space": "patch", "name": "slot1_put_setpoint", "symbol": null,
+              "title": "PUT setpoint", "description": "PUT setpoint — boost target grid",
+              "uniqueid_hex": "0x7d41a", "units": "hPa", "shape": [1, 2], "ndim": 1,
+              "reversible": true, "is_axis": false, "categories": [],
+              "owner": "tune.switchpatch.slot_curve()",
+              "values": [4000.0, 4000.0], "x_axis": null, "y_axis": null
+            }
+            """.trimIndent()
+        )
+        val parsed = TableDetail.fromJson(payload)
+        assertEquals("tune.switchpatch.slot_curve()", parsed.summary.owner)
+        assertFalse(TablesUiState().withDetail(parsed).writable)
     }
 
     @Test

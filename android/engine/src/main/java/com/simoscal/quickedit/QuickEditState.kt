@@ -74,6 +74,15 @@ data class GateResult(
 /** An engine or import failure, phrased for a person. */
 data class UserFacingError(val code: String, val message: String, val advanced: String)
 
+/**
+ * Which open editor holds an unapplied proposal.
+ *
+ * Named rather than a bare boolean because the refusal has to say *what* would
+ * be lost, and the notice has to land in that editor rather than in a snackbar
+ * over the other one.
+ */
+enum class DirtyDraft { BOOST, TABLE }
+
 data class QuickEditUiState(
     val mode: Mode = Mode.SIMPLE,
     val bin: ImportedFile? = null,
@@ -123,6 +132,47 @@ data class QuickEditUiState(
 
     val canBuild: Boolean
         get() = sessionOpen && !busy
+
+    /**
+     * The open editor holding an unapplied proposal, if any.
+     *
+     * Boost is reported first only because both cannot be on screen at once; a
+     * dirty draft in either blocks the same set of actions.
+     */
+    val dirtyDraft: DirtyDraft?
+        get() = when {
+            boost.dirty -> DirtyDraft.BOOST
+            tables.dirty -> DirtyDraft.TABLE
+            else -> null
+        }
+
+    /**
+     * Whether an engine-mutating action other than Apply may run.
+     *
+     * Undo, Redo, Restore, and the shared-rpm-axis Apply all re-read the open
+     * editor from the engine when they succeed, which replaces a staged draft
+     * with freshly committed values — silently discarding a proposal the person
+     * built and was still reviewing. The slot switch has always refused while
+     * dirty; this extends the same rule to every other action that moves the
+     * session out from under an open editor (CR-20260813-04).
+     *
+     * Apply is deliberately *not* gated by this: applying is how a dirty draft
+     * stops being dirty.
+     */
+    val canMutateSession: Boolean
+        get() = sessionOpen && !busy && dirtyDraft == null
+
+    /** Why [canMutateSession] is false, phrased for the editor that is blocking. */
+    val dirtyDraftRefusal: String?
+        get() = when (dirtyDraft) {
+            DirtyDraft.BOOST ->
+                "Apply or discard the change to slot ${boost.activeSlot} first — " +
+                    "this would replace it with the values the engine holds."
+            DirtyDraft.TABLE ->
+                "Apply or discard the change to this table first — this would " +
+                    "replace it with the values the engine holds."
+            null -> null
+        }
 
     /**
      * Export/Share exists **only** in the verified state.

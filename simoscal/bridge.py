@@ -678,6 +678,28 @@ def _op_redo(params: dict) -> dict:
     return {"done": done, **_history_state(sess)}
 
 
+#: Name :meth:`SwitchPatch.require_sanity` registers its post-check under.
+_SWITCH_PATCH_GATE = "switch-patch sanity"
+
+
+def _require_switch_patch_gate(sess: _Session) -> None:
+    """Make the switch-patch sanity gate unskippable on a patched session.
+
+    ``session_create`` registers it, and ``session_recover`` restores it from the
+    record — but neither is the *build*, and a gate that depends on how the
+    session happened to be opened is a gate that can go missing. Registering it
+    here means every build of a patched bin re-checks that the patch still loads
+    and decodes on the finished file, whatever route the session took to get
+    here. Idempotent: registering twice would run (and journal) the same check
+    twice, so an existing gate is left alone (CR-20260813-01, defense in depth).
+    """
+    if PATCH_SPACE not in sess.tune.spaces:
+        return
+    if any(check.name == _SWITCH_PATCH_GATE for check in sess.tune.post_checks):
+        return
+    sess.tune.switchpatch.require_sanity()
+
+
 def _op_build(params: dict) -> dict:
     """Run the full gate chain and return the verified report (or the failed one).
 
@@ -706,13 +728,25 @@ def _op_build(params: dict) -> dict:
             ),
         )
 
-    report = build_revision(
-        sess.tune, revision,
-        staging_dir=staging_dir,
-        reference_bin=reference_bin,
-        bin_name=bin_name,
-        source_bin=source_bin,
-    )
+    _require_switch_patch_gate(sess)
+
+    try:
+        report = build_revision(
+            sess.tune, revision,
+            staging_dir=staging_dir,
+            reference_bin=reference_bin,
+            bin_name=bin_name,
+            source_bin=source_bin,
+        )
+    except ValueError as exc:
+        # An unusable revision label or candidate name — e.g. one carrying a path
+        # separator, which would place the candidate outside the staging tree the
+        # FileProvider shares (CR-20260813-05). Loud, and never a written file.
+        raise BridgeError(
+            ErrorCode.BAD_PARAMS,
+            "that revision name cannot be used as a file name",
+            advanced=str(exc),
+        )
     return {"report": report.to_dict()}
 
 

@@ -169,12 +169,23 @@ if report.verified:
 print(report.to_json())          # deterministic; the bridge/golden-gate wire form
 ```
 
-Two properties are structural, not conventions: the model is **derived from the
-journal** (same source as `report.md`/`report.html`, so it cannot describe
-something other than what the build did), and **sharing is gated on the
-verdict** — `report.share_path` is the staged bin only when every gate passed
-*and* the byte audit ran, else `None`. A failed build has no shareable bin. The
-module imports no matplotlib, so it runs in the on-device engine unchanged.
+Three properties are structural, not conventions:
+
+- the model is **derived from the journal** (same source as
+  `report.md`/`report.html`, so it cannot describe something other than what the
+  build did);
+- **sharing is gated on the verdict** — `report.share_path` is the staged bin
+  only when every gate passed *and* the byte audit ran, else `None`. A failed
+  build has no shareable bin;
+- **a shared candidate is immutable** — each build writes into its own fresh
+  `staging_dir/<revision>-<id>/` directory and never reuses a path, so bytes
+  already handed to another app (Android grants a content URI that cannot be
+  revoked) can never be rewritten by a later or failing build. `revision` and
+  `bin_name` must each be a bare file name; anything carrying a path separator
+  raises rather than being sanitized, because on the phone `bin_name` originates
+  as an untrusted document-provider display name.
+
+The module imports no matplotlib, so it runs in the on-device engine unchanged.
 
 ### Quick Edit bridge and recoverable sessions
 

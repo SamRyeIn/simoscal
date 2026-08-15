@@ -174,12 +174,18 @@ private fun TableEditor(viewModel: QuickEditViewModel, advanced: Boolean) {
 
         Text(summary.idAndDescription, style = MaterialTheme.typography.titleMedium)
 
-        if (!summary.reversible) {
+        if (!tables.writable) {
             NoticeCard(
                 title = "Read-only",
-                body = "This table's scaling is non-linear or has no embedded data, so a " +
-                    "physical-unit write cannot round-trip. The engine refuses generic " +
-                    "edits to it, and it is shown here for reference only.",
+                body = if (summary.owner.isNotEmpty()) {
+                    "This table is written only through ${summary.owner}. It carries " +
+                        "structural rules a generic grid edit cannot honour, so the " +
+                        "engine refuses one — it is shown here for reference only."
+                } else {
+                    "This table's scaling is non-linear or has no embedded data, so a " +
+                        "physical-unit write cannot round-trip. The engine refuses generic " +
+                        "edits to it, and it is shown here for reference only."
+                },
             )
         }
 
@@ -189,9 +195,9 @@ private fun TableEditor(viewModel: QuickEditViewModel, advanced: Boolean) {
             selection = tables.selection,
             xAxisValues = detail.xAxis?.values.orEmpty(),
             yAxisValues = detail.yAxis?.values.orEmpty(),
-            editable = summary.reversible,
+            editable = tables.writable,
             onCellLongPress = { cell -> viewModel.onCellToggled(cell) },
-            onCellTap = { cell -> if (summary.reversible) editingCell = cell else Unit },
+            onCellTap = { cell -> if (tables.writable) editingCell = cell else Unit },
         )
 
         Text(
@@ -200,7 +206,7 @@ private fun TableEditor(viewModel: QuickEditViewModel, advanced: Boolean) {
             style = MaterialTheme.typography.bodySmall,
         )
 
-        if (summary.reversible) {
+        if (tables.writable) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(onClick = viewModel::onSelectAllCells) { Text("All") }
                 OutlinedButton(onClick = viewModel::onClearSelection) { Text("None") }
@@ -237,11 +243,13 @@ private fun TableEditor(viewModel: QuickEditViewModel, advanced: Boolean) {
                 if (advanced) {
                     // Restore goes to the engine, not to a local copy: only the
                     // journal knows what this table held when the session opened.
+                    // Disabled while the grid is dirty — it would overwrite the
+                    // staged proposal with the session-start values.
                     OutlinedButton(
                         onClick = {
                             viewModel.restoreTable("restore ${summary.idAndDescription} to its session-start values")
                         },
-                        enabled = !state.busy,
+                        enabled = state.canMutateSession,
                     ) { Text("Restore") }
                 }
             }
@@ -269,9 +277,21 @@ private fun TableEditor(viewModel: QuickEditViewModel, advanced: Boolean) {
             }
         }
 
+        // Both re-read this grid from the engine on success, so they are refused
+        // while a proposal is staged rather than silently replacing it.
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = viewModel::undo, enabled = state.canUndo) { Text("Undo") }
-            OutlinedButton(onClick = viewModel::redo, enabled = state.canRedo) { Text("Redo") }
+            OutlinedButton(
+                onClick = viewModel::undo,
+                enabled = state.canUndo && state.canMutateSession,
+            ) { Text("Undo") }
+            OutlinedButton(
+                onClick = viewModel::redo,
+                enabled = state.canRedo && state.canMutateSession,
+            ) { Text("Redo") }
+        }
+
+        state.dirtyDraftRefusal?.let { reason ->
+            Text(reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
     }
 

@@ -325,6 +325,95 @@ def test_rejected_edit_leaves_no_undo_point(session: str):
 
 
 # --------------------------------------------------------------------------- #
+# domain-owned tables are unreachable from the generic edit path (CR-20260813-01)
+# --------------------------------------------------------------------------- #
+def test_generic_edit_of_a_slot_grid_is_refused(boost_session: str):
+    """The release blocker: a partial write to a slot grid breaks its tiling.
+
+    All eight Y rows of a slot's ``PUT setpoint`` grid must hold the same curve —
+    the Y axis is uncharacterized, so a per-row difference makes the cap depend
+    on an axis nobody calibrated. ``slot_curve()`` tiles; a generic cell write
+    does not, and used to be accepted and then certified verified and shareable.
+    """
+    env = call(
+        "edit", session_id=boost_session, space="patch",
+        name="slot1_put_setpoint", op="set",
+        selection={"kind": "cells", "args": [[0, 0]]}, value=5000.0,
+        intent="break the eight-row tiling",
+    )
+    assert err_code(env) == ErrorCode.EDIT_REJECTED.value
+    # Refused before anything was written: no undo point, no journal entry.
+    assert ok_result(call("undo", session_id=boost_session))["done"] is False
+
+
+def test_generic_edit_of_the_slot_rpm_axis_is_refused(boost_session: str):
+    """The shared axis has its own op, which also checks the length header."""
+    axis = ok_result(call("boost_curve", session_id=boost_session))["boost_curve"]["rpm_axis"]
+    env = call(
+        "edit", session_id=boost_session, space="patch",
+        name="slot_put_rpm_axis", op="paste",
+        selection={"kind": "all"}, array=[v + 10.0 for v in axis],
+    )
+    assert err_code(env) == ErrorCode.EDIT_REJECTED.value
+
+
+def test_generic_edit_of_the_axis_length_header_is_refused(boost_session: str):
+    """The header is the patch's breakpoint count; it is checked, never written."""
+    env = call(
+        "edit", session_id=boost_session, space="patch",
+        name="slot_put_rpm_axis_header", op="set",
+        selection={"kind": "all"}, value=13.0,
+    )
+    assert err_code(env) == ErrorCode.EDIT_REJECTED.value
+
+
+def test_generic_restore_of_a_domain_owned_table_is_refused(boost_session: str):
+    """Every generic op, not only the obviously destructive ones.
+
+    A partial restore breaks the same tiling a partial write does, so RESTORE is
+    refused alongside the rest rather than carved out as a safe-looking exception.
+    """
+    env = call(
+        "edit", session_id=boost_session, space="patch",
+        name="slot1_put_setpoint", op="restore", selection={"kind": "all"},
+    )
+    assert err_code(env) == ErrorCode.EDIT_REJECTED.value
+
+
+def test_the_catalog_does_not_offer_domain_owned_tables(boost_session: str):
+    """The generic editor is never handed a table it is not allowed to write."""
+    tables = ok_result(call("catalog", session_id=boost_session))["tables"]
+    assert tables, "the base space still lists its tables"
+    assert all(t["owner"] == "" for t in tables)
+    assert not [t for t in tables if t["space"] == "patch"]
+
+
+def test_a_domain_owned_table_is_still_readable(boost_session: str):
+    """Reading one was never the hazard — the boost editor shows these values."""
+    detail = ok_result(call(
+        "table_detail", session_id=boost_session,
+        name="slot1_put_setpoint", space="patch",
+    ))["table"]
+    assert detail["shape"] == [8, 12]
+    assert "slot_curve" in detail["owner"]
+
+
+def test_the_domain_call_still_writes_the_table_the_generic_path_cannot(
+    boost_session: str,
+):
+    """The block is on the *generic* route only: the guarded route still works."""
+    res = ok_result(call("boost_edit", session_id=boost_session, slot=1, psi=12.0,
+                         intent="the guarded route still applies"))
+    assert res["can_undo"] is True
+    values = ok_result(call(
+        "table_detail", session_id=boost_session,
+        name="slot1_put_setpoint", space="patch",
+    ))["table"]["values"]
+    # Tiled: every one of the eight rows holds the same curve.
+    assert all(row == values[0] for row in values)
+
+
+# --------------------------------------------------------------------------- #
 # boost editor
 # --------------------------------------------------------------------------- #
 def test_boost_curve_model_has_five_slots(boost_session: str):
@@ -425,6 +514,86 @@ def test_build_reference_bin_is_hash_verified(session: str, files: dict, tmp_pat
         reference_bin_path=files["bin_path"], reference_bin_sha256="00" * 32,
     )
     assert err_code(env) == ErrorCode.HASH_MISMATCH.value
+
+
+def _build(session: str, files: dict, staging: Path, **extra) -> dict:
+    """Run a build op with the session's own bin as reference and source."""
+    return call(
+        "build", session_id=session, staging_dir=str(staging),
+        reference_bin_path=files["bin_path"], reference_bin_sha256=files["bin_sha256"],
+        source_bin_path=files["bin_path"], source_bin_sha256=files["bin_sha256"],
+        **extra,
+    )
+
+
+def test_build_refuses_a_name_that_escapes_the_staging_directory(
+    session: str, files: dict, tmp_path: Path,
+):
+    """CR-20260813-05: a hostile provider's display name must not steer the path.
+
+    ``bin_name`` reaches the engine as untrusted text. A traversal is a loud
+    ``BAD_PARAMS``, and nothing is written — not outside the staging tree, and
+    not inside it either.
+    """
+    staging = tmp_path / "staging"
+    env = _build(session, files, staging, revision="RTEST", bin_name="../escaped.bin")
+    assert err_code(env) == ErrorCode.BAD_PARAMS.value
+    assert not list(tmp_path.rglob("*.bin"))
+
+
+def test_build_refuses_a_revision_that_is_not_a_bare_file_name(
+    session: str, files: dict, tmp_path: Path,
+):
+    """The revision names the build directory, so it is validated the same way."""
+    env = _build(session, files, tmp_path, revision="../RTEST")
+    assert err_code(env) == ErrorCode.BAD_PARAMS.value
+    assert not list(tmp_path.rglob("*.bin"))
+
+
+def test_two_builds_never_share_a_candidate_path(
+    session: str, files: dict, tmp_path: Path,
+):
+    """CR-20260813-02: a granted URI must keep pointing at the approved bytes."""
+    ok_result(call("edit", session_id=session, name="pressure_quotient_max", op="set",
+                   selection={"kind": "cells", "args": [[0, 0]]}, value=1.7,
+                   intent="first"))
+    first = ok_result(_build(session, files, tmp_path, revision="RTEST"))["report"]
+    assert first["share_path"] is not None
+    shared = Path(first["share_path"]).read_bytes()
+
+    ok_result(call("edit", session_id=session, name="pressure_quotient_max", op="set",
+                   selection={"kind": "cells", "args": [[0, 0]]}, value=1.9,
+                   intent="second"))
+    second = ok_result(_build(session, files, tmp_path, revision="RTEST"))["report"]
+
+    assert second["share_path"] != first["share_path"]
+    assert Path(first["share_path"]).read_bytes() == shared
+
+
+def test_a_patched_build_always_runs_the_switch_patch_gate(
+    boost_session: str, patched_files: dict, tmp_path: Path,
+):
+    """CR-20260813-01, defense in depth: the patch sanity gate is not optional.
+
+    Whatever route the session took to get here, a build of a patched bin
+    re-checks on the finished file that the patch still loads and decodes.
+    """
+    ok_result(call("boost_edit", session_id=boost_session, slot=5, psi=10.0,
+                   intent="flat 10 psi valet cap"))
+    report = ok_result(call(
+        "build", session_id=boost_session, revision="RPATCH",
+        staging_dir=str(tmp_path),
+        reference_bin_path=patched_files["bin_path"],
+        reference_bin_sha256=patched_files["bin_sha256"],
+        source_bin_path=patched_files["bin_path"],
+        source_bin_sha256=patched_files["bin_sha256"],
+    ))["report"]
+
+    gate = next(g for g in report["gates"] if g["name"] == "switch-patch sanity")
+    assert gate["ran"] and gate["passed"]
+    # Registered exactly once: a duplicate would run and journal the check twice.
+    assert len([g for g in report["gates"] if g["name"] == "switch-patch sanity"]) == 1
+    assert report["verified"] is True
 
 
 # --------------------------------------------------------------------------- #

@@ -34,17 +34,33 @@ SLOT_DEFAULT_HPA = 4000.0
 #: The shared axis header is a length marker the patch reads; it must stay 12.
 SLOT_AXIS_HEADER_VALUE = 12.0
 
+# Every table in this profile is domain-owned: the patch's structural rules —
+# eight-row tiling, the below-base-ceiling cap, the separate axis-length header —
+# live in ``SwitchPatch``, and a generic grid write honours none of them. So each
+# spec names its owning call, and the generic editor refuses the table outright
+# rather than writing a structurally invalid patch that still passes the byte
+# gates (CR-20260813-01).
+_OWNER_SLOT_CURVE = "tune.switchpatch.slot_curve() (bridge op `boost_edit`)"
+_OWNER_RPM_AXIS = "tune.switchpatch.slot_rpm_axis() (bridge op `boost_rpm_axis`)"
+_OWNER_AXIS_HEADER = (
+    "no write path at all — tune.switchpatch checks this header and never "
+    "writes it"
+)
+_OWNER_TRACTION = "tune.switchpatch.traction_control()"
+
 _specs = [
     TableSpec(
         name="slot_put_rpm_axis", key="0x7d7dc",
         description="PUT SP RPM Axis — engine-speed breakpoints shared by all "
                     "five slot PUT setpoint grids",
         units="rpm", shape=(1, 12), tags=frozenset({TAG_AXIS, TAG_NO_SYMBOL}),
+        owner=_OWNER_RPM_AXIS,
     ),
     TableSpec(
         name="slot_put_rpm_axis_header", key="0x7d7da",
         description="PUT SP RPM Axis Header — breakpoint count, must remain 12",
         units="", shape=(1, 1), tags=frozenset({TAG_NO_SYMBOL}),
+        owner=_OWNER_AXIS_HEADER,
     ),
 ]
 
@@ -54,18 +70,21 @@ for _slot in SLOTS:
             name=f"slot{_slot}_put_setpoint", key=_PUT_GRID_UIDS[_slot],
             description=f"PUT setpoint — boost target grid for map slot {_slot}",
             units="hPa", shape=SLOT_GRID_SHAPE, tags=frozenset({TAG_NO_SYMBOL}),
+            owner=_OWNER_SLOT_CURVE,
         ),
         TableSpec(
             name=f"slot{_slot}_enable_sl_tc", key=_ENABLE_SL_TC_UIDS[_slot],
             description=f"Enable SL TC — enable the switch patch's own "
                         f"slip-based traction control on map slot {_slot}",
             units="", shape=(1, 1), tags=frozenset({TAG_NO_SYMBOL}),
+            owner=_OWNER_TRACTION,
         ),
         TableSpec(
             name=f"slot{_slot}_disable_oem_tc", key=_DISABLE_OEM_TC_UIDS[_slot],
             description=f"Disable OEM TC — disable the factory ECU-side "
                         f"traction-control torque intervention on map slot {_slot}",
             units="", shape=(1, 1), tags=frozenset({TAG_NO_SYMBOL}),
+            owner=_OWNER_TRACTION,
         ),
     ]
 

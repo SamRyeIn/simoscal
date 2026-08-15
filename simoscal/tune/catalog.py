@@ -6,6 +6,10 @@ choice: every table a user can reach came through a profile map, so its plain-
 English description, units, and guard tags are always in force, and a stranger
 table with a surprising layout is simply not offered.
 
+The generic catalog is narrower still: a table whose spec names an ``owner`` is
+writable only through that domain call, so :func:`catalog` omits it rather than
+offering a grid the engine will refuse.
+
 Everything here is read-only. A :class:`TableInfo` is a description a Compose
 screen (or a test) renders; the *edits* live in :mod:`simoscal.tune.editing` and
 the domain modules. Keeping the two apart means listing the catalog can never
@@ -56,6 +60,10 @@ class TableInfo:
     ndim: int                 # 0 scalar · 1 vector · 2 grid
     reversible: bool          # physical-unit writes round-trip (linear equation)
     is_axis: bool             # a breakpoint axis: writes must strictly increase
+    #: The domain call that owns writes to this table, or ``""`` when the generic
+    #: editor may write it. A non-empty owner means :func:`catalog` leaves the
+    #: table out by default and ``apply_op`` refuses it.
+    owner: str
     categories: tuple[str, ...]
     x_axis: Optional[AxisInfo]
     y_axis: Optional[AxisInfo]
@@ -127,6 +135,7 @@ def _table_info(tune: Tune, space: str, name: str) -> TableInfo:
         # a non-increasing axis outright) — this only lets the refusal arrive at
         # the keystroke instead of at Apply.
         is_axis=bool(resolved.has(TAG_AXIS)),
+        owner=resolved.owner,
         categories=categories,
         x_axis=_axis_info(view, "x"),
         y_axis=_axis_info(view, "y"),
@@ -134,19 +143,35 @@ def _table_info(tune: Tune, space: str, name: str) -> TableInfo:
     )
 
 
-def catalog(tune: Tune, *, space: Optional[str] = None) -> list[TableInfo]:
-    """Every editable table, as read-only :class:`TableInfo`, in profile order.
+def catalog(
+    tune: Tune,
+    *,
+    space: Optional[str] = None,
+    include_domain_owned: bool = False,
+) -> list[TableInfo]:
+    """Every **generically editable** table, as read-only :class:`TableInfo`.
 
     ``space`` restricts to one table space (e.g. ``"patch"``); by default every
     space the tune has is listed. The order is the profile's declared order,
     which is the reviewable order the maps are written in.
+
+    Domain-owned tables (a non-empty :attr:`TableInfo.owner`) are left out. This
+    is the catalog the generic grid editor browses, and offering a table it is
+    not allowed to write would be an invitation to compose a proposal that can
+    only ever be refused — worse, before CR-20260813-01 it was not refused at
+    all. Pass ``include_domain_owned=True`` to list them anyway, for inspection
+    and tests; :func:`table_detail` still reads any table by name, since reading
+    one has never been the hazard.
     """
     spaces = [space] if space is not None else list(tune.spaces)
     out: list[TableInfo] = []
     for sp in spaces:
         table_space = tune.space(sp)
         for name in table_space.tables.names():
-            out.append(_table_info(tune, sp, name))
+            info = _table_info(tune, sp, name)
+            if info.owner and not include_domain_owned:
+                continue
+            out.append(info)
     return out
 
 

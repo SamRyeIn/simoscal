@@ -25,6 +25,10 @@ Two safety properties are structural here, not conventions:
   staged bin only when every gate passed; on any failure it is ``None``. A
   failed build has no shareable bin — the staged file still exists (the gates
   read it back off disk), but nothing hands it onward.
+* **A shared candidate is immutable.** Each build gets its own directory under
+  the staging root and no build ever writes a path another build used, so bytes
+  handed to another app cannot be rewritten afterwards by a later (or failing)
+  build behind the same content URI.
 
 Never flashes. Nothing in this package does.
 """
@@ -32,6 +36,8 @@ Never flashes. Nothing in this package does.
 from __future__ import annotations
 
 import json
+import os
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional, Union
@@ -248,11 +254,12 @@ def build_revision(
 ) -> BuildReport:
     """Run the full gate chain over ``tune`` and return a :class:`BuildReport`.
 
-    Writes the candidate bin into ``staging_dir`` (the gates read it back off
-    disk) and, unless ``write_json`` is false, a ``build_report.json`` beside
-    it. Returns the report for *both* a passed and a failed build — a failed
-    build is a report with :attr:`~BuildReport.verified` false and
-    :attr:`~BuildReport.share_path` ``None``, never an exception.
+    Writes the candidate bin into a fresh per-build directory under
+    ``staging_dir`` (the gates read it back off disk) and, unless ``write_json``
+    is false, a ``build_report.json`` beside it. Returns the report for *both* a
+    passed and a failed build — a failed build is a report with
+    :attr:`~BuildReport.verified` false and :attr:`~BuildReport.share_path`
+    ``None``, never an exception.
 
     ``reference_bin`` is required: the service's contract is to audit an edit
     against its source, and for v1 the imported bin is both the baseline and the
@@ -266,10 +273,37 @@ def build_revision(
     arbitrary allowance could forgive an unjournaled write and leave it invisible
     in the model, so that escape hatch stays on the desktop build only
     (CR-20260724-01).
+
+    **Every build writes to a path of its own**, ``staging_dir/<revision>-<id>/``,
+    and never to a path a previous build used. A candidate that was verified and
+    shared is therefore immutable: once its bytes are handed to another app as a
+    content URI, no later build can rewrite the file behind that grant, not even
+    mid-gate (CR-20260813-02). ``bin_name`` only names the file *inside* that
+    fresh directory, and both it and ``revision`` are validated as bare filename
+    components — a name carrying a path separator is refused loudly rather than
+    resolving somewhere outside the staging tree (CR-20260813-05).
     """
     staging_dir = Path(staging_dir)
-    staging_dir.mkdir(parents=True, exist_ok=True)
-    bin_path = staging_dir / (bin_name or f"{revision}.bin")
+    revision_part = _filename_component(revision, what="revision")
+    name = (
+        _filename_component(bin_name, what="bin_name")
+        if bin_name
+        else f"{revision_part}.bin"
+    )
+
+    # A fresh directory per build. uuid4 rather than a counter: the staging tree
+    # outlives the process, so "next unused number" would have to be derived from
+    # whatever is on disk, and two builds racing that read would collide.
+    build_dir = staging_dir / f"{revision_part}-{uuid.uuid4().hex[:12]}"
+    build_dir.mkdir(parents=True, exist_ok=False)
+    bin_path = build_dir / name
+    # Belt and braces: whatever the components were, the file we are about to
+    # write must be a direct child of this build's own directory.
+    if bin_path.resolve().parent != build_dir.resolve():
+        raise ValueError(
+            f"build_revision: the candidate path {bin_path} does not resolve "
+            f"inside {build_dir} — refusing to write outside the staging tree"
+        )
 
     outcome = run_gates(tune, bin_path, reference_bin=reference_bin)
     report = build_report(
@@ -277,10 +311,45 @@ def build_revision(
         source_bin=source_bin, reference_bin=reference_bin,
     )
     if write_json:
-        (staging_dir / "build_report.json").write_text(
+        (build_dir / "build_report.json").write_text(
             report.to_json(), encoding="utf-8"
         )
     return report
+
+
+def _filename_component(value: str, *, what: str) -> str:
+    """Return ``value`` iff it is a bare, path-safe filename component.
+
+    Raises rather than sanitizing. Both of this function's inputs originate
+    outside the engine — ``revision`` is typed by a person, ``bin_name`` reaches
+    Android as an untrusted ``OpenableColumns.DISPLAY_NAME`` a document provider
+    chose — and a silently-rewritten name is exactly the kind of quiet
+    substitution this library refuses everywhere else. ``"../escaped.bin"`` is a
+    loud failure, not a file called ``escaped.bin``.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"build_revision: {what} must be a string, got {type(value).__name__}")
+    if not value or value != value.strip():
+        # Trimming would be a silent rewrite, and a trailing space in a file name
+        # is its own small hazard downstream.
+        raise ValueError(
+            f"build_revision: {what} {value!r} is empty or padded with whitespace"
+        )
+    if value in (".", ".."):
+        raise ValueError(f"build_revision: {what} {value!r} is not a file name")
+    if "\x00" in value:
+        raise ValueError(f"build_revision: {what} contains a NUL byte")
+    separators = {"/", os.sep, os.altsep} - {None}
+    if any(sep in value for sep in separators):
+        raise ValueError(
+            f"build_revision: {what} {value!r} contains a path separator; it "
+            "must be a bare file name"
+        )
+    if Path(value).is_absolute() or Path(value).name != value:
+        raise ValueError(
+            f"build_revision: {what} {value!r} is not a bare file name"
+        )
+    return value
 
 
 def build_report(
