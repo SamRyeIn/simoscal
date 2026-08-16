@@ -75,6 +75,9 @@ in place as they are fixed or dismissed.
 | CR-20260813-03 | Medium   | CONFIRMED | android/.../QuickEditViewModel.kt                   | SAF imports and SHA-256 hashing run synchronously on the main thread        | Fixed (2026-08-14)  |
 | CR-20260813-04 | Medium   | CONFIRMED | android/.../QuickEditViewModel.kt                   | Undo, redo, and rpm-axis apply silently discard unapplied editor drafts     | Fixed (2026-08-14)  |
 | CR-20260813-05 | Medium   | PLAUSIBLE | simoscal/tune/build_service.py                      | Unsanitized provider display names can escape the staging directory         | Fixed (2026-08-14)  |
+| CR-20260815-01 | High     | CONFIRMED | android/.../BridgeClient.kt                         | Every file-naming bridge op sends the path under the bare key, not `_path`  | Fixed (2026-08-15)  |
+| CR-20260815-02 | Medium   | CONFIRMED | simoscal/bridge.py                                  | An unreadable switch-patch XDF is reported as an absent patch in the bin    | Open                |
+| CR-20260815-03 | Low      | CONFIRMED | android/README.md                                   | V7 test-count table stale: claims 93 tests, actual 104 before this review   | Fixed (2026-08-15)  |
 
 ---
 
@@ -1565,3 +1568,135 @@ URI across a second build) still needs the instrumentation legs already listed
 as open above. Neither is a reason to keep the findings open: the mechanisms they
 depended on — a reused output path, a blocking call on the main dispatcher — are
 gone.
+
+---
+
+## Review 2026-08-15 — First run on physical hardware (Galaxy Tab A9+)
+
+- **Scope:** the first execution of the Quick Edit app on real arm64 hardware —
+  a Samsung Galaxy Tab A9+ (`SM-X210`, Android 16, `arm64-v8a`) — exercising
+  import → preflight with the stock `5G0906259L__0002.bin`, the R14 patched bin,
+  `SC8S50.V1.0.xdf`, and both switch-patch XDF candidates.
+- **Method:** device-driven rather than code-driven. The APK built at V8 was
+  installed and used; each failure seen on the screen was traced back to the
+  code, then reproduced on the host with the same files before being called a
+  finding.
+- **Headline:** three findings: one High, one Medium, one Low. The High is the
+  reason this review exists — **every bridge operation that names a file has
+  been broken since V7**, so the app could import files and do nothing else. No
+  host-side test crossed the Kotlin → Python param-naming boundary, so 93 green
+  tests and the 2026-08-13 review both passed over it. The lesson is narrow and
+  worth stating: the two halves of this app agree on an envelope contract that is
+  tested, and a *params* contract that was not.
+- **Verification:** `:engine:testDebugUnitTest` passed all **109** tests (104
+  pre-existing + 5 new); `:engine:verifyDebugNoPermissions` passed;
+  `:engine:assembleDebug` produced a 65,775,186-byte APK, installed to the
+  tablet. The CR-20260815-01 fix was proven by reverting it and re-running the
+  new test — 4 of its 5 cases fail against the pre-fix code. Post-fix, preflight
+  returns a real verdict on the device: *"Ready to edit — recognised SC8S50 bin
+  with valid checksums"*, both embedded checksums clean, against the R14 bin.
+  Nothing was flashed. The untouched recovery image remained
+  `d61a6e297b3ac1d25f60ec8cb3bb504ff47f2db603a960a56e6a6e34074ad69b`.
+
+### CR-20260815-01 — Every file-naming bridge op sends the path under the wrong key — High, CONFIRMED — Fixed (2026-08-15)
+
+`android/engine/src/main/java/com/simoscal/quickedit/BridgeClient.kt:61-64`
+(as shipped in `b7e0224`, untouched since) built the verified path+hash pair as:
+
+```kotlin
+put(name, file.path)                // "bin"
+put("${name}_sha256", file.sha256)  // "bin_sha256"
+```
+
+The engine resolves a file from **two suffixed keys**. `simoscal/bridge.py:190-194`
+(`_verified_path`) reads `f"{name}_path"` and `f"{name}_sha256"`, and treats a
+missing `<name>_path` as a hard `BAD_PARAMS` refusal rather than a degraded
+request — deliberately, since the bridge will not open a file it cannot also
+hash-verify. The hash therefore arrived under the key the engine wanted and the
+path did not, so the file was invisible to it.
+
+`putVerified` is the only way a file is named to the engine, so this broke every
+op that takes one: `preflight`, `session_create`, `session_recover`, and `build`
+(the `_verified_path` call sites at `bridge.py:300-302`, `316-318`, `380`, and
+`715-717`). Import itself is pure Kotlin and worked, which is what made the
+failure look like a file problem rather than a protocol one.
+
+Observed on the device as a snackbar reading `missing required parameter
+'bin_path'` on the first tap of **Check this bin**, with a valid bin and XDF
+selected.
+
+Nothing host-side could catch it. `BridgeProtocolTest` covers the envelope —
+version, op, request id, and the *presence* of a params object — and
+`QuickEditStateTest` covers the gates; neither asserts a key name inside
+`params`, and `putVerified` had no test of its own. `BridgeProtocolTest:25` even
+uses a bare `"bin"` key in its sample params, mirroring the wrong convention
+into the fixture.
+
+### CR-20260815-02 — An unreadable switch-patch XDF is reported as an absent patch — Medium, CONFIRMED — Open
+
+`simoscal/preflight.py:233-236` catches any failure to open the switch-patch XDF
+and returns `(None, {"switch_patch_error": ...})`, where `None` documents "an
+internal error, never a guess" and is correctly distinguished from `False`
+("resolved, but the patch is not in this bin"). The distinction is then lost at
+the only place a person sees it: `simoscal/bridge.py:327-335` refuses session
+creation whenever `switch_patch_present is not True`, with the single message
+
+> The switch-patch tables are not present in this bin.
+
+That sentence is *false* for the `None` case, and misdirects: it describes the
+bin, when the problem is the XDF. `switch_patch_error` already holds the true
+cause and is discarded.
+
+Reproduced on host against the R14 patched bin, whose patch **is** present:
+
+| Switch-patch XDF                     | `switch_patch_present` | Detail                                    |
+|--------------------------------------|------------------------|-------------------------------------------|
+| `SC8S50_switchpatch29.33_v1.006.xdf` | `None`                 | `could not open patch XDF: uniqueid 0x11f9c reused with DIFFERENT data` |
+| `S50 Switch Patch.29.33.V2.xdf`      | `True`                 | slot 1 decodes 2502..2506 hPa             |
+
+Both runs returned `ok_to_edit=True`; only the patch leg differs. A person
+handed the first message would go looking for a missing patch in a bin that has
+one, or re-patch a bin that does not need it.
+
+Suggested fix: branch on `None` versus `False` in `_op_session_create` and
+surface `switch_patch_error` in the advanced detail — "the switch-patch XDF
+could not be read" is a different remedy (choose another XDF) from "the patch is
+not in this bin" (patch the bin). The verdict logic itself is right and should
+not change.
+
+### CR-20260815-03 — V7 test-count table in the Android README is stale — Low, CONFIRMED — Fixed (2026-08-15)
+
+`android/README.md` § "Verifying V7 on this machine" claimed **93 unit tests**
+with a per-class breakdown (`ImportNamingTest` 6, `QuickEditStateTest` 17,
+`TablesUiStateTest` 19). The actual counts before this review's change were 9,
+22, and 22, totalling 104.
+
+The 93 was correct when written and at the 2026-08-13 review. It went stale on
+2026-08-14, when that review's own fixes added 11 cases — `ImportNamingTest` +3
+(CR-20260813-03), `QuickEditStateTest` +5 (CR-20260813-04), and
+`TablesUiStateTest` +3 — without updating the table. The failure mode is
+ordinary: a fix pass adds tests and the count is documented elsewhere.
+
+Minor on its own, but the number is the README's stated pass criterion, so a
+reader cannot use it to tell a complete run from a partial one.
+
+## Fixes applied 2026-08-15
+
+- **CR-20260815-01** — `putVerified` now writes `"${name}_path"`, matching
+  `_verified_path`'s contract, with a comment naming the engine function so the
+  coupling is visible from the Kotlin side. The gap that allowed it is closed by
+  `VerifiedParamsTest` (5 cases): the path lands under `<name>_path`, the bare
+  `<name>` key is asserted *absent*, a verified file contributes exactly two
+  keys, several files coexist without collision, and the suffixing rule is swept
+  over all five names the engine passes to `_verified_path` (`bin`, `xdf`,
+  `switch_patch_xdf`, `source_bin`, `reference_bin`) so a new call site there
+  without a matching name here fails. Proven to catch the defect: against the
+  pre-fix line, 4 of the 5 cases fail (the fifth checks `_sha256`, which was
+  always correct).
+- **CR-20260815-03** — The README table now lists the eight test classes with
+  their current counts and totals **109**.
+
+Still open after this pass: CR-20260815-02, left deliberately. It is a message
+change on the path a person hits when the boost editor will not open, and the
+right wording is easier to judge once the session/boost legs have been exercised
+on the device — which this review reached the doorstep of but did not enter.

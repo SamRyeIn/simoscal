@@ -57,8 +57,16 @@ class BridgeClient(context: Context) {
 /** Convenience: build a params object without a pile of local vals at each call site. */
 inline fun params(build: JSONObject.() -> Unit): JSONObject = JSONObject().apply(build)
 
-/** A verified path+hash pair, the only way a file is named to the engine. */
+/**
+ * A verified path+hash pair, the only way a file is named to the engine.
+ *
+ * Both keys are suffixed. `simoscal.bridge._verified_path()` resolves a file
+ * from `<name>_path` + `<name>_sha256` and treats an absent `<name>_path` as a
+ * bad request, so sending the path under the bare `<name>` fails every
+ * file-naming op — which is exactly what shipped until `VerifiedParamsTest`
+ * pinned these key names to the engine's contract.
+ */
 fun JSONObject.putVerified(name: String, file: ImportedFile): JSONObject = apply {
-    put(name, file.path)
+    put("${name}_path", file.path)
     put("${name}_sha256", file.sha256)
 }

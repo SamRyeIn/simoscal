@@ -17,7 +17,7 @@ ECU, and nothing here does bin math in Kotlin.
 | Arm64-emulator parity verdict             | **PASS** — digest match (2026-07-23)          |
 | Physical-arm64 / x86_64 parity            | Pending — required to close V0                |
 | V7 Compose shell + Quick Edit flow        | Built; host-verifiable half green (see V7)    |
-| V7 on-device legs (SAF, share, recovery)  | Pending — needs Sam's hardware                |
+| V7 on-device legs (SAF, share, recovery)  | Part done — import + preflight green on a real tablet (2026-08-15); share, recovery, rotation still owed |
 | V8 boost canvas + calibration editors     | Built; pure rules green (see V8)              |
 | V8 on-device legs (drag, screenshots)     | Pending — needs Sam's hardware                |
 
@@ -82,14 +82,34 @@ export ANDROID_HOME="$HOME/Library/Android/sdk"
 ./gradlew :engine:testDebugUnitTest :engine:verifyDebugNoPermissions
 ```
 
-Expect **93 unit tests passing** (13 `BridgeProtocolTest`, 17
-`QuickEditStateTest`, 6 `ImportNamingTest`, 18 `BoostCurveTest`, 13
-`BoostUiStateTest`, 7 `BoostPlotTest`, 19 `TablesUiStateTest`) and a receipt at
-`engine/build/reports/permissions/debug.txt`.
+Expect **109 unit tests passing** and a receipt at
+`engine/build/reports/permissions/debug.txt`:
+
+| Test class            | Cases |
+| --------------------- | ----- |
+| `BoostCurveTest`      | 18    |
+| `BoostPlotTest`       | 7     |
+| `BoostUiStateTest`    | 13    |
+| `BridgeProtocolTest`  | 13    |
+| `ImportNamingTest`    | 9     |
+| `QuickEditStateTest`  | 22    |
+| `TablesUiStateTest`   | 22    |
+| `VerifiedParamsTest`  | 5     |
+
+Keep these current. The total is this document's stated pass criterion, so a
+stale number cannot distinguish a complete run from a partial one. The previous
+figure (93) went stale when the 2026-08-14 review fixes added 11 cases without
+updating it (CR-20260815-03) — if you add a test, add it here.
 
 The unit tests are deliberately JVM-only and cover the pure layers: the envelope
-contract against the real `org.json`, every state gate, and the import naming and
-hashing rules. They need no device.
+contract against the real `org.json`, every state gate, the import naming and
+hashing rules, and the file-param key names. They need no device.
+
+> **They do not cover the Kotlin → Python boundary itself.** The two halves agree
+> on an envelope contract *and* a params contract; only the first was tested
+> until `VerifiedParamsTest`, and the gap hid a defect that broke every
+> file-naming op from V7 until 2026-08-15 (CR-20260815-01). A green JVM suite is
+> not evidence that the engine can be reached.
 
 `./gradlew :engine:assembleDebug` builds the whole APK (Compose + Chaquopy):
 **65.8 MB** for arm64 + x86_64 — unchanged by V8, which adds no dependency — against V0's 54 MB — Compose costs ~12 MB. The
@@ -107,10 +127,23 @@ three glyphs, so the navigation bar uses `material-icons-core` instead.
 
 None of these have a host-side substitute; they are listed rather than claimed:
 
-- airplane-mode import → edit → export on a real phone;
-- the SAF picker and the share hand-off to SimosTools with the real bin and XDF;
+- ~~the SAF picker~~ — **done 2026-08-15**: picked the real bin and both XDFs
+  through DocumentsUI on a Galaxy Tab A9+ (`SM-X210`, Android 16, `arm64-v8a`),
+  and preflight returned *"Ready to edit — recognised SC8S50 bin with valid
+  checksums"* against the R14 patched bin, both embedded checksums clean;
+- the share hand-off to SimosTools with the real bin;
+- airplane-mode import → edit → export;
 - process-death recovery during copy, edit, and build;
-- rotation and low-storage behaviour.
+- rotation and low-storage behaviour;
+- **tablet layout** — the shell renders as a phone-width column on a 1200 px
+  tablet, leaving most of the screen empty. The v1 plan deferred tablet layout as
+  a phone-first call; the actual target device is a tablet, and SimosTools runs
+  on the same one, so the whole loop closes there.
+
+That first item is the one worth reading twice: reaching it took a one-line fix
+(CR-20260815-01), because *no* file-naming op had ever succeeded on any device.
+Everything above the line in this README was true of code that could not be
+reached from the UI.
 
 ## V8 — the boost canvas and the calibration editors
 
