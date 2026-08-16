@@ -15,11 +15,12 @@ ECU, and nothing here does bin math in Kotlin.
 | Engine decoupled from matplotlib/openpyxl | Done (see "Ordering note")                    |
 | Gradle/Chaquopy project                   | Builds (AGP 7.4.2 / Gradle 7.6.4 — see below) |
 | Arm64-emulator parity verdict             | **PASS** — digest match (2026-07-23)          |
-| Physical-arm64 / x86_64 parity            | Pending — required to close V0                |
+| Physical-arm64 parity verdict             | **PASS** — digest match on a Galaxy Tab A9+ (2026-08-15) |
+| x86_64 parity                             | Pending — the last leg required to close V0   |
 | V7 Compose shell + Quick Edit flow        | Built; host-verifiable half green (see V7)    |
-| V7 on-device legs (SAF, share, recovery)  | Part done — import + preflight green on a real tablet (2026-08-15); share, recovery, rotation still owed |
+| V7 on-device legs (SAF, share, recovery)  | **Green** — full import → preflight → session → edit → build → export run on a Galaxy Tab A9+ (2026-08-15); process-death recovery exercised too. Rotation and low-storage still owed |
 | V8 boost canvas + calibration editors     | Built; pure rules green (see V8)              |
-| V8 on-device legs (drag, screenshots)     | Pending — needs Sam's hardware                |
+| V8 on-device legs (drag, screenshots)     | Parity pull done (2026-08-15, see V8); fingertip drag and screenshot tests still owed |
 
 ## V7 — the Compose shell
 
@@ -250,10 +251,97 @@ length header — was accepted, then reported `verified=True` with a share path
 - **No Compose screenshot tests.** The plan asks for light/dark screenshot tests;
   the pure state and coordinate math are covered instead. This is a known gap,
   carried over from V7's decision not to stand up a Compose test harness.
-- The on-device parity pull: a boost-only diff on the real SC8S50 bin,
-  hand-reviewed against a desktop `simoscal` build of the same edit.
+- ~~The on-device parity pull~~ — **done 2026-08-15**, see below.
 
-## V0 verdict: provisional GO for implementation
+### The on-device pull (2026-08-15)
+
+The first bin this app ever produced, built on a Galaxy Tab A9+ from the R14
+patched bin and exported through the share sheet, then verified on the desktop
+against the app's own claims. **Not flashed** — this is a `TEST00` artifact.
+
+The whole point is the *byte diff*, because it is the one thing the app cannot
+grade itself on:
+
+| Region       | Bytes | What it is                                                |
+| ------------ | ----- | --------------------------------------------------------- |
+| `0x27d71a`   | 192   | `slot5_put_setpoint` — the boost edit (8 × 12 int16)       |
+| `0x200304`   | 4     | `CAL_CRC` stored value — the checksum correction           |
+| everything else | 0  | byte-identical to the R14 source                          |
+
+196 bytes in two contiguous runs, and nothing else in a 4 MB file. The edit is
+map slot 5 flattened from 1705 hPa to **2050 hPa** (9.99 → 15.00 psi gauge),
+tiled identically across all eight uncharacterized Y rows — the tiling invariant
+holding through the domain call, on a phone. Slots 1–4 are untouched.
+
+Re-checked on the exported file with desktop `simoscal`:
+
+- `CAL_CRC` and `ECM3` both verify clean, neither stale;
+- `ECM3`'s stored value correctly did **not** change — the edit at `0x27d71a`
+  falls outside its covered range (`0x20DFAC`–`0x2101B0`), so an ECM3 delta here
+  would have been the bug;
+- `preflight`: `ok_to_edit=True`, `switch_patch_present=True`;
+- `switch_patch_sanity`: `plausible=True`, 123 tables resolved, 123 decoded,
+  0 decode errors.
+
+Reaching this took three fixes found by running on hardware, all on the same
+day: the bridge could not name a file to the engine at all (CR-20260815-01), the
+build gate resolved a desktop-only BinToolz path so no patched bin could ever be
+built on a device (CR-20260815-05), and an unreadable patch XDF was reported as
+an absent patch, which cost three attempts to diagnose (CR-20260815-02). None of
+the three was reachable from the host test suite.
+
+**This is a different claim from the V0 parity gate below**, which ran
+separately on the same tablet later that day. This run shows the app produces a
+correct bin through its real workflow; the parity gate shows the engine computes
+byte-identical results to the host across the payload's six legs. Both now hold
+on physical hardware, but neither implies the other.
+
+## V0 verdict: physical arm64 PASS (2026-08-15); x86_64 still owed
+
+### Physical arm64 — Galaxy Tab A9+ (`SM-X210`, Android 16, `arm64-v8a`)
+
+```
+host   digest: 9e6ee056b54dda3352b3049795c3e855e14b7810072e6652b63045d4d8e9719c
+device digest: 9e6ee056b54dda3352b3049795c3e855e14b7810072e6652b63045d4d8e9719c
+PARITY: MATCH — host and device agree on every compared field.
+```
+
+`diff_count: 0`, digests self-consistent on both sides, and **zero `SKIPPED`
+occurrences anywhere in the report** — so every leg ran and was compared,
+including the boost leg (its switch-patch fixtures were pushed). Same digest as
+the host and the emulator, which makes three-way agreement: desktop, emulator,
+and real hardware compute the same bytes.
+
+The host golden was regenerated from current source immediately beforehand and
+produced that same digest, so the day's three engine fixes (CR-20260815-01, -05,
+-06 and the -02 message change) are demonstrably parity-neutral.
+
+`parity/v0_device_report.json` in this repo is now the physical run, and its diff
+against the emulator run it replaced is the design working as intended: the only
+changed lines are `platform` (`Android-15` → `Android-16`) and the four
+`timings`. Those are exactly the two sections the report holds outside the
+compared digest. Everything compared is byte-identical between an emulator and a
+real tablet.
+
+Measured on the tablet, informational and deliberately outside the compared
+section — a slow phone must not fail the gate:
+
+| Metric                    | Emulator | Physical A9+ |
+| ------------------------- | -------- | ------------ |
+| Full-XDF parse (5.8 MB)   | 1.9 s    | **6.7 s**    |
+| Decode all 3,814 tables   | 0.17 s   | **0.53 s**   |
+| Edit + save + checksum    | 0.21 s   | **0.42 s**   |
+| `slot_curve()` boost edit | 1.96 s   | **7.0 s**    |
+
+Runtime: Python 3.13.9, numpy 1.26.2, `Android-16-aarch64-64bit-ELF`. The tablet
+is roughly 3.5× slower than the emulator, which is the number to design waits
+around: parse and boost edit are each ~7 s, long enough that preflight reads as
+a hang without a spinner.
+
+**Still owed for V0:** x86_64 parity, which needs an emulator rather than this
+tablet.
+
+### Arm64 emulator (2026-07-23)
 
 On a `Pixel 6 / API 35 / arm64` emulator, the embedded Chaquopy engine produced a
 parity report whose compared digest is **byte-for-byte identical** to the host
@@ -269,9 +357,8 @@ That means, across all 3,814 tables decoded, the single-cell edit
 (`IP_PUT_SP` — Pressure up throttle setpoint, 1500 hPa → encoded
 1499.9780270084689), both checksum verdicts, the psi→hPa floor (10 psi → 1705
 hPa), and the `slot_curve()` boost edit, **the arm64 emulator computes the same
-bytes as the desktop.** This is enough to continue implementation with
-Chaquopy, but it does not close the plan's full V0 gate: physical-arm64 and
-x86_64 parity runs remain required before v1 is declared runtime-complete.
+bytes as the desktop.** This was the provisional GO for implementation; the
+physical-arm64 leg above has since closed, leaving x86_64.
 
 Measurements (emulator, arm64):
 
@@ -285,7 +372,7 @@ Measurements (emulator, arm64):
 | APK size (arm64 + x86_64)  | 54 MB (an arm64-only split is ~30 MB)    |
 
 All well within the "tolerable on your own phone in a garage" bar the plan set.
-Cold-start, physical-arm64 parity, and x86_64 parity remain to be measured.
+Cold-start and x86_64 parity remain to be measured.
 
 ## The gate, in one sentence
 
@@ -334,22 +421,75 @@ Verified host results (2026-07-23, Python 3.13.14, numpy 2.5.1):
 
 ## Running the device half
 
+This is the sequence that actually worked on a physical tablet (2026-08-15).
+`parity/push_fixtures_and_compare.sh` wraps the first and last steps.
+
 ```bash
-adb push Code/xdf/SC8S50.V1.0.xdf /data/local/tmp/v0/
-adb push Code/bin/5G0906259L__0002.bin /data/local/tmp/v0/
-# optional, enables the boost leg:
-adb push "BinToolz-main/definitions/S50 Switch Patch.29.33.V2.xdf" /data/local/tmp/v0/
-adb push Tunes/TuningBasicsGuide/BinToolz-patched/CB_HSL_SP2933_5G0906259L_0002_BasicsGuide_R04.bin /data/local/tmp/v0/
+cd Code/android/parity && ./push_fixtures_and_compare.sh push   # all four fixtures
 
-./gradlew :engine:connectedAndroidTest
-adb pull /sdcard/Android/data/com.simoscal.engine.test/files/v0_device_report.json
+cd Code/android
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17
+export ANDROID_HOME="$HOME/Library/Android/sdk"
+./gradlew :engine:assembleDebug :engine:assembleDebugAndroidTest
+adb install -r -g engine/build/outputs/apk/debug/engine-debug.apk
+adb install -r -g engine/build/outputs/apk/androidTest/debug/engine-debug-androidTest.apk
 
-cd Code && ./.venv313/bin/python android/parity/run_host_parity.py --compare v0_device_report.json
+adb shell am instrument -w -e fixtureDir /data/local/tmp/v0 \
+  com.simoscal.engine.test/androidx.test.runner.AndroidJUnitRunner   # → OK (2 tests)
+
+cd parity && ./push_fixtures_and_compare.sh compare
 ```
 
 Fixtures are **not committed** — the bin and XDFs are Sam's own and the repo
 gitignores `*.bin`. Absent fixtures make the test *skip*, matching the repo-wide
-convention for tests that touch the real bin/XDF.
+convention for tests that touch the real bin/XDF. A skipped leg is recorded
+inside the compared section, so a host golden that ran the boost leg cannot
+silently "match" a device run that skipped it — check the report has zero
+`SKIPPED` before believing a MATCH.
+
+### Play Protect blocks the test APK on a stock device
+
+**The first install of `com.simoscal.engine.test` will hang, not fail.** Google
+Play Protect refuses it with an on-device dialog:
+
+> **Unsafe app blocked** — `com.simoscal.engine.test`
+> This app was built for an older version of Android and doesn't include the
+> latest privacy protections.
+
+`adb install` blocks on the verifier's verdict, which never arrives while the
+dialog sits unanswered — so it looks like a hung install, with no error, until
+whatever timeout kills it. The dialog can easily be on a screen nobody is
+looking at.
+
+The objection is `targetSdk 33`, which is pinned deliberately (see the AGP
+7.4.2 / Gradle 7.6.4 note below). It bites the *test* APK and not the app APK
+only because the app package is usually already installed, making its installs
+*updates*; the block applies to new packages.
+
+```bash
+adb shell settings put global verifier_verify_adb_installs 0   # before the first install
+adb shell settings delete global verifier_verify_adb_installs  # restore afterwards
+```
+
+Scoped to adb sideloads and nothing else. Only needed once per package: after
+`com.simoscal.engine.test` exists, rebuilds are updates and install normally, so
+put the setting back. **The V0 gate is therefore not runnable on a stock
+consumer device without either this setting or a `targetSdk` bump** — worth
+knowing for a gate whose entire purpose is physical hardware.
+
+### `connectedAndroidTest` still reports `tests=0`
+
+Reconfirmed on the A9+ on 2026-08-15: `./gradlew :engine:connectedDebugAndroidTest`
+builds and installs both APKs, runs nothing, and fails the build. The JUnit XML
+it leaves behind says so plainly:
+
+```xml
+<testsuite tests="0" failures="0" errors="0" skipped="0" ...>
+```
+
+Read the XML before believing the verdict in either direction — a red Gradle
+build here is not a failing test, and it is certainly not a parity result. Use
+`am instrument` (above) or Android Studio's green ▶.
 
 ## Build path (what actually worked)
 

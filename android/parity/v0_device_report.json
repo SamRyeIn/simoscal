@@ -1202,7 +1202,7 @@
     "machine": "aarch64",
     "maxsize": 9223372036854775807,
     "numpy_version": "1.26.2",
-    "platform": "Android-15-aarch64-64bit-ELF",
+    "platform": "Android-16-aarch64-64bit-ELF",
     "python_version": "3.13.9 (main, Nov 20 2025, 17:37:13) [Clang 18.0.4 (https://android.googlesource.com/toolchain/llvm-project d8003a456",
     "python_version_info": [
       3,
@@ -1211,9 +1211,9 @@
     ]
   },
   "timings": {
-    "boost_curve_seconds": "1.9646450010000081",
-    "edit_and_save_seconds": "0.2083258760001172",
-    "enumerate_seconds": "0.17093654200016317",
-    "parse_seconds": "1.9029480840001725"
+    "boost_curve_seconds": "7.0067859869996028",
+    "edit_and_save_seconds": "0.4168251560004137",
+    "enumerate_seconds": "0.53282692700122425",
+    "parse_seconds": "6.7014519770000334"
   }
 }
