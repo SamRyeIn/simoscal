@@ -15,8 +15,8 @@ ECU, and nothing here does bin math in Kotlin.
 | Engine decoupled from matplotlib/openpyxl | Done (see "Ordering note")                    |
 | Gradle/Chaquopy project                   | Builds (AGP 7.4.2 / Gradle 7.6.4 — see below) |
 | Arm64-emulator parity verdict             | **PASS** — digest match (2026-07-23)          |
-| Physical-arm64 parity verdict             | **PASS** — digest match on a Galaxy Tab A9+ (2026-08-15) |
-| x86_64 parity                             | Pending — the last leg required to close V0   |
+| Physical-arm64 parity verdict             | **PASS** — digest match on a Galaxy Tab A9+ (2026-08-15), re-proven against the arm64-only APK (2026-08-16) |
+| x86_64 parity                             | **N/A — ABI dropped** (2026-08-16). Never proven, so no longer shipped |
 | V7 Compose shell + Quick Edit flow        | Built; host-verifiable half green (see V7)    |
 | V7 on-device legs (SAF, share, recovery)  | **Green** — full import → preflight → session → edit → build → export run on a Galaxy Tab A9+ (2026-08-15); process-death recovery exercised too. Rotation and low-storage still owed |
 | V8 boost canvas + calibration editors     | Built; pure rules green (see V8)              |
@@ -112,10 +112,16 @@ hashing rules, and the file-param key names. They need no device.
 > file-naming op from V7 until 2026-08-15 (CR-20260815-01). A green JVM suite is
 > not evidence that the engine can be reached.
 
-`./gradlew :engine:assembleDebug` builds the whole APK (Compose + Chaquopy):
-**65.8 MB** for arm64 + x86_64 — unchanged by V8, which adds no dependency — against V0's 54 MB — Compose costs ~12 MB. The
-`material-icons-extended` artifact accounted for 5.4 MB of that on its own for
-three glyphs, so the navigation bar uses `material-icons-core` instead.
+`./gradlew :engine:assembleDebug` builds the whole APK (Compose + Chaquopy).
+Measured 2026-08-16, both configurations built back-to-back from the same tree:
+**60.8 MB** for arm64 + x86_64, **50.3 MB** for the arm64-only build that now
+ships. Dropping the ABI is worth 10.5 MB — not just the 10.3 MB of `lib/x86_64`
+`.so` files, because Chaquopy also ships per-ABI Python assets
+(`stdlib-x86_64.imy`, `requirements-x86_64.imy`, `bootstrap-native`). An earlier
+note here estimated an arm64-only split at "~30 MB"; that was a guess, and the
+measurement above replaces it. V8 adds no dependency and did not move the
+number. The `material-icons-extended` artifact cost 5.4 MB on its own for three
+glyphs, so the navigation bar uses `material-icons-core` instead.
 
 > **`lintDebug` is not a meaningful gate here.** AGP 7.4.2's lint bundles a
 > Kotlin 1.7.1 UAST analyzer, and the project compiles with Kotlin 1.9.24, so
@@ -296,7 +302,7 @@ correct bin through its real workflow; the parity gate shows the engine computes
 byte-identical results to the host across the payload's six legs. Both now hold
 on physical hardware, but neither implies the other.
 
-## V0 verdict: physical arm64 PASS (2026-08-15); x86_64 still owed
+## V0 verdict: CLOSED — arm64 PASS (2026-08-15/16), x86_64 dropped rather than proven
 
 ### Physical arm64 — Galaxy Tab A9+ (`SM-X210`, Android 16, `arm64-v8a`)
 
@@ -338,8 +344,34 @@ is roughly 3.5× slower than the emulator, which is the number to design waits
 around: parse and boost edit are each ~7 s, long enough that preflight reads as
 a hang without a spinner.
 
-**Still owed for V0:** x86_64 parity, which needs an emulator rather than this
-tablet.
+### Re-proven against the shipping APK (2026-08-16)
+
+The APK measured above was the two-ABI build. Dropping x86_64 changed the
+shipping artifact, so the verdict was re-taken rather than inherited: rebuilt
+arm64-only, reinstalled both APKs on the same tablet, and re-ran the
+instrumentation. Same digest `9e6ee056…`, `diff_count: 0`, `digests_self_consistent`
+on both sides, and all seven report steps carried real content — `boost_curve`
+included, which is the leg that goes `{"skipped": …}` when its fixtures are
+missing. 109 unit tests and the no-permissions gate green, and
+`unzip -l … | grep x86` returns nothing.
+
+### x86_64: dropped, not proven
+
+x86_64 parity was the last leg owed for V0, and it is now moot because the ABI is
+gone from `abiFilters`. The reasoning, recorded here because the alternative was
+half-built:
+
+The leg cannot run on this machine. The Apple-silicon Android emulator ships
+`qemu-system-aarch64` and `qemu-system-armel` and **no x86_64 backend** in either
+SDK install (`~/Library/Android/sdk`, `/opt/homebrew/share/android-commandlinetools`),
+so an x86_64 system image has nothing to boot on no matter which images are
+installed. A GitHub Actions workflow on a Linux x86_64 runner was written and its
+host half passed, then abandoned: it buys a proof for an architecture nobody here
+runs, and pays a permanent second CI path for it. The target device is arm64.
+
+So the honest close is to stop making the claim rather than to keep shipping an
+unverified one. **Re-adding `x86_64` to `abiFilters` re-opens the parity question**
+and must not be done without running the leg on a real x86_64 host.
 
 ### Arm64 emulator (2026-07-23)
 
@@ -358,7 +390,9 @@ That means, across all 3,814 tables decoded, the single-cell edit
 1499.9780270084689), both checksum verdicts, the psi→hPa floor (10 psi → 1705
 hPa), and the `slot_curve()` boost edit, **the arm64 emulator computes the same
 bytes as the desktop.** This was the provisional GO for implementation; the
-physical-arm64 leg above has since closed, leaving x86_64.
+physical-arm64 leg above has since closed, and x86_64 was dropped rather than
+proven — so this is now the earliest of three agreeing arm64 results, not a
+partial gate.
 
 Measurements (emulator, arm64):
 
@@ -369,10 +403,10 @@ Measurements (emulator, arm64):
 | Decode all 3,814 tables    | ~0.17 s                                  |
 | Edit + save + checksum     | ~0.21 s                                  |
 | `slot_curve()` boost edit  | ~1.96 s                                  |
-| APK size (arm64 + x86_64)  | 54 MB (an arm64-only split is ~30 MB)    |
+| APK size (arm64 + x86_64)  | 54 MB (V0-era, pre-Compose — see § V7 for current) |
 
 All well within the "tolerable on your own phone in a garage" bar the plan set.
-Cold-start and x86_64 parity remain to be measured.
+Cold-start remains to be measured; x86_64 parity no longer applies.
 
 ## The gate, in one sentence
 

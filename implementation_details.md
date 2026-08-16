@@ -59,10 +59,16 @@ test. It compares parsed table data, decoded values, edited bytes, readback,
 checksum verdicts, and the psi-floor behavior. Timing and environment metadata
 are informational and are not part of the parity digest.
 
-The arm64 emulator parity report matched the host digest. That establishes a
-provisional implementation GO for Chaquopy, but it does not close the full V0
-plan gate: a physical arm64 run and an x86_64 run are still required. The
-status is deliberately documented as provisional in `android/README.md`.
+The arm64 emulator parity report matched the host digest, and so did a physical
+Galaxy Tab A9+ run (2026-08-15), re-taken against the arm64-only APK on
+2026-08-16 — three agreeing results at digest `9e6ee056…`.
+
+The V0 gate is **closed**. The x86_64 leg it once owed no longer applies: that
+ABI was dropped from `abiFilters` on 2026-08-16 rather than proven, because it
+could not be exercised on an Apple-silicon host and the target device is arm64.
+Shipping an unverified architecture was the thing worth avoiding. Re-adding
+x86_64 re-opens the parity question — see `android/README.md` § "x86_64:
+dropped, not proven".
 
 ### V1 — Portable package boundary
 
@@ -204,8 +210,11 @@ implemented and committed on `feat/quickedit-v1`; everything still owed needs
 either a real device or a Compose test harness. The following are not complete
 and must not be described as complete by a future agent:
 
-- physical-arm64 and x86_64 V0 parity execution;
-- cold-start and physical-device measurements;
+- ~~physical-arm64 and x86_64 V0 parity execution~~ — **closed 2026-08-16**:
+  physical arm64 passed and was re-proven against the arm64-only APK; x86_64 was
+  dropped rather than proven;
+- cold-start measurements (physical-device timings are now recorded in
+  `android/README.md`);
 - full V6 device execution and per-operation host/Android golden fixtures —
   still the next byte-critical unit;
 - the boost-only parity pull: an edit made on the phone against the real SC8S50

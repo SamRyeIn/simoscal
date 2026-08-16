@@ -67,7 +67,7 @@ in place as they are fixed or dismissed.
 | CR-20260724-11 | High     | CONFIRMED | simoscal/tune/editing.py                            | Generic axis writes accept nonmonotonic breakpoints                         | Fixed (2026-07-24)  |
 | CR-20260724-12 | Medium   | CONFIRMED | tests/test_bridge.py                                | Edit tests fail before reaching the bridge dispatcher                       | Fixed (2026-07-24)  |
 | CR-20260724-13 | High     | CONFIRMED | simoscal/tune/recovery.py                           | Undo restores bytes but leaves profile views stale                          | Fixed (2026-07-24)  |
-| CR-20260724-14 | Medium   | CONFIRMED | android/README.md                                   | V0 declared GO before physical-arm64 and x86_64 parity gates ran            | Open                |
+| CR-20260724-14 | Medium   | CONFIRMED | android/README.md                                   | V0 declared GO before physical-arm64 and x86_64 parity gates ran            | Fixed (2026-08-16)  |
 | CR-20260724-15 | Low      | CONFIRMED | tests/test_packaging.py                             | No test installs a built wheel; the closure test imports the source tree    | Fixed (2026-07-24)  |
 | CR-20260724-16 | Low      | PLAUSIBLE | simoscal/bridge.py                                  | `bridge_info` cannot discover a mismatched engine on its documented path    | Open                |
 | CR-20260813-01 | High     | CONFIRMED | android/.../QuickEditViewModel.kt                   | Generic patch edits bypass domain guards and produce shareable bins         | Fixed (2026-08-14)  |
@@ -1278,13 +1278,27 @@ despite the buffer having changed. Recovery now invalidates every profile-held
 view as well as the lookup cache; the bridge recovery test asserts decoded
 values change after Undo.
 
-### CR-20260724-14 — V0 GO declared before all runtime legs ran — Medium, CONFIRMED — Open
+### CR-20260724-14 — V0 GO declared before all runtime legs ran — Medium, CONFIRMED — Fixed (2026-08-16)
 
 The arm64 emulator produced a byte-identical parity digest, but the plan requires
 one physical-arm64 run and an x86_64 run before closing V0. The Android README
 called the go/no-go clause satisfied while also saying the physical run remained.
 It now records a provisional implementation GO and leaves the two objective
 runtime legs open. No code change can substitute for those device executions.
+
+**Closed 2026-08-16.** Both legs are resolved, by opposite routes:
+
+- *Physical arm64* — executed. Galaxy Tab A9+ (`SM-X210`) matched the host at
+  digest `9e6ee056…` on 2026-08-15, and the run was re-taken on 2026-08-16
+  against the arm64-only APK after the ABI change altered the shipping artifact.
+- *x86_64* — retired rather than executed. The ABI was dropped from
+  `abiFilters` (`199acc6`), so there is no unproven architecture left to prove.
+
+This is worth stating plainly because the finding could otherwise be read as
+half-satisfied: the gate closed because the claim shrank to what was measured,
+not because every original leg ran. The README's § "x86_64: dropped, not proven"
+carries the reasoning and the warning that re-adding the ABI re-opens this
+finding.
 
 ---
 
@@ -1900,3 +1914,43 @@ these fixes rather than leftovers:
   the device, "The switch-patch tables are not present in this bin."
 
 `tests/test_bridge.py`: **70 passed**.
+
+---
+
+## Review 2026-08-16 — Closing V0 by dropping the x86_64 ABI
+
+- **Scope:** `199acc6` — the reversal of `4adc78c`. Removes
+  `.github/workflows/v0-parity-x86_64.yml` and narrows `abiFilters` to
+  `arm64-v8a` alone. Plus the documentation reconciliation that followed
+  (`android/README.md`, `implementation_details.md`, this file).
+- **Verification run before the commit, not asserted after it:** 109 unit tests
+  and `verifyDebugNoPermissions` green; the built APK contains `lib/arm64-v8a`
+  and no `x86` entry of any kind; fixtures re-pushed and the on-device
+  instrumentation re-run on the tablet, reproducing digest `9e6ee056…` with
+  `diff_count: 0` and `digests_self_consistent` on both sides.
+
+No new findings. Two notes recorded because they are the kind of thing a future
+agent would otherwise have to rediscover:
+
+**The re-run was not ceremonial.** The previous session's `9e6ee056…` claim was
+taken against an APK that included x86_64. Changing `abiFilters` changes the
+shipping artifact, so inheriting the old verdict would have described a build
+that no longer existed. The digest came back identical — as expected, since
+dropping an unused ABI should not move arm64 numerics — but "expected" is not
+"measured", and the gate's whole value is that it is measured.
+
+**The skipped-leg trap held.** All seven report steps carried real content,
+`boost_curve` included. That leg records `{"skipped": …}` rather than failing
+when its switch-patch fixtures are absent, and because the digest is a sha256
+over the whole `compared` dict, a host and device that both skip agree at a
+self-consistent `41f7e2cb…` and print `PARITY: MATCH`. A green banner is
+therefore not sufficient evidence; the step contents are. `push_fixtures_and_compare.sh`
+now fails on a skipped leg, and the fixtures committed in `4adc78c` are what
+keep the leg from skipping in the first place — that commit's CI motivation was
+abandoned, but those two changes remain load-bearing for every arm64 run.
+
+**Correction to a prior measurement.** The previous session recorded the APK as
+67.9 MB → 38.2 MB across the ABI change. Re-measured on 2026-08-16, both
+configurations built back-to-back from the same tree: **60.8 MB → 50.3 MB**, a
+10.5 MB saving. The README's older "~30 MB" arm64-only estimate was a guess and
+has been replaced with the measurement. Neither prior figure should be quoted.
