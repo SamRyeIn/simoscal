@@ -22,9 +22,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.simoscal.engine.R
 import com.simoscal.quickedit.ImportedFile
 import com.simoscal.quickedit.InputKind
 import com.simoscal.quickedit.Mode
@@ -66,7 +68,14 @@ fun ImportScreen(viewModel: QuickEditViewModel, recoverable: RecoveryPointer?) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text("Quick Edit", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        // Same resource the manifest label points at, rather than a literal:
+        // this heading and the launcher/app-switcher name are the same claim,
+        // and a hardcoded copy is how they drift apart.
+        Text(
+            stringResource(R.string.app_name),
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+        )
 
         // Offered first, above the ordinary bin/XDF pickers: a recoverable
         // session already has a passed preflight behind it (recoverSession()

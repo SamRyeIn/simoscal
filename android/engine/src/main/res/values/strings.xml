@@ -1,6 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Quick Edit</string>
+    <!--
+      The name the launcher, the app switcher, and the app's own top bar all
+      show. "Quick Edit" survives as the internal name of the flow (and of the
+      package, the classes, and the plan's V7/V8 units); it is only the
+      user-facing product name that is simoscal, matching the library and the
+      promo material.
+    -->
+    <string name="app_name">simoscal</string>
 
     <!--
       The disclaimer is required on the Build screen. It draws the line the whole
