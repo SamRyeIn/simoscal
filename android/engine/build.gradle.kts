@@ -24,13 +24,24 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
-            // Both ABIs are built so the artifact is honest about what it ships.
-            // Only arm64-v8a can be exercised on an Apple-silicon host: that
-            // emulator ships qemu-system-aarch64/armel and no x86_64 backend at
-            // all, so an x86_64 image has nothing to boot on regardless of which
-            // system images are installed. The x86_64 leg therefore runs on a
-            // Linux x86_64 runner — see .github/workflows/v0-parity-x86_64.yml.
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            // arm64-v8a only, deliberately.
+            //
+            // This build used to also ship x86_64, which made the APK claim an
+            // architecture whose numerics had never been checked. V0's whole
+            // point is that the embedded engine computes byte-identical results
+            // to the desktop — proven at digest 9e6ee056… on desktop, an arm64
+            // emulator, and a physical Galaxy Tab A9+. x86_64 was never proven,
+            // and could not be proven on the development machine: the
+            // Apple-silicon emulator ships qemu-system-aarch64 and
+            // qemu-system-armel and no x86_64 backend, so an x86_64 image has
+            // nothing to boot on there whatever is installed.
+            //
+            // Faced with prove-it-or-drop-it, the honest close is to stop making
+            // the claim. The target device is arm64, so nothing anyone runs is
+            // lost. Re-adding "x86_64" here is a one-line change, but it re-opens
+            // the parity question and must not be done without running the leg on
+            // a real x86_64 host.
+            abiFilters += listOf("arm64-v8a")
         }
     }
 
