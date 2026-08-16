@@ -78,6 +78,9 @@ in place as they are fixed or dismissed.
 | CR-20260815-01 | High     | CONFIRMED | android/.../BridgeClient.kt                         | Every file-naming bridge op sends the path under the bare key, not `_path`  | Fixed (2026-08-15)  |
 | CR-20260815-02 | Medium   | CONFIRMED | simoscal/bridge.py                                  | An unreadable switch-patch XDF is reported as an absent patch in the bin    | Open                |
 | CR-20260815-03 | Low      | CONFIRMED | android/README.md                                   | V7 test-count table stale: claims 93 tests, actual 104 before this review   | Fixed (2026-08-15)  |
+| CR-20260815-04 | High     | CONFIRMED | simoscal/tune/profiles/sc8s50.py                    | Generic editor can write the kg/stk airmass ceiling in its lying mg/stk unit | Fixed (2026-08-15)  |
+| CR-20260815-05 | High     | CONFIRMED | simoscal/tune/domains/switchpatch.py                | Switch-patch build gate resolves a desktop BinToolz path; fails on any device | Fixed (2026-08-15)  |
+| CR-20260815-06 | Medium   | PLAUSIBLE | simoscal/tune/profiles/sc8s50.py                    | An unmapped table reaches the generic editor with no guard tags or owner    | Fixed (2026-08-15)  |
 
 ---
 
@@ -1700,3 +1703,170 @@ Still open after this pass: CR-20260815-02, left deliberately. It is a message
 change on the path a person hits when the boost editor will not open, and the
 right wording is easier to judge once the session/boost legs have been exercised
 on the device — which this review reached the doorstep of but did not enter.
+
+---
+
+## Review 2026-08-15 — Domain-owned base tables and the on-device build gate
+
+- **Scope:** triggered by the first real session on the tablet. Two things came
+  out of it: a sweep of every tagged spec in both profiles for tables the
+  generic editor can write but shouldn't, and the build failure that ended the
+  session.
+- **Method:** the sweep was mechanical, not by eye — every `TableSpec` in
+  `SC8S50` and `SwitchPatch2933` enumerated with its tags and owner, then each
+  candidate checked against the real stock and R14 bins for what the editor
+  would actually display and what a plausible correction would write.
+- **Headline:** three findings, two High. The generic table editor could write
+  the one table in this calibration whose XDF units are actively wrong, with no
+  guard in the way; and no build of a patched bin could ever pass its safety
+  gate on a phone, because the gate resolved a path inside a desktop BinToolz
+  checkout.
+- **Verification:** full Python suite **686 passed** (681 before, plus the five
+  new cases); `tests/test_bridge.py` 68 passed, up from 63. Each fix was proven
+  to be load-bearing by reverting
+  it and re-running — CR-20260815-05's test fails against the old code with the
+  device's exact error string. Nothing was flashed; no bin outside `tmp_path`
+  was written. The untouched recovery image remained
+  `d61a6e297b3ac1d25f60ec8cb3bb504ff47f2db603a960a56e6a6e34074ad69b`.
+
+### CR-20260815-04 — The kg/stk airmass ceiling is generically writable — High, CONFIRMED — Fixed (2026-08-15)
+
+`C_M_AIR_CYL_SP_MAX` — Maximum allowed M_AIR_CYL_SP (maximum allowed airmass
+setpoint) is labelled `mg/stk` by the XDF and **stores kg/stk**. Its profile
+spec carried `TAG_KG_PER_STROKE` but no `owner`, so `catalog()` offered it and
+`apply_op()` accepted a generic write. On the tablet it was the *first row* of
+the table browser.
+
+The conversion exists in exactly one place — `simoscal/tune/domains/limits.py:49-73`
+— and the generic edit path never consults the tag. That module's own docstring
+says the mistake "is not guarded against, it is unavailable"; the generic editor
+had quietly made the second half false.
+
+What the person sees and what it does:
+
+| | |
+|-------------------------|--------------------------------------------------|
+| Displayed (stock bin)   | `0.001389`, beside the XDF's `mg/stk` label       |
+| Intended ceiling        | 2000 mg/stk → `0.002` stored                      |
+| What typing `2000` does | 2000 kg/stk — about **1.44 million times** stock  |
+
+No guard catches it. The table *is* on `FLOAT_BUG_SYMBOLS`, so a value above the
+declared max raises `FloatBugGuardError` even with override — but the declared
+max is `20000`, and `2000` breaches nothing. The value is neither out of range
+nor structurally invalid; it is simply in the wrong unit, and nothing in the
+generic path knows the unit is a lie.
+
+Severity is High on the safety definition rather than the usability one: the
+resulting bin verifies, reports clean, and is shareable to SimosTools for
+flashing, with the airmass limiter effectively removed.
+
+### CR-20260815-05 — The switch-patch build gate cannot resolve its XDF on a device — High, CONFIRMED — Fixed (2026-08-15)
+
+`SwitchPatch.require_sanity()` registered a post-build check that called
+`btp.switch_patch_sanity(bin_path, stock_bin_path=...)` without an
+`xdf_path`, so it fell through to `btp.default_switch_patch_xdf()` — a path
+inside a **BinToolz checkout**. That directory exists on a development Mac and
+on no phone, ever.
+
+Observed on the tablet, building a patched R14 bin:
+
+```
+TEST00: NOT verified — 1 gate(s) failed. DO NOT FLASH: switch-patch sanity
+failed: check raised BtpError: switch-patch XDF not found:
+/data/data/com.simoscal.engine/files/chaquopy/AssetFinder/BinToolz-main/
+definitions/S50 Switch Patch.29.33.V2.xdf
+```
+
+The gate is registered on *every* build of a patched session (CR-20260813-01,
+defense in depth), so this is unconditional: **no patched bin could ever be
+built on the app.** The base-only path was unaffected, which is why the failure
+did not surface until a switch-patch session was opened on hardware.
+
+It failed safe — loud, unverified, no `share_path`, an explicit DO NOT FLASH —
+so nothing unsafe was produced. But a gate that cannot pass is not a gate; it is
+a wall, and the app's entire purpose is on the other side of it.
+
+The session's own patch XDF is the correct reference regardless of platform: it
+is the definition the edits were made through, so the gate re-reads the finished
+file exactly as the editor wrote it. The previous default was pinning a
+*curated* definition instead (per `switch_patch_sanity`'s docstring, because the
+v1.005/v1.006 XDFs reuse a uniqueid and do not load), which is a real property
+worth keeping — but it cannot be bought at the price of the gate never running.
+A session whose patch XDF does not load never opens in the first place, so the
+XDF reaching the gate is always one that parsed.
+
+### CR-20260815-06 — An unmapped table carries no guard tags — Medium, PLAUSIBLE — Fixed (2026-08-15)
+
+`C_M_AIR_CYL_FL` was absent from the SC8S50 profile entirely. Tags and owners
+live only on profile specs, and `catalog()` enumerates every table in the space —
+so an unmapped table arrives at the generic editor with no tags, no owner, and
+no description beyond the XDF title. That is the structural reason
+CR-20260815-04 was reachable, stated as its own finding because the mapping gap
+outlives that one table.
+
+`C_M_AIR_CYL_FL` shares its sibling's `mg/stk` label, its `0..20000` declared
+range, its float32 store, and its place on `FLOAT_BUG_SYMBOLS`. It reads `0.0`
+in both the stock and every patched bin, so **nothing available here proves
+whether it stores kg/stk**, which is why this is PLAUSIBLE rather than
+CONFIRMED: the mechanism is identical to CR-20260815-04, but triggering it
+requires the units to actually be kg/stk.
+
+Mapped and refused rather than left open. No domain call writes it and no
+revision in the lineage ever has, so refusing costs nothing today; if a use
+appears, settle the units first and give it a real writer. The alternative was
+leaving a possibly-millionfold-wrong write one tap away on the strength of an
+unverified assumption.
+
+### Not findings (checked and clean)
+
+- **`C_PRS_IM_SP_MAX` and `C_PRS_IM_SP_LIM`** — both float-bug flagged, both
+  reading far above their declared maxima (350000 and 271695.84 against 10000).
+  Left generically writable deliberately: their units are correct, a write above
+  the declared max is refused outright by `FloatBugGuardError`, and any write
+  below it *lowers* a ceiling — the safe direction. Unlike the airmass cap,
+  there is no value a person could plausibly type that silently means a
+  millionfold different thing.
+- **The four axis-tagged specs** — generic writes already enforce strict
+  monotonicity (CR-20260724-11), which is the invariant that matters.
+- **The switch-patch profile** — all 17 specs already declare an owner.
+
+## Fixes applied 2026-08-15 (second pass)
+
+- **CR-20260815-04** — `airmass_setpoint_max` now declares
+  `owner="tune.limits.airmass_cap_mg(), …"`, so the table leaves the generic
+  catalog and `apply_op()` refuses every generic op against it, RESTORE
+  included. `_spec()` in the SC8S50 profile gained an `owner` parameter to carry
+  it. Reading is untouched. Tests:
+  `test_generic_edit_of_the_airmass_ceiling_is_refused`,
+  `test_the_catalog_does_not_offer_the_airmass_tables` (which also asserts the
+  genuine-mg/stk `intake_air_max_vvl0` stays editable, so the fix cannot be
+  satisfied by hiding everything), and
+  `test_the_airmass_ceiling_is_still_readable_and_names_its_owner`.
+- **CR-20260815-05** — `require_sanity()` passes
+  `xdf_path=self._tune.space(PATCH_SPACE).xdf`, resolved *inside* the check
+  rather than at registration, so a session recovered after a process kill uses
+  the path it was rehydrated with. No new recovery parameter, and therefore no
+  stale absolute path to survive a kill. Test:
+  `test_the_switch_patch_gate_does_not_need_a_bintoolz_checkout`, which
+  monkeypatches `default_switch_patch_xdf` to an unresolvable path — the
+  device's condition — and asserts the gate still runs, passes, and yields a
+  verified shareable report.
+- **CR-20260815-06** — `C_M_AIR_CYL_FL` mapped as `airmass_full_load` with an
+  owner naming the doubt: "no verified write path — this table's units are
+  unconfirmed and may be kg/stk like C_M_AIR_CYL_SP_MAX". Test:
+  `test_generic_edit_of_the_unconfirmed_airmass_table_is_refused`.
+
+Still open after this pass, and worth stating because both are consequences of
+these fixes rather than leftovers:
+
+- **A refused table is now an absent table.** `catalog()` omits owned tables, so
+  the airmass ceiling simply is not in the browser — and unlike the switch-patch
+  internals, this is a table the tuning guide explicitly tells a person to edit.
+  They will look for it and find nothing. The engine already surfaces
+  `TableInfo.owner` and `catalog(include_domain_owned=True)`, so the app could
+  list owned tables read-only with the owner as the explanation; that is a UI
+  change, not an engine one, and is not attempted here.
+- **The app has no mg/stk entry point.** With the generic route closed, there is
+  no way to set the airmass ceiling from the app at all — `airmass_cap_mg()` has
+  no bridge op. Closing the unsafe path was the urgent half; adding the safe one
+  is a v1 feature decision.

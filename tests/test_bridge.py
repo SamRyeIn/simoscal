@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 import simoscal.bridge as bridge
+from simoscal import btp
 from simoscal.bridge import BRIDGE_VERSION, ErrorCode, dispatch, dispatch_obj
 
 
@@ -414,6 +415,64 @@ def test_the_domain_call_still_writes_the_table_the_generic_path_cannot(
 
 
 # --------------------------------------------------------------------------- #
+# domain-owned base tables — the kg/stk trap (CR-20260815-04)
+# --------------------------------------------------------------------------- #
+def test_generic_edit_of_the_airmass_ceiling_is_refused(session: str):
+    """The trap: 2000 is the *right* number in mg/stk and a catastrophe raw.
+
+    ``C_M_AIR_CYL_SP_MAX`` is labelled mg/stk by the XDF and stores kg/stk, so
+    the generic editor displays 0.001389 beside a "mg/stk" unit and the obvious
+    correction — type 2000 — writes a ceiling 1.44 million times stock, i.e.
+    removes the limiter. Nothing downstream catches it: the table is float-bug
+    flagged, but its declared max is 20000, so 2000 breaches no range at all.
+    """
+    env = call(
+        "edit", session_id=session, space="base",
+        name="airmass_setpoint_max", op="set",
+        selection={"kind": "cells", "args": [[0, 0]]}, value=2000.0,
+        intent="type the guide's mg/stk figure into a kg/stk store",
+    )
+    assert err_code(env) == ErrorCode.EDIT_REJECTED.value
+    assert ok_result(call("undo", session_id=session))["done"] is False
+
+
+def test_generic_edit_of_the_unconfirmed_airmass_table_is_refused(session: str):
+    """``C_M_AIR_CYL_FL`` shares the label and range but its units are unproven.
+
+    It reads 0.0 in stock and in every patched bin, so nothing settles whether
+    it is kg/stk like its sibling. Refusing costs nothing — no domain call
+    writes it and no revision ever has — and the alternative is leaving a
+    possibly-millionfold-wrong write one tap away.
+    """
+    env = call(
+        "edit", session_id=session, space="base",
+        name="airmass_full_load", op="set",
+        selection={"kind": "cells", "args": [[0, 0]]}, value=2000.0,
+        intent="write a table whose units nobody has confirmed",
+    )
+    assert err_code(env) == ErrorCode.EDIT_REJECTED.value
+
+
+def test_the_catalog_does_not_offer_the_airmass_tables(session: str):
+    """A base-space session must not hand the grid editor either of them."""
+    names = {t["name"] for t in ok_result(call("catalog", session_id=session))["tables"]}
+    assert names, "the base space still lists its other tables"
+    assert "airmass_setpoint_max" not in names
+    assert "airmass_full_load" not in names
+    # The contrast case: genuinely mg/stk, unowned, still editable.
+    assert "intake_air_max_vvl0" in names
+
+
+def test_the_airmass_ceiling_is_still_readable_and_names_its_owner(session: str):
+    """Reading was never the hazard, and the owner string is the remedy."""
+    detail = ok_result(call(
+        "table_detail", session_id=session, name="airmass_setpoint_max",
+    ))["table"]
+    assert detail["values"] == [[pytest.approx(0.0013889999827370048)]]
+    assert "airmass_cap_mg" in detail["owner"]
+
+
+# --------------------------------------------------------------------------- #
 # boost editor
 # --------------------------------------------------------------------------- #
 def test_boost_curve_model_has_five_slots(boost_session: str):
@@ -594,6 +653,42 @@ def test_a_patched_build_always_runs_the_switch_patch_gate(
     # Registered exactly once: a duplicate would run and journal the check twice.
     assert len([g for g in report["gates"] if g["name"] == "switch-patch sanity"]) == 1
     assert report["verified"] is True
+
+
+def test_the_switch_patch_gate_does_not_need_a_bintoolz_checkout(
+    boost_session: str, patched_files: dict, tmp_path: Path, monkeypatch,
+):
+    """CR-20260815-05: on a phone there is no BinToolz tree, and there never will be.
+
+    The gate used to resolve its XDF through ``default_switch_patch_xdf()``,
+    which points inside a BinToolz checkout. That path exists on this machine
+    and nowhere on Android, so every build of a patched bin failed with
+    "switch-patch XDF not found" — loudly and unverified, but also
+    unconditionally: the app could not produce a flashable bin at all.
+
+    Simulating the phone by making the desktop default unresolvable. The gate
+    must still run and pass, because the session's own patch XDF is the right
+    reference anyway — it is the definition the edits were made through.
+    """
+    missing = tmp_path / "no-such-checkout" / "S50 Switch Patch.29.33.V2.xdf"
+    monkeypatch.setattr(btp, "default_switch_patch_xdf", lambda *a, **k: missing)
+    assert not missing.exists()
+
+    ok_result(call("boost_edit", session_id=boost_session, slot=5, psi=10.0,
+                   intent="flat 10 psi valet cap"))
+    report = ok_result(call(
+        "build", session_id=boost_session, revision="RNOBTP",
+        staging_dir=str(tmp_path / "staging"),
+        reference_bin_path=patched_files["bin_path"],
+        reference_bin_sha256=patched_files["bin_sha256"],
+        source_bin_path=patched_files["bin_path"],
+        source_bin_sha256=patched_files["bin_sha256"],
+    ))["report"]
+
+    gate = next(g for g in report["gates"] if g["name"] == "switch-patch sanity")
+    assert gate["ran"] and gate["passed"], gate
+    assert report["verified"] is True
+    assert report["share_path"] is not None
 
 
 # --------------------------------------------------------------------------- #

@@ -195,10 +195,23 @@ class SwitchPatch(Domain):
         it. With ``stock_bin``, it additionally checks the result actually
         differs from stock — a patch that "applied" but changed nothing would
         otherwise pass every table-level check.
+
+        The check runs against **this session's own patch XDF**, not
+        :func:`btp.default_switch_patch_xdf`. That default resolves a path inside
+        a BinToolz checkout, which exists on a desktop and nowhere on a phone —
+        so on Android the gate could only ever raise "switch-patch XDF not
+        found" and fail the build (CR-20260815-05). The session XDF is also the
+        more honest reference: it is the definition the edits were made through,
+        so the gate re-reads the finished file exactly as the editor wrote it.
+
+        Resolved inside ``run`` rather than here, so a session recovered after a
+        process kill uses the path it was rehydrated with instead of one
+        captured before the kill.
         """
         def run(bin_path: Path) -> tuple[bool, str]:
             result = btp.switch_patch_sanity(
                 bin_path,
+                xdf_path=self._tune.space(PATCH_SPACE).xdf,
                 stock_bin_path=Path(stock_bin) if stock_bin else None,
             )
             detail = (
