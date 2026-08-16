@@ -37,15 +37,21 @@ import simoscal_v0_parity as parity  # noqa: E402
 EXPECTED_PYTHON = (3, 13)
 
 CODE_ROOT = Path(__file__).resolve().parent.parent.parent
-REPO_ROOT = CODE_ROOT.parent
+
+#: Boost-leg fixtures, committed beside this script.
+#:
+#: They used to be read out of the *parent* car-tuning repo (`BinToolz-main/`
+#: and `Tunes/.../BinToolz-patched/`), which works on Sam's machine and nowhere
+#: else — a CI runner checking out `simoscal` alone would find neither, record
+#: the boost leg as SKIPPED, and still print `PARITY: MATCH` because host and
+#: device would then agree at a *different* self-consistent digest. Committing
+#: them makes the seven-leg run reproducible from a checkout alone.
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 
 XDF_PATH = CODE_ROOT / "xdf" / "SC8S50.V1.0.xdf"
 BIN_PATH = CODE_ROOT / "bin" / "5G0906259L__0002.bin"
-SWITCH_XDF = REPO_ROOT / "BinToolz-main" / "definitions" / "S50 Switch Patch.29.33.V2.xdf"
-PATCHED_BIN = (
-    REPO_ROOT / "Tunes" / "TuningBasicsGuide" / "BinToolz-patched"
-    / "CB_HSL_SP2933_5G0906259L_0002_BasicsGuide_R04.bin"
-)
+SWITCH_XDF = FIXTURE_DIR / "S50 Switch Patch.29.33.V2.xdf"
+PATCHED_BIN = FIXTURE_DIR / "CB_HSL_SP2933_5G0906259L_0002_BasicsGuide_R04.bin"
 
 
 def main() -> int:

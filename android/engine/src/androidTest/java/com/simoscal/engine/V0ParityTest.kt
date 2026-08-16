@@ -22,17 +22,23 @@ import java.io.File
  * `android/parity/run_host_parity.py --compare` against it, because parity is a
  * statement about two runs and only the host side holds the other one.
  *
- * Fixtures are the real SC8S50 files. They are **not** committed (the bin and
- * XDFs are Sam's own, and the repo gitignores `*.bin`), so they are pushed to
- * the device before the run:
+ * Fixtures are the real SC8S50 files, all four committed to this repo, and they
+ * are pushed to the device before the run — see
+ * `android/parity/push_fixtures_and_compare.sh push`, which is the one place
+ * their source paths are written down:
  *
  * ```
  * adb push Code/xdf/SC8S50.V1.0.xdf /data/local/tmp/v0/
  * adb push Code/bin/5G0906259L__0002.bin /data/local/tmp/v0/
+ * adb push "Code/android/parity/fixtures/S50 Switch Patch.29.33.V2.xdf" /data/local/tmp/v0/
+ * adb push Code/android/parity/fixtures/CB_HSL_SP2933_5G0906259L_0002_BasicsGuide_R04.bin /data/local/tmp/v0/
  * ```
  *
  * Absent fixtures **skip** rather than fail, matching the repo-wide convention
- * for tests that touch the real bin/XDF.
+ * for tests that touch the real bin/XDF. That leniency is why the *comparison*
+ * is the verdict and this test is not: a skipped boost leg still yields a
+ * self-consistent digest, so only a diff against a host golden that ran the same
+ * legs can tell a seven-leg PASS from a six-leg one.
  */
 @RunWith(AndroidJUnit4::class)
 class V0ParityTest {

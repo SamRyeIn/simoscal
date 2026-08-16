@@ -25,9 +25,11 @@ android {
 
         ndk {
             // Both ABIs are built so the artifact is honest about what it ships.
-            // Only arm64-v8a is *exercised* by the V0 gate on an Apple-silicon
-            // host, since an x86_64 image cannot run natively here; the plan's
-            // x86_64 leg needs an Intel host or a physical x86_64 device.
+            // Only arm64-v8a can be exercised on an Apple-silicon host: that
+            // emulator ships qemu-system-aarch64/armel and no x86_64 backend at
+            // all, so an x86_64 image has nothing to boot on regardless of which
+            // system images are installed. The x86_64 leg therefore runs on a
+            // Linux x86_64 runner — see .github/workflows/v0-parity-x86_64.yml.
             abiFilters += listOf("arm64-v8a", "x86_64")
         }
     }
@@ -75,7 +77,18 @@ chaquopy {
         // and build pure-Python packages. Homebrew's python@3.13 is what the
         // host golden is generated with, so both halves of the parity comparison
         // come from the same minor version.
-        buildPython("/opt/homebrew/opt/python@3.13/bin/python3.13")
+        //
+        // Overridable because that path exists only on an Apple-silicon Mac with
+        // Homebrew, and the x86_64 parity leg has to build on a Linux runner. The
+        // default is unchanged, so a local build behaves exactly as before; CI
+        // sets SIMOSCAL_BUILD_PYTHON to its own 3.13. Whatever is chosen must
+        // still be 3.13 — a different minor version would silently resolve
+        // different pure-Python packages into the APK.
+        buildPython(
+            (project.findProperty("simoscal.buildPython") as String?)
+                ?: System.getenv("SIMOSCAL_BUILD_PYTHON")
+                ?: "/opt/homebrew/opt/python@3.13/bin/python3.13"
+        )
 
         pip {
             // Pin the exact Android NumPy runtime exercised by the V0 parity
