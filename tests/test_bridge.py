@@ -415,6 +415,53 @@ def test_the_domain_call_still_writes_the_table_the_generic_path_cannot(
 
 
 # --------------------------------------------------------------------------- #
+# unreadable patch XDF vs absent patch (CR-20260815-02)
+# --------------------------------------------------------------------------- #
+def test_an_unreadable_switch_patch_xdf_blames_the_xdf_not_the_bin(
+    patched_files: dict, real_xdf: Path,
+):
+    """The two refusals have opposite remedies, so they must read differently.
+
+    ``switch_patch_present`` is None when preflight could not *open* the patch
+    XDF and False when it opened it and the bin lacks the patch. Both used to
+    produce "the switch-patch tables are not present in this bin" — which, given
+    a patched bin and an unreadable XDF, is a false statement that sends a
+    person to re-patch a bin that is already patched.
+
+    The v1.005/v1.006 XDFs reuse a uniqueid across slots and genuinely do not
+    load; ``switch_patch_sanity``'s own docstring says so.
+    """
+    bad_xdf = real_xdf.parent / "SC8S50_switchpatch29.33_v1.006.xdf"
+    if not bad_xdf.is_file():
+        pytest.skip(f"curated switch-patch XDF not present: {bad_xdf}")
+
+    params = dict(patched_files)
+    params["switch_patch_xdf_path"] = str(bad_xdf)
+    params["switch_patch_xdf_sha256"] = _sha256(bad_xdf)
+    env = call("session_create", **params)
+
+    assert err_code(env) == ErrorCode.PREFLIGHT_BLOCKED.value
+    message = env["error"]["message"]
+    assert "XDF could not be read" in message
+    assert "not present in this bin" not in message
+    # The cause preflight already knew is passed on rather than discarded.
+    assert "uniqueid" in env["error"]["advanced"]
+
+
+def test_an_unpatched_bin_still_says_the_patch_is_absent(
+    files: dict, switch_patch_xdf: Path,
+):
+    """The contrast case: a readable XDF over a stock bin is the other remedy."""
+    params = dict(files)
+    params["switch_patch_xdf_path"] = str(switch_patch_xdf)
+    params["switch_patch_xdf_sha256"] = _sha256(switch_patch_xdf)
+    env = call("session_create", **params)
+
+    assert err_code(env) == ErrorCode.PREFLIGHT_BLOCKED.value
+    assert "not present in this bin" in env["error"]["message"]
+
+
+# --------------------------------------------------------------------------- #
 # domain-owned base tables — the kg/stk trap (CR-20260815-04)
 # --------------------------------------------------------------------------- #
 def test_generic_edit_of_the_airmass_ceiling_is_refused(session: str):

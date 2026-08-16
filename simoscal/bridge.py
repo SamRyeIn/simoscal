@@ -324,6 +324,25 @@ def _op_session_create(params: dict) -> dict:
             verdict.summary,
             advanced="; ".join(verdict.reasons),
         )
+    if patch_xdf is not None and verdict.switch_patch_present is None:
+        # Not a verdict about the bin at all. ``None`` means preflight could not
+        # open the switch-patch XDF, so it never got as far as looking for the
+        # patch bytes — it distinguishes that from ``False`` precisely so this
+        # message can. Collapsing the two sends a person to re-patch a bin that
+        # is already patched, while the actual cause sits unread in the verdict
+        # (CR-20260815-02).
+        detail = str(verdict.advanced.get("switch_patch_error", "")).strip()
+        raise BridgeError(
+            ErrorCode.PREFLIGHT_BLOCKED,
+            "The switch-patch XDF could not be read.",
+            advanced=(
+                "Compatibility preflight could not open the switch-patch "
+                "definition, so it could not check whether this bin carries the "
+                "patch. This says nothing about the bin — choose a different "
+                "switch-patch XDF."
+                + (f" {detail}" if detail else "")
+            ),
+        )
     if patch_xdf is not None and verdict.switch_patch_present is not True:
         raise BridgeError(
             ErrorCode.PREFLIGHT_BLOCKED,

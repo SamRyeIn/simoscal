@@ -76,7 +76,7 @@ in place as they are fixed or dismissed.
 | CR-20260813-04 | Medium   | CONFIRMED | android/.../QuickEditViewModel.kt                   | Undo, redo, and rpm-axis apply silently discard unapplied editor drafts     | Fixed (2026-08-14)  |
 | CR-20260813-05 | Medium   | PLAUSIBLE | simoscal/tune/build_service.py                      | Unsanitized provider display names can escape the staging directory         | Fixed (2026-08-14)  |
 | CR-20260815-01 | High     | CONFIRMED | android/.../BridgeClient.kt                         | Every file-naming bridge op sends the path under the bare key, not `_path`  | Fixed (2026-08-15)  |
-| CR-20260815-02 | Medium   | CONFIRMED | simoscal/bridge.py                                  | An unreadable switch-patch XDF is reported as an absent patch in the bin    | Open                |
+| CR-20260815-02 | Medium   | CONFIRMED | simoscal/bridge.py                                  | An unreadable switch-patch XDF is reported as an absent patch in the bin    | Fixed (2026-08-15)  |
 | CR-20260815-03 | Low      | CONFIRMED | android/README.md                                   | V7 test-count table stale: claims 93 tests, actual 104 before this review   | Fixed (2026-08-15)  |
 | CR-20260815-04 | High     | CONFIRMED | simoscal/tune/profiles/sc8s50.py                    | Generic editor can write the kg/stk airmass ceiling in its lying mg/stk unit | Fixed (2026-08-15)  |
 | CR-20260815-05 | High     | CONFIRMED | simoscal/tune/domains/switchpatch.py                | Switch-patch build gate resolves a desktop BinToolz path; fails on any device | Fixed (2026-08-15)  |
@@ -1635,7 +1635,7 @@ version, op, request id, and the *presence* of a params object — and
 uses a bare `"bin"` key in its sample params, mirroring the wrong convention
 into the fixture.
 
-### CR-20260815-02 — An unreadable switch-patch XDF is reported as an absent patch — Medium, CONFIRMED — Open
+### CR-20260815-02 — An unreadable switch-patch XDF is reported as an absent patch — Medium, CONFIRMED — Fixed (2026-08-15)
 
 `simoscal/preflight.py:233-236` catches any failure to open the switch-patch XDF
 and returns `(None, {"switch_patch_error": ...})`, where `None` documents "an
@@ -1699,10 +1699,12 @@ reader cannot use it to tell a complete run from a partial one.
 - **CR-20260815-03** — The README table now lists the eight test classes with
   their current counts and totals **109**.
 
-Still open after this pass: CR-20260815-02, left deliberately. It is a message
-change on the path a person hits when the boost editor will not open, and the
-right wording is easier to judge once the session/boost legs have been exercised
-on the device — which this review reached the doorstep of but did not enter.
+Deferred at the time, then fixed the same day: CR-20260815-02 was held back on
+the reasoning that the right wording would be easier to judge once the session
+leg had run on the device. The device answered it — the message cost three
+separate attempts before the real cause (the wrong file in the switch-patch
+slot) became apparent, which is exactly the failure the wording invites. See
+"Fixes applied 2026-08-15 (third pass)" at the end of this file.
 
 ---
 
@@ -1870,3 +1872,31 @@ these fixes rather than leftovers:
   no way to set the airmass ceiling from the app at all — `airmass_cap_mg()` has
   no bridge op. Closing the unsafe path was the urgent half; adding the safe one
   is a v1 feature decision.
+
+## Fixes applied 2026-08-15 (third pass)
+
+- **CR-20260815-02** — `_op_session_create` now branches on `None` before the
+  `is not True` catch-all. `None` (preflight could not open the patch XDF)
+  raises **"The switch-patch XDF could not be read."** and passes on the
+  `switch_patch_error` the verdict already carried, telling the person to choose
+  a different switch-patch XDF; `False` (opened, patch genuinely absent) keeps
+  the original wording, which is correct for that case. The verdict logic did
+  not change — it already drew the distinction, and only the message collapsed
+  it.
+
+  Field evidence for the severity, recorded because it is easy to underrate a
+  wording bug: with a correctly patched R14 bin and the unreadable v1.006 XDF in
+  the slot, the message sent the reader to inspect the bin three separate times.
+  The actual cause was that the file picker's *Recent* list kept re-offering the
+  unreadable XDF, which was not even in the folder the working one was in. A
+  message naming the XDF would have ended it on the first attempt.
+
+  Tests: `test_an_unreadable_switch_patch_xdf_blames_the_xdf_not_the_bin`
+  (asserts the new message, asserts the old sentence is *absent*, and asserts
+  the underlying uniqueid cause is forwarded rather than discarded) and
+  `test_an_unpatched_bin_still_says_the_patch_is_absent` (the contrast case, so
+  the fix cannot be satisfied by renaming both branches). Proven load-bearing:
+  against the pre-fix code the first test fails with the exact sentence seen on
+  the device, "The switch-patch tables are not present in this bin."
+
+`tests/test_bridge.py`: **70 passed**.
