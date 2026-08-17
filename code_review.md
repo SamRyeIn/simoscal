@@ -81,6 +81,7 @@ in place as they are fixed or dismissed.
 | CR-20260815-04 | High     | CONFIRMED | simoscal/tune/profiles/sc8s50.py                    | Generic editor can write the kg/stk airmass ceiling in its lying mg/stk unit | Fixed (2026-08-15)  |
 | CR-20260815-05 | High     | CONFIRMED | simoscal/tune/domains/switchpatch.py                | Switch-patch build gate resolves a desktop BinToolz path; fails on any device | Fixed (2026-08-15)  |
 | CR-20260815-06 | Medium   | PLAUSIBLE | simoscal/tune/profiles/sc8s50.py                    | An unmapped table reaches the generic editor with no guard tags or owner    | Fixed (2026-08-15)  |
+| CR-20260816-01 | High     | CONFIRMED | simoscal/tune/recovery.py                           | A session that has been built can never be recovered — the build's checksum bytes are outside the byte diff | Open                |
 
 ---
 
@@ -1954,3 +1955,81 @@ abandoned, but those two changes remain load-bearing for every arm64 run.
 configurations built back-to-back from the same tree: **60.8 MB → 50.3 MB**, a
 10.5 MB saving. The README's older "~30 MB" arm64-only estimate was a guess and
 has been replaced with the measurement. Neither prior figure should be quoted.
+
+---
+
+## Review 2026-08-16 — Why the 2026-08-15 session would not recover
+
+- **Scope:** a field failure, not a diff. Tapping *Resume session* on the
+  tablet's saved 2026-08-15 21:34 session dropped to the import screen with no
+  session. Investigated from the device's own state and reproduced on the host
+  through `bridge.dispatch_obj`, the same path the app takes.
+- **Not** what it looked like. The first guess was that reinstalling the APK
+  revokes the SAF grants the pointer depends on. That is wrong: a session saved
+  today recovered cleanly across a reinstall, because the app recovers from its
+  own copies under `files/imports/`, not from the original content URIs.
+
+### CR-20260816-01 — A built session can never be recovered — High, CONFIRMED — Open
+
+`recovery._byte_diff()` pins only the bytes over `journal.declared_offsets()` —
+"the extents of every physical/raw table write". `build_revision()` also writes
+the **corrected stored checksums** into the live buffer, and those offsets are
+not a journaled table extent. So `serialize_session()` records a
+`buffer_sha256` taken *after* the build while shipping a diff that cannot
+reproduce it, and `restore_session()` fails its own whole-buffer gate:
+
+```
+restored buffer does not match the saved session
+(recorded 8f21ed8f03ea…, got 0895fdda8488…).
+The source bin or a patch may differ from when it was saved.
+```
+
+The message is a red herring — nothing about the source bin or the patch
+differs. The record is internally inconsistent, and every restore of it fails
+identically and permanently.
+
+Measured on the failed session's own inputs (R14 bin, `SC8S50.V1.0.xdf`, the
+29.33 V2 switch-patch XDF, all pulled by hash from the tablet's imports dir):
+the build changed exactly **4 bytes, `0x200304`–`0x200307`** — the stored
+CAL_CRC — and **none** of them are in `declared_offsets()`, which stays at 192
+(the boost edit's own extent) before and after the build.
+
+Reproduced as a 2×2, which also scopes it:
+
+| session shape | built | recovers |
+| ------------- | ----- | -------- |
+| patch space   | no    | OK       |
+| patch space   | yes   | **FAILED** |
+| base only     | no    | OK       |
+| base only     | yes   | **FAILED** |
+
+So it is the build, not the patch space, and not that session's contents. Any
+session recovers until it is built, and never afterwards. This matches the
+field evidence exactly: that session's `build_report.json` is stamped 21:34 and
+the recovery pointer's save time was 21:34:36.
+
+Severity is High because of what the failure costs. `QuickEditViewModel
+.recoverSession` clears the pointer on any failure — deliberately, so a bad
+record cannot offer the same dead end every launch — so the session is
+destroyed by the one attempt to restore it. And the reason goes out as a
+transient snackbar, so the person sees an unexplained empty import screen.
+Building is the normal end of a session, which makes *the sessions most worth
+recovering the only ones that cannot be*.
+
+Fix directions, none applied here:
+
+- Make the diff cover every byte that differs from the pristine patched buffer
+  rather than only journaled extents. Self-correcting and makes the
+  `buffer_sha256` gate meaningful instead of self-tripping, but it needs the
+  pristine buffer at serialize time — a re-open, ~7 s on the tablet.
+- Or add the stored-checksum field extents to `_byte_diff()`'s offset set.
+  Cheap and targeted, but it re-states the "what can the build touch" question
+  in a second place, where it can drift.
+- Or journal the checksum write as an edit entry so `declared_offsets()` covers
+  it by construction. Probably the most honest — the build *is* writing bytes
+  and the journal claims to be the record of writes — but it changes what a
+  journal entry means and would show up in reports and undo.
+
+Whichever is chosen, a regression test belongs with it: build, serialize,
+restore, assert OK. There is currently no test that serializes a *built*
+session, which is why a High-severity break in the recovery path shipped.
