@@ -356,4 +356,27 @@ class QuickEditStateTest {
         // Undone back to the start: redo is available, but there is nothing to save.
         assertFalse(session.copy(canUndo = false, canRedo = true).hasEdits)
     }
+
+    // ------------------------------------------------------------- appearance
+
+    @Test
+    fun `the grid's value shading is on by default`() {
+        // A product decision, pinned: the shape of a map is the thing hardest to
+        // read out of bare numerals, so it should not need switching on first.
+        assertTrue(QuickEditUiState().heatmap)
+    }
+
+    @Test
+    fun `turning the shading off changes nothing but the shading`() {
+        // It is presentation only. If this ever touched the draft, the session,
+        // or the build state, a display preference would be editing a bin.
+        val session = openSession()
+        val plain = session.copy(heatmap = false)
+        assertFalse(plain.heatmap)
+        assertEquals(session.tables, plain.tables)
+        assertEquals(session.boost, plain.boost)
+        assertEquals(session.sessionId, plain.sessionId)
+        assertEquals(session.build, plain.build)
+        assertEquals(session.hasEdits, plain.hasEdits)
+    }
 }

@@ -45,6 +45,9 @@ class QuickEditViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun onModeChanged(mode: Mode) = _state.update { it.copy(mode = mode) }
 
+    /** Show or hide the table grid's value shading. Presentation only — no edit. */
+    fun onHeatmapChanged(enabled: Boolean) = _state.update { it.copy(heatmap = enabled) }
+
     fun dismissError() = _state.update { it.copy(error = null) }
 
     /**

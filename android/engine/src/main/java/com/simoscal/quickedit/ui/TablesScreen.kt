@@ -22,6 +22,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -32,6 +34,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -153,6 +156,7 @@ private fun TableBrowser(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TableEditor(viewModel: QuickEditViewModel, advanced: Boolean) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -171,12 +175,22 @@ private fun TableEditor(viewModel: QuickEditViewModel, advanced: Boolean) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             OutlinedButton(onClick = viewModel::onTableClosed) { Text("Back") }
             Text(
                 summary.units.ifBlank { "no units" },
                 style = MaterialTheme.typography.labelLarge,
-                modifier = Modifier.padding(top = 12.dp),
+                modifier = Modifier.weight(1f),
+            )
+            // Same FilterChip idiom as the Simple/Advanced toggle in the top bar.
+            FilterChip(
+                selected = state.heatmap,
+                onClick = { viewModel.onHeatmapChanged(!state.heatmap) },
+                label = { Text(if (state.heatmap) "Colour on" else "Colour off") },
             )
         }
 
@@ -204,15 +218,20 @@ private fun TableEditor(viewModel: QuickEditViewModel, advanced: Boolean) {
             xAxisValues = detail.xAxis?.values.orEmpty(),
             yAxisValues = detail.yAxis?.values.orEmpty(),
             editable = tables.writable,
+            heatmap = state.heatmap,
             onCellLongPress = { cell -> viewModel.onCellToggled(cell) },
             onCellTap = { cell -> if (tables.writable) editingCell = cell else Unit },
         )
 
         Text(
-            "Tap a cell to type a value · long-press to select it for a batch operation. " +
-                "Fill shades low to high across this table; a selected cell is outlined " +
-                "in blue and a changed one in its accent, with its old value beneath. " +
-                "${tables.selection.size} selected, ${tables.changedCells.size} changed.",
+            buildString {
+                append("Tap a cell to type a value · long-press to select it for a batch operation. ")
+                if (state.heatmap) append("Fill shades low to high across this table; a ")
+                else append("A ")
+                append("selected cell is outlined in blue and a changed one in its accent, ")
+                append("with its old value beneath. ")
+                append("${tables.selection.size} selected, ${tables.changedCells.size} changed.")
+            },
             style = MaterialTheme.typography.bodySmall,
         )
 
@@ -372,6 +391,7 @@ private fun TableGrid(
     xAxisValues: List<Double>,
     yAxisValues: List<Double>,
     editable: Boolean,
+    heatmap: Boolean,
     onCellTap: (CellRef) -> Unit,
     onCellLongPress: (CellRef) -> Unit,
 ) {
@@ -409,7 +429,10 @@ private fun TableGrid(
                             val before = committed.getOrNull(row)?.getOrNull(col)
                             val changed = before != null && abs(proposed - before) > 1e-12
                             val selected = cell in selection
-                            val heat = scale.colorFor(proposed)
+                            // Selection and change keep their borders when the
+                            // shading is off: they report what you did, which is
+                            // not decoration to be switched away.
+                            val heat = if (heatmap) scale.colorFor(proposed) else null
                             GridCell(
                                 proposed = proposed,
                                 before = if (changed) before else null,
@@ -435,7 +458,7 @@ private fun TableGrid(
             }
         }
 
-        HeatLegend(scale)
+        if (heatmap) HeatLegend(scale)
     }
 }
 

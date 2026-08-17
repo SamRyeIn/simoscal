@@ -85,6 +85,16 @@ enum class DirtyDraft { BOOST, TABLE }
 
 data class QuickEditUiState(
     val mode: Mode = Mode.SIMPLE,
+    /**
+     * Whether the table grid shades cells by value.
+     *
+     * On by default, because the shape of a map is the thing hardest to read out
+     * of bare numerals. Kept here beside [mode] rather than local to the grid so
+     * it survives closing one table and opening the next — a person who turned
+     * the colours off did so because they dislike them, not because of the table
+     * they happened to be looking at.
+     */
+    val heatmap: Boolean = true,
     val bin: ImportedFile? = null,
     val xdf: ImportedFile? = null,
     val switchPatchXdf: ImportedFile? = null,
