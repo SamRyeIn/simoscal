@@ -7,9 +7,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -31,16 +33,22 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.simoscal.quickedit.CellRef
+import com.simoscal.quickedit.HeatColor
+import com.simoscal.quickedit.HeatScale
 import com.simoscal.quickedit.Mode
 import com.simoscal.quickedit.display
 import com.simoscal.quickedit.QuickEditViewModel
 import com.simoscal.quickedit.TableSummary
+import com.simoscal.quickedit.rampColor
 import kotlin.math.abs
 
 /**
@@ -202,6 +210,8 @@ private fun TableEditor(viewModel: QuickEditViewModel, advanced: Boolean) {
 
         Text(
             "Tap a cell to type a value · long-press to select it for a batch operation. " +
+                "Fill shades low to high across this table; a selected cell is outlined " +
+                "in blue and a changed one in its accent, with its old value beneath. " +
                 "${tables.selection.size} selected, ${tables.changedCells.size} changed.",
             style = MaterialTheme.typography.bodySmall,
         )
@@ -336,12 +346,23 @@ private enum class BatchOperation(val label: String, val supporting: String, val
     SCALE("Scale", "Multiply every selected cell by this factor.", "1.0"),
 }
 
+/** [HeatColor] as a Compose colour. */
+private fun HeatColor.compose(): Color = Color(red, green, blue)
+
 /**
- * The grid, with the source value under every changed cell.
+ * The grid, colour-coded by value, with the source value under every changed cell.
  *
  * Showing before-and-after in place rather than as a separate diff view is
  * deliberate: the decision a person is making is "is this new number right for
  * this cell", and that question is unanswerable without the old number beside it.
+ *
+ * Three things compete for a cell's appearance — its value, whether it is
+ * selected, and whether it has been changed — and they are given separate
+ * channels rather than fighting over one. Value owns the *fill*, because it is
+ * the property every cell has and the one the shape is read from. Selection and
+ * change own the *border*, because they are sparse and transient. Before the
+ * heatmap, all three shared the fill, so shading a table by value would have
+ * silently cost the ability to see what you had just edited.
  */
 @Composable
 private fun TableGrid(
@@ -354,9 +375,15 @@ private fun TableGrid(
     onCellTap: (CellRef) -> Unit,
     onCellLongPress: (CellRef) -> Unit,
 ) {
-    val selectedColor = MaterialTheme.colorScheme.primaryContainer
-    val changedColor = MaterialTheme.colorScheme.tertiaryContainer
+    val selectedBorder = MaterialTheme.colorScheme.primary
+    val changedBorder = MaterialTheme.colorScheme.tertiary
+    val plainBorder = MaterialTheme.colorScheme.outlineVariant
     val surface = MaterialTheme.colorScheme.surface
+    val onSurface = MaterialTheme.colorScheme.onSurface
+
+    // Scaled against the draft, not the committed values: the colours should show
+    // the shape of the table being proposed, which is the thing under review.
+    val scale = remember(values) { HeatScale.of(values) }
 
     // No inner vertical scroll: the screen already scrolls vertically, and nesting
     // a second one on the same axis makes which container reacts to a swipe a
@@ -381,14 +408,23 @@ private fun TableGrid(
                             val proposed = values[row][col]
                             val before = committed.getOrNull(row)?.getOrNull(col)
                             val changed = before != null && abs(proposed - before) > 1e-12
+                            val selected = cell in selection
+                            val heat = scale.colorFor(proposed)
                             GridCell(
                                 proposed = proposed,
                                 before = if (changed) before else null,
-                                background = when {
-                                    cell in selection -> selectedColor
-                                    changed -> changedColor
-                                    else -> surface
+                                background = heat?.compose() ?: surface,
+                                // Ink follows the fill it lands on, not the theme:
+                                // one fixed colour cannot stay legible across a
+                                // ramp that runs dark blue to amber.
+                                ink = heat?.let { if (it.prefersDarkInk) Color.Black else Color.White }
+                                    ?: onSurface,
+                                border = when {
+                                    selected -> selectedBorder
+                                    changed -> changedBorder
+                                    else -> plainBorder
                                 },
+                                borderWidth = if (selected || changed) 2.dp else 0.5.dp,
                                 editable = editable,
                                 onTap = { onCellTap(cell) },
                                 onLongPress = { onCellLongPress(cell) },
@@ -398,6 +434,60 @@ private fun TableGrid(
                 }
             }
         }
+
+        HeatLegend(scale)
+    }
+}
+
+/**
+ * What the colours mean for this table.
+ *
+ * Without the endpoints printed, a relative scale is unreadable: the same red
+ * means 2400 hPa on one table and 0.85 lambda on the next, and nothing on screen
+ * would say which. The flat case is stated outright rather than left as an
+ * absence, so "no colours" cannot be mistaken for a rendering failure.
+ */
+@Composable
+private fun HeatLegend(scale: HeatScale) {
+    if (scale.flat) {
+        Text(
+            "Every cell holds the same value, so there is no shape to colour.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        return
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            scale.min.display(),
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = FontFamily.Monospace,
+        )
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(10.dp)
+                .background(
+                    Brush.horizontalGradient(
+                        // Sampled from the same function the cells use, so the key
+                        // cannot drift from what the grid actually paints.
+                        (0..10).map { rampColor(it / 10.0).compose() }
+                    ),
+                    RoundedCornerShape(4.dp),
+                ),
+        )
+        Text(
+            scale.max.display(),
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = FontFamily.Monospace,
+        )
     }
 }
 
@@ -419,7 +509,10 @@ private fun AxisCell(text: String) {
 private fun GridCell(
     proposed: Double,
     before: Double?,
-    background: androidx.compose.ui.graphics.Color,
+    background: Color,
+    ink: Color,
+    border: Color,
+    borderWidth: Dp,
     editable: Boolean,
     onTap: () -> Unit,
     onLongPress: () -> Unit,
@@ -429,7 +522,7 @@ private fun GridCell(
             .width(72.dp)
             .padding(1.dp)
             .background(background, RoundedCornerShape(4.dp))
-            .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(4.dp))
+            .border(borderWidth, border, RoundedCornerShape(4.dp))
             .then(
                 if (editable) {
                     Modifier.combinedClickable(
@@ -448,13 +541,16 @@ private fun GridCell(
             proposed.display(),
             style = MaterialTheme.typography.labelSmall,
             fontFamily = FontFamily.Monospace,
+            color = ink,
         )
         if (before != null) {
             Text(
+                // Same ink, dimmed: the fill under it can be any colour on the
+                // ramp, so onSurfaceVariant is not reliably legible here.
                 "was ${before.display()}",
                 style = MaterialTheme.typography.labelSmall,
                 fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = ink.copy(alpha = 0.75f),
             )
         }
     }
