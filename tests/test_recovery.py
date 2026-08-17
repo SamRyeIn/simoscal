@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from simoscal.tune import SC8S50, Tune
+from simoscal.tune import SC8S50, Tune, build
 from simoscal.tune.domains.switchpatch import PATCH_SPACE
 from simoscal.tune.profiles.switchpatch_2933 import SWITCH_PATCH_2933
 from simoscal.tune.recovery import (
@@ -121,6 +121,49 @@ def test_recover_after_simulated_process_kill(tmp_path) -> None:
     recovered = load_session(path)
     assert _buf_sha(recovered) == edited_sha
     assert len(recovered.journal) == n
+
+
+@requires_base
+def test_built_session_still_recovers(tmp_path) -> None:
+    """CR-20260816-01: building is the normal *end* of a session, and it used to
+    be the one thing that made a session permanently unrecoverable.
+
+    ``build()`` corrects the stored checksums into the same live buffer the
+    session is serialized from, without journaling a table write, so a diff keyed
+    on journaled extents alone could not reproduce the ``buffer_sha256`` taken
+    after it — every restore of a built session failed the whole-buffer gate and,
+    because the app clears the pointer on failure, destroyed the session.
+    """
+    tune = _open_base()
+    tune.boost.put_ceiling_psi(28.0)
+    edited_sha = _buf_sha(tune)
+
+    result = build(tune, "R01", out_root=tmp_path, plots=False)
+    assert result.checksums_clean
+    built_sha = _buf_sha(tune)
+    # Guard against a vacuous pass: if the build ever stops writing into the live
+    # buffer there is nothing left for this test to catch, and we want to know.
+    assert built_sha != edited_sha, "build did not touch the live buffer"
+
+    restored = restore_session(serialize_session(tune))
+    assert _buf_sha(restored) == built_sha
+
+
+@requires_patch
+def test_built_patched_session_still_recovers(tmp_path) -> None:
+    """The field case (a patched session, built, then resumed) end to end."""
+    tune = _open_patched()
+    tune.boost.put_ceiling_psi(30.0)
+    tune.switchpatch.slot_curve(5, psi=18.0, intent="cap slot5 at 18 psi")
+
+    build(tune, "R01", out_root=tmp_path, bin_name="r01.bin", plots=False)
+    built_sha = _buf_sha(tune)
+
+    path = save_session(tune, tmp_path / "session.json")
+    del tune  # the app is killed after the build, as it was in the field
+
+    recovered = load_session(path)
+    assert _buf_sha(recovered) == built_sha
 
 
 @requires_base

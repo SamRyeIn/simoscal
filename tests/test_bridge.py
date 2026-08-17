@@ -773,6 +773,49 @@ def test_session_survives_serialize_and_recover(session: str, files: dict):
     assert undone != edited
 
 
+def test_a_built_session_survives_serialize_and_recover(
+    session: str, files: dict, tmp_path: Path
+):
+    """CR-20260816-01, at the boundary the app actually calls.
+
+    Building is the normal end of a session, and the build writes corrected
+    checksums into the same live buffer the record is serialized from. When the
+    record could not account for those bytes, every recover of a built session
+    failed — and because the app clears its recovery pointer on failure, the one
+    attempt destroyed the session. This is the field sequence, in order.
+    """
+    ok_result(call("edit", session_id=session, name="pressure_quotient_max", op="set",
+                   selection={"kind": "cells", "args": [[0, 0]]}, value=1.7,
+                   intent="edit, then build, then resume"))
+    report = ok_result(call(
+        "build", session_id=session, revision="RTEST", staging_dir=str(tmp_path),
+        reference_bin_path=files["bin_path"], reference_bin_sha256=files["bin_sha256"],
+        source_bin_path=files["bin_path"], source_bin_sha256=files["bin_sha256"],
+    ))["report"]
+    assert report["verified"] is True
+
+    edited = ok_result(
+        call("table_detail", session_id=session, name="pressure_quotient_max")
+    )["table"]["values"]
+    record = ok_result(call("session_serialize", session_id=session))["record"]
+
+    bridge.reset()  # the app is killed after the build
+
+    recovered = ok_result(call(
+        "session_recover", record=record,
+        source_bin_path=files["bin_path"], source_bin_sha256=files["bin_sha256"],
+        xdf_paths={"base": {"path": files["xdf_path"], "sha256": files["xdf_sha256"]}},
+    ))
+    rid = recovered["session_id"]
+    after = ok_result(
+        call("table_detail", session_id=rid, name="pressure_quotient_max")
+    )["table"]["values"]
+    assert after == edited
+    # The undo stack has to come back with it, not just the bytes.
+    assert recovered["can_undo"] is True
+    assert ok_result(call("undo", session_id=rid))["done"] is True
+
+
 def test_recover_rejects_a_changed_source_bin(session: str, files: dict):
     record = ok_result(call("session_serialize", session_id=session))["record"]
     bridge.reset()

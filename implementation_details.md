@@ -127,7 +127,10 @@ recipe engine. Recovery format version 2 stores:
 - exact engine version;
 - source-bin SHA-256;
 - base and extra-space XDF SHA-256 values;
-- the byte diff needed to reconstruct the current buffer;
+- the byte diff needed to reconstruct the current buffer — every journaled table
+  extent *plus* the stored checksums, which a build writes into the same live
+  buffer without journaling a table write (CR-20260816-01: omitting them made a
+  built session permanently unrecoverable);
 - the ordered journal;
 - declarative finished-file safety checks; and
 - compact undo/redo snapshots and cursor when a `SessionHistory` is attached.
@@ -138,6 +141,11 @@ hash, restores the journal and known safety checks, then invalidates both
 `CalFile` caches and profile-held `TableView` caches. Clearing only the
 `CalFile` lookup cache is insufficient because resolved profile objects retain
 their own decoded-value caches.
+
+The undo cursor is re-checked against the restored buffer on the same terms:
+equal but for the stored checksums, because a build corrects them without
+committing an undo point, so a built session's top snapshot legitimately predates
+them.
 
 Switch-patch sanity is represented as a recoverable check. An unknown or
 non-describable post-build check prevents serialization rather than silently

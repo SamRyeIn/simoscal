@@ -19,9 +19,11 @@ would not round-trip. So this module never re-encodes. Instead it:
    which deterministically reproduces the *pristine patched buffer* — the state
    before any edit.
 2. Applies a **byte-level diff**: the exact bytes the edits left across the
-   journaled table extents, written back verbatim. This is correct for a linear
-   grid, a raw table, and a restore-to-source write alike, because it copies
-   bytes rather than reinterpreting values.
+   journaled table extents *and the stored checksums*, written back verbatim.
+   This is correct for a linear grid, a raw table, and a restore-to-source write
+   alike, because it copies bytes rather than reinterpreting values. The
+   checksums are in the diff because a build corrects them into this same buffer
+   without journaling a table write (see :func:`_byte_diff`).
 3. Verifies the reconstructed buffer against a **full-buffer SHA-256** captured
    at serialize time — so a moved source, a changed patch, or any reconstruction
    discrepancy fails loud instead of silently restoring the wrong bytes.
@@ -41,7 +43,7 @@ from typing import Iterable, Mapping, Optional, Sequence, Union
 
 import numpy as np
 
-from .. import __version__
+from .. import __version__, checksum
 from .journal import EditEntry, Journal, KIND_PATCH
 from .profile import Profile
 from .profiles import PROFILES
@@ -164,14 +166,52 @@ def _byte_diff(tune: Tune) -> dict[str, int]:
     """The edited bytes over every journaled table extent, as ``{offset: byte}``.
 
     Keyed on :meth:`Journal.declared_offsets` — the extents of every physical/raw
-    table write, including a restore-to-source write that staged nothing. That is
-    exactly the set whose bytes must be pinned to reconstruct the session on top
-    of the pristine patched buffer; patch bytes are excluded because restore
-    re-applies the patches themselves.
+    table write, including a restore-to-source write that staged nothing — plus
+    the stored-checksum bytes. That is exactly the set whose bytes must be pinned
+    to reconstruct the session on top of the pristine patched buffer; patch bytes
+    are excluded because restore re-applies the patches themselves.
+
+    The stored checksums are in here because a *build* writes them into this same
+    live buffer (``CalFile.save(correct_checksums=True)`` applies
+    :func:`~simoscal.checksum.correction_patches` in place), and they are not a
+    journaled table extent. Leaving them out made a built session unrecoverable
+    for good: ``buffer_sha256`` was taken after the correction while the diff
+    could not reproduce it, so :func:`restore_session` failed its own whole-buffer
+    gate every time, blaming the source bin (CR-20260816-01). They are located by
+    :func:`~simoscal.checksum.stored_checksum_ranges`, the same single statement of
+    where they live that the build's raw-diff audit allowance uses. Pinning them
+    unconditionally is safe: on a session that was never built they still hold the
+    source's own values, so restore writes them back unchanged.
     """
     buf = _buffer_bytes(tune)
-    offsets = sorted(tune.journal.declared_offsets())
-    return {str(off): buf[off] for off in offsets}
+    offsets = set(tune.journal.declared_offsets()) | _checksum_offsets(buf)
+    return {str(off): buf[off] for off in sorted(offsets)}
+
+
+def _checksum_offsets(data: bytes) -> frozenset[int]:
+    """Every byte offset holding a stored checksum value, for ``data``'s layout."""
+    offsets: set[int] = set()
+    for _name, start, length in checksum.stored_checksum_ranges(data):
+        offsets.update(range(start, start + length))
+    return frozenset(offsets)
+
+
+def _equal_but_for_checksums(candidate: bytes, target: bytes) -> bool:
+    """Whether ``candidate`` equals ``target`` once the stored checksums are ignored.
+
+    Used where two buffers are compared across a build: the build corrects the
+    checksums in place, and a checksum is derived from the calibration rather
+    than part of it, so a difference confined to those bytes is not a difference
+    in the session.
+    """
+    if candidate == target:
+        return True
+    if len(candidate) != len(target):
+        return False
+    patched = bytearray(candidate)
+    for _name, start, length in checksum.stored_checksum_ranges(target):
+        patched[start:start + length] = target[start:start + length]
+    return bytes(patched) == target
 
 
 def _contiguous_runs(diff: Mapping[str, int]):
@@ -502,7 +542,14 @@ class SessionHistory:
             self._cursor = int(recovered["cursor"])
             if not (0 <= self._cursor < len(self._stack)):
                 raise RecoveryError("recovered undo cursor is outside its snapshot stack")
-            if self._stack[self._cursor][0] != _buffer_bytes(tune):
+            # Checksums are excluded because a build corrects them into the live
+            # buffer without committing an undo point, so the top snapshot of a
+            # built session legitimately holds the pre-build checksum bytes. This
+            # is the same root cause as CR-20260816-01 and would otherwise reject
+            # every built session a step after the byte diff restored it.
+            if not _equal_but_for_checksums(
+                self._stack[self._cursor][0], _buffer_bytes(tune)
+            ):
                 raise RecoveryError(
                     "recovered undo cursor does not match the restored session buffer"
                 )

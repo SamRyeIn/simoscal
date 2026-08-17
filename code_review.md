@@ -81,7 +81,7 @@ in place as they are fixed or dismissed.
 | CR-20260815-04 | High     | CONFIRMED | simoscal/tune/profiles/sc8s50.py                    | Generic editor can write the kg/stk airmass ceiling in its lying mg/stk unit | Fixed (2026-08-15)  |
 | CR-20260815-05 | High     | CONFIRMED | simoscal/tune/domains/switchpatch.py                | Switch-patch build gate resolves a desktop BinToolz path; fails on any device | Fixed (2026-08-15)  |
 | CR-20260815-06 | Medium   | PLAUSIBLE | simoscal/tune/profiles/sc8s50.py                    | An unmapped table reaches the generic editor with no guard tags or owner    | Fixed (2026-08-15)  |
-| CR-20260816-01 | High     | CONFIRMED | simoscal/tune/recovery.py                           | A session that has been built can never be recovered — the build's checksum bytes are outside the byte diff | Open                |
+| CR-20260816-01 | High     | CONFIRMED | simoscal/tune/recovery.py                           | A session that has been built can never be recovered — the build's checksum bytes are outside the byte diff | Fixed (2026-08-16)  |
 
 ---
 
@@ -1969,7 +1969,7 @@ has been replaced with the measurement. Neither prior figure should be quoted.
   today recovered cleanly across a reinstall, because the app recovers from its
   own copies under `files/imports/`, not from the original content URIs.
 
-### CR-20260816-01 — A built session can never be recovered — High, CONFIRMED — Open
+### CR-20260816-01 — A built session can never be recovered — High, CONFIRMED — Fixed (2026-08-16)
 
 `recovery._byte_diff()` pins only the bytes over `journal.declared_offsets()` —
 "the extents of every physical/raw table write". `build_revision()` also writes
@@ -2033,3 +2033,50 @@ Fix directions, none applied here:
 Whichever is chosen, a regression test belongs with it: build, serialize,
 restore, assert OK. There is currently no test that serializes a *built*
 session, which is why a High-severity break in the recovery path shipped.
+
+#### Fix, 2026-08-16 — the second direction, on a correction to its trade-off
+
+`_byte_diff()` now pins `declared_offsets() | _checksum_offsets(buf)`. The stated
+objection to this direction — that it re-states "what can the build touch" in a
+second place — does not hold: the offsets come from
+`checksum.stored_checksum_ranges()`, which is the *same single* statement of
+where the stored values live that the build's own
+`audit.checksum_storage_allowance()` reads. There is nothing to drift from.
+
+Chosen over the alternatives because the first costs a ~7 s re-open on the
+tablet for every save, and the third would have widened
+`Journal.declared_offsets()` — which also feeds the build's
+`restore_to_source_allowance` — so making recovery honest would have quietly
+loosened a flash-gating audit. Pinning the bytes unconditionally is safe on an
+unbuilt session too: they still hold the source's own values, so restore writes
+them back unchanged.
+
+**A second failure mode of the same root cause, found while fixing the first.**
+`SessionHistory.__init__` re-checks that the recovered undo cursor's snapshot
+equals the restored buffer. A build corrects checksums into the live buffer
+*without committing an undo point*, so on a built session the top snapshot
+legitimately holds the pre-build checksum bytes and that check rejected the
+session one step after the byte diff had rebuilt it correctly — same error class,
+different message (`recovered undo cursor does not match the restored session
+buffer`). The comparison is now `_equal_but_for_checksums()`: a difference
+confined to derived bytes is not a difference in the session. Undo/redo semantics
+are untouched — snapshots still store and restore whole buffers, so an undo
+leaves stale checksums that the next build corrects, exactly as before.
+
+Regression tests, both of which fail on the pre-fix code with the field error and
+pass after:
+
+- `tests/test_recovery.py::test_built_session_still_recovers` — build, serialize,
+  restore, assert byte-equal. Asserts the build actually moved the live buffer
+  first, so it cannot pass vacuously if that ever stops being true.
+- `tests/test_recovery.py::test_built_patched_session_still_recovers` — the same
+  through `save_session`/`load_session` on a patched bin with a raw slot edit.
+- `tests/test_bridge.py::test_a_built_session_survives_serialize_and_recover` —
+  the field sequence at the boundary the app calls: `edit` → `build` →
+  `session_serialize` → `bridge.reset()` → `session_recover`, then `undo`. This
+  is the one that covers the undo-cursor path, since the bridge builds a
+  `SessionHistory` for every recovered session.
+
+Full Python suite green (690 tests before the three additions). Not yet exercised
+on the tablet — the device check is to build a session in the app, kill it, and
+resume.
