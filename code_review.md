@@ -2077,6 +2077,32 @@ pass after:
   is the one that covers the undo-cursor path, since the bridge builds a
   `SessionHistory` for every recovered session.
 
-Full Python suite green (690 tests before the three additions). Not yet exercised
-on the tablet — the device check is to build a session in the app, kill it, and
-resume.
+Full Python suite green (691 tests).
+
+**Verified on the tablet, 2026-08-17** (Galaxy Tab A9+ `SM-X210`, transport
+`R92X9086X0D`, arm64-only debug APK rebuilt from this tree). Chaquopy installs
+simoscal via `install("../..")`, so the fix ships from the working tree — checked
+rather than assumed, by extracting `assets/chaquopy/requirements-common.imy` from
+the APK and finding `_checksum_offsets` and `_equal_but_for_checksums` in the
+packaged `recovery.pyc`. The sequence:
+
+1. Resumed the leftover 2026-08-16 pointer, written by the **pre-fix** engine —
+   it restored cleanly, so the change is backward compatible with an existing
+   unbuilt record.
+2. Edited `IP_PQ_CHA_MAX` — Maximum allowed pressure quotient at turbo charger
+   compressor, cell [0][0], 1.69995 → 1.75. An edit is *required* for this test:
+   with none, the checksums stay valid, `correction_patches()` returns empty, and
+   the build never writes the bytes that caused the bug.
+3. Built revision R00 — Verified, all gates PASSED.
+4. Confirmed the recovery pointer's own save stamp (7:21:30) was *after* the
+   build, i.e. the same post-build record shape that failed in the field.
+5. `am force-stop`, confirmed the process was gone, relaunched, tapped
+   *Resume session*.
+
+It restored. The edited cell came back as 1.75000 and **Undo was live** — that
+second fact is what exercises the `SessionHistory` cursor path, since the undo
+stack had to survive alongside the buffer.
+
+Left on the device: that session now carries a test edit and a built `R00.bin`
+in staging. Both are throwaway artifacts of this check — the R00 candidate must
+never be flashed.
