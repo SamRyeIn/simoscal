@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The two palette entries the *platform* needs, before any Compose frame exists.
+  Both are transcribed from `Docs/promo/config.py` and duplicated in
+  `PromoPalette` — keep the three in step.
+-->
+<resources>
+    <!-- `bg` — the ground the whole app sits on. -->
+    <color name="promo_bg">#0B0E14</color>
+
+    <!-- `bg_alt` — panel fill, used for the system bars so they read as chrome. -->
+    <color name="promo_bg_alt">#121720</color>
+</resources>

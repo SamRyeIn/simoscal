@@ -13,13 +13,13 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.Canvas
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
@@ -31,14 +31,33 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
+ * The same five colours the promo video's slot beat uses (`SLOT_STYLE` in
+ * `Docs/promo/scene_slots.py`), and for the same reason: this canvas and that
+ * beat are the same plot of the same five grids, so someone who has seen one
+ * should recognise the other.
+ *
+ * Grey for slot 1 — the as-shipped curve is context, not a choice — then the
+ * palette's cool→warm run for 2 through 5.
+ */
+private val SlotColors: Map<Int, Color> = mapOf(
+    1 to Color(0xFF7A8AA0),      // stock: neutral grey, out of the accent family
+    2 to PromoPalette.Accent2,   // cool blue
+    3 to PromoPalette.Good,      // green
+    4 to PromoPalette.Accent,    // simoscal orange
+    5 to PromoPalette.Danger,    // red
+)
+
+internal fun slotColor(slot: Int): Color = SlotColors[slot] ?: PromoPalette.TextFaint
+
+/**
  * The hero surface: five slot boost caps against the base ceiling, on one canvas.
  *
  * Colour runs cool→warm with slot number because the switch patch orders its
- * slots least→most boost; the ramp carries that ordering without a legend. Only
- * the active slot is drawn at full strength and only it responds to a drag — the
- * others are ghosted context, because a fingertip that could land on any of five
- * overlapping curves would sometimes move the wrong one, and the wrong one here
- * is a boost table.
+ * slots least→most boost; the ramp carries that ordering without a legend (see
+ * [SlotColors]). Only the active slot is drawn at full strength and only it
+ * responds to a drag — the others are ghosted context, because a fingertip that
+ * could land on any of five overlapping curves would sometimes move the wrong
+ * one, and the wrong one here is a boost table.
  *
  * Two limits are drawn, and they are not the same limit (see [BoostCurveModel]):
  * the solid ceiling line is the per-rpm base cap, above which a slot has no
@@ -46,16 +65,6 @@ import kotlin.math.roundToInt
  * The shaded band between the ceiling and the top of the plot is the region
  * where an edit is accepted but changes nothing.
  */
-private val SlotColors: Map<Int, Color> = mapOf(
-    1 to Color(0xFF2563EB), // blue
-    2 to Color(0xFF0D9488), // teal
-    3 to Color(0xFF65A30D), // olive
-    4 to Color(0xFFD97706), // amber
-    5 to Color(0xFFDC2626), // red
-)
-
-internal fun slotColor(slot: Int): Color = SlotColors[slot] ?: Color.Gray
-
 @OptIn(ExperimentalTextApi::class)
 @Composable
 fun BoostCanvas(
@@ -67,10 +76,6 @@ fun BoostCanvas(
     onTapPoint: (index: Int) -> Unit,
 ) {
     val measurer = rememberTextMeasurer()
-    val onSurface = MaterialTheme.colorScheme.onSurface
-    val outline = MaterialTheme.colorScheme.outline
-    val errorColor = MaterialTheme.colorScheme.error
-    val surface = MaterialTheme.colorScheme.surface
 
     val scale = remember(model, draft) { BoostPlotScale.of(model, draft) }
 
@@ -106,11 +111,11 @@ fun BoostCanvas(
     ) {
         val geometry = BoostPlotGeometry(size.width, size.height)
 
-        drawFrameAndGrid(geometry, scale, outline, onSurface, measurer)
+        drawFrameAndGrid(geometry, scale, measurer)
 
         // The region the base ceiling swallows. Drawn first so every curve sits
         // on top of it — a curve hidden behind its own explanation helps nobody.
-        drawCappedBand(model, scale, geometry, errorColor.copy(alpha = 0.10f))
+        drawCappedBand(model, scale, geometry, PromoPalette.Danger.copy(alpha = 0.10f))
 
         // Base ceiling: solid, neutral, and clearly not one of the slots.
         drawPolyline(
@@ -120,7 +125,7 @@ fun BoostCanvas(
                     scale.y(geometry, model.baseCeilingPsi.getOrElse(index) { 0.0 }),
                 )
             },
-            color = onSurface.copy(alpha = 0.65f),
+            color = PromoPalette.TextDim,
             width = 2.5f,
         )
 
@@ -128,7 +133,7 @@ fun BoostCanvas(
         val refusalY = scale.y(geometry, model.refusalCeilingPsi)
         if (refusalY >= geometry.top) {
             drawLine(
-                color = errorColor,
+                color = PromoPalette.Danger,
                 start = Offset(geometry.left, refusalY),
                 end = Offset(geometry.right, refusalY),
                 strokeWidth = 2f,
@@ -148,10 +153,13 @@ fun BoostCanvas(
                 )
             }
             val color = slotColor(curve.slot).let { if (active) it else it.copy(alpha = 0.30f) }
-            drawPolyline(points, color, if (active) 3.5f else 2f)
+            // The video draws the slot it is talking about at 9 px against the
+            // others' 6 — the active curve is heavier, not merely brighter, so it
+            // still reads as the live one on a screen in daylight.
+            drawPolyline(points, color, if (active) 4.5f else 2f)
             if (active) {
                 points.forEach { point ->
-                    drawCircle(surface, radius = 7f, center = point)
+                    drawCircle(PromoPalette.Bg, radius = 7f, center = point)
                     drawCircle(color, radius = 7f, center = point, style = Stroke(width = 2.5f))
                 }
             }
@@ -205,17 +213,23 @@ private fun DrawScope.drawCappedBand(
 private fun DrawScope.drawFrameAndGrid(
     geometry: BoostPlotGeometry,
     scale: BoostPlotScale,
-    outline: Color,
-    onSurface: Color,
     measurer: TextMeasurer,
 ) {
-    val labelStyle = TextStyle(fontSize = 9.sp, color = onSurface.copy(alpha = 0.75f))
+    // Faint monospace, exactly as the video labels its axes: the ladder of
+    // figures down the left edge is read as a column, and a proportional face
+    // makes a column of numbers ragged.
+    val labelStyle = TextStyle(
+        fontSize = 9.sp,
+        color = PromoPalette.TextFaint,
+        fontFamily = FontFamily.Monospace,
+    )
+    val gridColor = PromoPalette.Rule.copy(alpha = 0.55f)
 
     // Horizontal gridlines every 5 psi — a tuner's natural step.
     var psi = 0.0
     while (psi <= scale.psiMax) {
         val py = scale.y(geometry, psi)
-        drawLine(outline.copy(alpha = 0.25f), Offset(geometry.left, py), Offset(geometry.right, py), 1f)
+        drawLine(gridColor, Offset(geometry.left, py), Offset(geometry.right, py), 1f)
         drawText(
             textMeasurer = measurer,
             text = "${psi.roundToInt()}",
@@ -233,7 +247,7 @@ private fun DrawScope.drawFrameAndGrid(
         scale.rpmAxis.lastOrNull(),
     ).distinct().forEach { rpm ->
         val px = scale.x(geometry, rpm)
-        drawLine(outline.copy(alpha = 0.25f), Offset(px, geometry.top), Offset(px, geometry.bottom), 1f)
+        drawLine(gridColor, Offset(px, geometry.top), Offset(px, geometry.bottom), 1f)
         drawText(
             textMeasurer = measurer,
             text = "${rpm.roundToInt()}",
@@ -242,8 +256,8 @@ private fun DrawScope.drawFrameAndGrid(
         )
     }
 
-    drawLine(outline, Offset(geometry.left, geometry.top), Offset(geometry.left, geometry.bottom), 1.5f)
-    drawLine(outline, Offset(geometry.left, geometry.bottom), Offset(geometry.right, geometry.bottom), 1.5f)
+    drawLine(PromoPalette.Rule, Offset(geometry.left, geometry.top), Offset(geometry.left, geometry.bottom), 1.5f)
+    drawLine(PromoPalette.Rule, Offset(geometry.left, geometry.bottom), Offset(geometry.right, geometry.bottom), 1.5f)
 
     drawText(
         textMeasurer = measurer,
@@ -285,6 +299,7 @@ private fun DrawScope.drawSlotLabels(
             style = TextStyle(
                 fontSize = 11.sp,
                 color = color,
+                fontFamily = FontFamily.Monospace,
                 fontWeight = if (slot == activeSlot) FontWeight.Bold else FontWeight.Normal,
             ),
         )

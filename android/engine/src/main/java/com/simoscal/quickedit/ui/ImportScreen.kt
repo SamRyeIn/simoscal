@@ -10,23 +10,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.simoscal.engine.R
 import com.simoscal.quickedit.ImportedFile
 import com.simoscal.quickedit.InputKind
 import com.simoscal.quickedit.Mode
@@ -68,14 +61,15 @@ fun ImportScreen(viewModel: QuickEditViewModel, recoverable: RecoveryPointer?) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        // Same resource the manifest label points at, rather than a literal:
-        // this heading and the launcher/app-switcher name are the same claim,
-        // and a hardcoded copy is how they drift apart.
-        Text(
-            stringResource(R.string.app_name),
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold,
-        )
+        // The landing screen is the video's opening frame: the wordmark, a rule
+        // under it, and the one sentence that says what the thing does. It is the
+        // only screen with room for it, and the only one where a person has not
+        // yet been told what they are holding.
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Wordmark(fontSize = 40.sp)
+            HairRule()
+            Caption("Edit in physical units. Checksum-verified .bin out. You flash it.")
+        }
 
         // Offered first, above the ordinary bin/XDF pickers: a recoverable
         // session already has a passed preflight behind it (recoverSession()
@@ -113,7 +107,7 @@ fun ImportScreen(viewModel: QuickEditViewModel, recoverable: RecoveryPointer?) {
             )
         }
 
-        Button(
+        PromoButton(
             onClick = { viewModel.runPreflight() },
             enabled = state.canRunPreflight,
             modifier = Modifier.fillMaxWidth(),
@@ -131,7 +125,7 @@ fun ImportScreen(viewModel: QuickEditViewModel, recoverable: RecoveryPointer?) {
         val passed = state.preflight as? PreflightState.Passed
         if (passed != null) {
             PassedCard(passed = passed)
-            Button(
+            PromoButton(
                 onClick = { viewModel.openSession() },
                 enabled = state.canOpenSession,
                 modifier = Modifier.fillMaxWidth(),
@@ -148,18 +142,15 @@ fun ImportScreen(viewModel: QuickEditViewModel, recoverable: RecoveryPointer?) {
 
 @Composable
 private fun RecoverableCard(pointer: RecoveryPointer, onResume: () -> Unit, onDiscard: () -> Unit) {
-    Card {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Resume previous session?", style = MaterialTheme.typography.titleMedium)
-            Text(pointer.bin.displayName, style = MaterialTheme.typography.bodyMedium)
-            Text(
-                "Saved ${DateFormat.getDateTimeInstance().format(Date(pointer.savedAtMillis))}",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onResume) { Text("Resume session") }
-                OutlinedButton(onClick = onDiscard) { Text("Discard") }
-            }
+    // Accent, the colour of the live edit everywhere else in the app: this panel
+    // is unfinished work on a real bin, and it is offered above the pickers.
+    Panel(tone = PanelTone.Accent, spacing = 8.dp) {
+        PanelTitle("Resume previous session?", tone = PanelTone.Accent)
+        Identifier(pointer.bin.displayName)
+        Caption("Saved ${DateFormat.getDateTimeInstance().format(Date(pointer.savedAtMillis))}")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PromoButton(onClick = onResume) { Text("Resume session") }
+            PromoOutlinedButton(onClick = onDiscard) { Text("Discard") }
         }
     }
 }
@@ -173,47 +164,54 @@ private fun RecoverableCard(pointer: RecoveryPointer, onResume: () -> Unit, onDi
  */
 @Composable
 private fun InputRow(label: String, file: ImportedFile?, advanced: Boolean, onChoose: () -> Unit) {
-    Card {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(label, style = MaterialTheme.typography.titleSmall)
-            if (file != null) {
-                Text(file.displayName, style = MaterialTheme.typography.bodyMedium)
-                Text("${formatSize(file.sizeBytes)}", style = MaterialTheme.typography.bodySmall)
-                if (advanced) {
-                    Text("SHA-256 ${file.shortHash}", style = MaterialTheme.typography.bodySmall)
-                }
-            } else {
-                Text("No file chosen", style = MaterialTheme.typography.bodyMedium)
+    Panel {
+        // The label is a kicker rather than a heading: it names the slot, and the
+        // filename under it is the content — same order the video uses over every
+        // plot it draws.
+        Kicker(label, color = PromoPalette.TextFaint)
+        if (file != null) {
+            // Monospace, because a filename is an identifier: `..._R14.bin` and
+            // `..._R15.bin` differ by one glyph, and in a proportional face that
+            // glyph is the easiest one on screen to misread.
+            Identifier(file.displayName)
+            Caption(formatSize(file.sizeBytes))
+            if (advanced) {
+                Text(
+                    "SHA-256 ${file.shortHash}",
+                    style = PromoType.figureSmall,
+                    color = PromoPalette.TextFaint,
+                )
             }
-            OutlinedButton(onClick = onChoose) {
-                Text(if (file == null) "Choose" else "Replace")
-            }
+        } else {
+            Caption("No file chosen", color = PromoPalette.TextFaint)
+        }
+        PromoOutlinedButton(onClick = onChoose) {
+            Text(if (file == null) "Choose" else "Replace")
         }
     }
 }
 
 @Composable
 private fun SwitchPatchRow(file: ImportedFile?, onChoose: () -> Unit, onClear: () -> Unit) {
-    Card {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Switch-patch XDF (optional)", style = MaterialTheme.typography.titleSmall)
+    Panel {
+        Kicker("Switch-patch XDF (optional)", color = PromoPalette.TextFaint)
+        Caption("Only needed to reach the Boost and Slots destinations.")
+        if (file != null) {
+            Identifier(file.displayName)
             Text(
-                "Only needed to reach the Boost destination.",
-                style = MaterialTheme.typography.bodySmall,
+                "SHA-256 ${file.shortHash}",
+                style = PromoType.figureSmall,
+                color = PromoPalette.TextFaint,
             )
-            if (file != null) {
-                Text(file.displayName, style = MaterialTheme.typography.bodyMedium)
-                Text("SHA-256 ${file.shortHash}", style = MaterialTheme.typography.bodySmall)
-            } else {
-                Text("No file chosen", style = MaterialTheme.typography.bodyMedium)
+        } else {
+            Caption("No file chosen", color = PromoPalette.TextFaint)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PromoOutlinedButton(onClick = onChoose) {
+                Text(if (file == null) "Choose" else "Replace")
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onChoose) {
-                    Text(if (file == null) "Choose" else "Replace")
-                }
-                if (file != null) {
-                    TextButton(onClick = onClear) { Text("Clear") }
-                }
+            if (file != null) {
+                TextButton(onClick = onClear) { Text("Clear") }
             }
         }
     }
@@ -221,15 +219,15 @@ private fun SwitchPatchRow(file: ImportedFile?, onChoose: () -> Unit, onClear: (
 
 @Composable
 private fun PassedCard(passed: PreflightState.Passed) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("This bin can be edited", style = MaterialTheme.typography.titleMedium)
-            Text(passed.summary, style = MaterialTheme.typography.bodyMedium)
-            if (passed.reasons.isNotEmpty()) {
-                Divider()
-                passed.reasons.forEach { reason ->
-                    Text("• $reason", style = MaterialTheme.typography.bodySmall)
-                }
+    // `good` — the palette's checks-pass green, and the only screen-level verdict
+    // in the app that earns it before a build.
+    Panel(tone = PanelTone.Good) {
+        PanelTitle("This bin can be edited", tone = PanelTone.Good)
+        Text(passed.summary, style = MaterialTheme.typography.bodyMedium)
+        if (passed.reasons.isNotEmpty()) {
+            HairRule(color = PromoPalette.Good.copy(alpha = 0.3f))
+            passed.reasons.forEach { reason ->
+                Caption("• $reason")
             }
         }
     }

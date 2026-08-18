@@ -67,6 +67,73 @@ UI code is `com.simoscal.quickedit`; the V0/V6 engine plumbing stays in
   *merged* manifest — so a permission contributed by a library fails the build
   too — and is wired into `check`.
 
+### The look is the promo video's, from one palette
+
+The app and `Docs/promo/`'s two cuts are the same product seen twice, so they are
+painted from one list of colours rather than two that drift. `PromoPalette`
+(`ui/Theme.kt`) is a transcription of `PALETTE` in `Docs/promo/config.py` — same
+names, same eleven RGB triples — and `res/values/colors.xml` repeats the two the
+platform needs before Compose exists. The video is built from the library's real
+output and is the older of the two, which makes it the source: add a colour there
+first.
+
+What that buys, beyond looking of a piece:
+
+- **The names are roles, and the roles are enforced by use.** `accent` is boost,
+  heat, and the thing that changed — a staged proposal, an applied edit, a
+  changed cell, the live slot curve. `accent_2` is verification and selection.
+  `good`/`warn`/`danger` are a check that passed, something to read first, and a
+  refusal. `PanelTone` is that vocabulary as a type, so a panel picks a meaning
+  rather than a colour.
+- **One scheme, always dark, no Material You.** `dynamicColorScheme` would repaint
+  the app in the device wallpaper's hues, which is exactly wrong here: it would
+  make "the engine refused" a different colour on every phone. The light scheme
+  and the `darkTheme` parameter are gone with it — `QuickEditTheme` takes only
+  its content.
+- **Numbers are monospace, everywhere.** `PromoType.identifier` and
+  `figureSmall` carry the video's Menlo-set figures across to grid cells, axis
+  breakpoints, bin names, hashes, and the encoded-value receipt. A filename
+  differing by one revision digit and a column of psi figures are both read
+  glyph-by-glyph, which a proportional face makes harder for no gain.
+- **Panels are flat and hairlined, not raised.** `Panel` replaces Material's
+  `Card` throughout: `bg_alt` fill, a 1 dp `rule` border, no elevation. Every one
+  of them is a readout — what the bin holds, what a gate found — and a raised
+  surface implies a thing to pick up rather than a face to read.
+- **The five slot colours are the video's `SLOT_STYLE`.** `BoostCanvas`, the slot
+  chips, and the switchboard's column headings all draw slot *n* in the same hue
+  the promo's slots beat draws it in, so "slot 4" means one thing across the app
+  and the video both.
+
+Two places deliberately did **not** move to the palette. The heatmap ramp
+(`TableHeatmap.kt`) still runs deep blue → cyan → green → amber → red, because it
+mirrors the ramp the library's own compare plots use — the ones the video itself
+shows — and repainting it here would put the app and the report at odds. And the
+launcher icon is generated, not hand-drawn: `Docs/promo/gen_app_icon.py` renders
+it from the same palette into `res/mipmap-*/`.
+
+The window background is set in `themes.xml` as well as in Compose. On a build
+that starts a Python runtime, the gap between the launcher tap and the first
+composed frame is long enough to see, and on the stock light parent it was a
+white flash before a near-black app.
+
+**How much of the repaint has been seen running (2026-08-17).** 158 unit tests
+and the no-permissions gate are green and the APK builds, but those say nothing
+about how it looks. On the `v0_arm64` emulator, the **import screen and the
+passed-preflight verdict** were driven for real and screenshotted against the
+promo stills: wordmark, hairline panels, tracked kickers, monospace filename and
+hash, squared accent buttons, the green `good` verdict panel.
+
+**Tables, Boost, Slots, and Build have not been seen rendered** — only compiled.
+Reaching them needs an open session, and on an emulated arm64 device the engine's
+XDF parse runs about four minutes per call (preflight, then again on session
+open); the first attempt was killed when the emulator ran out of memory partway
+through. Nothing in those four screens is new logic — they use the same `Panel`,
+`Kicker`, and `PromoType` as the two that were verified — but the boost canvas's
+five slot colours and the grid's cell/heatmap interplay are worth a look on the
+tablet before this is called done. That is the same gap V8 already records as
+"no Compose screenshot tests", and this repaint is the second unit to be stopped
+by it.
+
 ### Why DataStore rather than Room
 
 There is exactly one recovery record, with no relations and no queries. The hard
@@ -83,7 +150,7 @@ export ANDROID_HOME="$HOME/Library/Android/sdk"
 ./gradlew :engine:testDebugUnitTest :engine:verifyDebugNoPermissions
 ```
 
-Expect **109 unit tests passing** and a receipt at
+Expect **158 unit tests passing** and a receipt at
 `engine/build/reports/permissions/debug.txt`:
 
 | Test class            | Cases |
@@ -92,15 +159,20 @@ Expect **109 unit tests passing** and a receipt at
 | `BoostPlotTest`       | 7     |
 | `BoostUiStateTest`    | 13    |
 | `BridgeProtocolTest`  | 13    |
+| `FormattingTest`      | 15    |
 | `ImportNamingTest`    | 9     |
-| `QuickEditStateTest`  | 22    |
-| `TablesUiStateTest`   | 22    |
+| `QuickEditStateTest`  | 24    |
+| `SlotsUiStateTest`    | 12    |
+| `TableHeatmapTest`    | 18    |
+| `TablesUiStateTest`   | 24    |
 | `VerifiedParamsTest`  | 5     |
 
 Keep these current. The total is this document's stated pass criterion, so a
-stale number cannot distinguish a complete run from a partial one. The previous
-figure (93) went stale when the 2026-08-14 review fixes added 11 cases without
-updating it (CR-20260815-03) — if you add a test, add it here.
+stale number cannot distinguish a complete run from a partial one. The figure has
+now gone stale twice: 93 → 109 when the 2026-08-14 review fixes added cases
+without updating it (CR-20260815-03), and 109 → 158 when V8/V9's own suites
+landed the same way, caught while re-running the gate for the 2026-08-17
+repaint. If you add a test, add it here.
 
 The unit tests are deliberately JVM-only and cover the pure layers: the envelope
 contract against the real `org.json`, every state gate, the import naming and
@@ -248,6 +320,148 @@ one. Three things follow, and all three are engine-side:
 Without this, a one-cell edit to a slot grid — or a `12 → 13` write to the axis
 length header — was accepted, then reported `verified=True` with a share path
 (CR-20260813-01).
+
+### Every table says what it is, and every axis says what it measures
+
+An XDF axis carries breakpoints and a unit string. That decodes a table and does
+not begin to label one: "4000" across the top of a grid is engine speed on
+`IP_PQ_CHA_MAX` and turbocharger air mass flow on
+`IP_PUT_AMP_DIF_MAX_PRS_DIF_THR`, and the screen said neither. Three pieces close
+that, all engine-side so the app and any report describe a table the same way:
+
+- **The parser keeps the axis link.** A breakpoint axis is stored once and shared
+  by every table that uses it, and only that standalone table carries the axis's
+  own A2L symbol. `Axis.link_uniqueid` now holds the `<embedinfo linkobjid>` that
+  points at it. Metadata only — it names a sibling table and changes no decode.
+- **`simoscal.tune.quantities` maps symbol → English**, curated the way the
+  profile is: every entry was checked against its decoded breakpoints before
+  being written down, and an axis with no entry falls back to its symbol rather
+  than to a guess. Inferring the quantity from the *unit* was rejected outright —
+  it is right most of the time, and the times it is wrong put the wrong name over
+  the wrong column. `test_quantities.py` fails if a profile addition brings an
+  uncurated axis with it.
+- **`TableInfo.signature`** is the one-line "what is this table": `hPa vs. Engine
+  speed [rpm] and Manifold pressure setpoint [hPa]`. `units_description` spells a
+  bare XDF `-` as "dimensionless", which is a statement where a lone dash reads
+  as missing metadata.
+
+The editor prints the signature under the title, the x-axis label over the column
+headers, and the y-axis label in the corner beside the rows; the edit dialog adds
+the breakpoints the cell sits on, because indices identify a cell and only the
+breakpoints say what operating point it governs.
+
+### Numbers are formatted for the table they are in, never in exponent form
+
+`%.6g` put `4.40536e-13` on screen for a y-axis breakpoint of exactly 0 °C — the
+XDF's scaling equation evaluated in floating point, so the residue is the
+arithmetic's and not the calibration's — and `3.10010` for a cell quantized to
+1/4096. An exponent on a calibration screen is never information: it is either
+noise dressed as a number or a real value made unreadable.
+
+`ValueFormat` (`Formatting.kt`) replaces it. One precision is chosen for a whole
+set and applied to all of it — the cells share one, each axis gets its own —
+starting at roughly four significant digits of the largest value present, which
+is what puts that residue back as `0.00` and a `79.9891` breakpoint back as the
+`80` the calibrator meant. It is then *raised* until every meaningfully different
+value in the set formats differently, and that guard is what makes the rounding
+safe: a changed cell is drawn above its old value, and two different numbers
+rendering identically would turn a real edit into an invisible one. Differences
+below one part in a billion are excluded from that test, or a 6000-rpm axis would
+chase residue in its twelfth digit forever.
+
+The numeric dialog also asks the IME for `KeyboardType.Decimal` rather than
+`Number`. `Number` requests digits only, and every value the dialog edits is a
+Double — on the Tab A9+ that meant a cell holding `3.100097`, or a `0.05` Offset,
+could not be typed at all, and Set stayed disabled because `toDoubleOrNull` never
+saw a parseable string.
+
+`Decimal` gets the decimal point and stops there: it never sets
+`TYPE_NUMBER_FLAG_SIGNED`, Android has no signed-decimal input type, and Compose
+exposes none — so the Tab A9+ keypad renders no `-` key at all. Ignition `°CRK`,
+a downward Offset, and a sub-zero temperature breakpoint are all ordinary values
+here, and none of them could be entered. Hence the **± button** beside the field,
+which flips the sign of the text (`String.withFlippedSign`) and depends on no IME
+behaviour whatsoever. It operates on text rather than a parsed Double so it works
+mid-type — press ± on an empty field, then key the digits. Verified on the tablet:
+`3.10009765625` → ± → `-3.10009765625`, with Set still enabled.
+
+The edit dialog does **not** round. It seeds with `displayExact`, the shortest
+fixed-point text that reads back within `CHANGE_EPSILON` — the same threshold
+that decides whether a cell counts as changed. Were it looser, opening a cell and
+pressing Set while changing nothing would manufacture a diff out of a rounding
+step. Verified on the tablet: a `3.10009765625` cell opened and Set unchanged
+still reports "0 changed".
+
+## V9 — the per-slot switchboard
+
+The switch patch is one shared tune plus a per-slot decision about which features
+are on: **24 tables differ between map slots**, and until now the app exposed
+exactly one of them (`PUT setpoint`, via the boost editor). Sixteen of the other
+23 are 1×1 scalars, and the question they answer is comparative — "which slots
+have launch control enabled" — which the generic table editor answers badly: you
+open five tables, and the one you skipped is the one that surprises you in the
+car. The **Slots** destination puts all five slots on one screen, one row per
+setting.
+
+### Sixteen settings, twelve of them writable
+
+`SLOT_SETTINGS` in the switch-patch profile is one registry feeding two
+consumers: it generates the `TableSpec`s *and* it is what the screen renders, so
+a setting cannot be toggleable in the app and unmapped in the profile.
+`test_every_switchboard_setting_is_mapped_and_owned` asserts the generation.
+
+Twelve are 0/1 flags — SL TC, OEM TC, LC, NLS, RAL, pops, and six flex-fuel
+modifier enables. The other four are **read, described, and refused**, and shown
+anyway rather than hidden, because a screen listing twelve would be claiming the
+patch has twelve per-slot settings:
+
+| Setting | Why it has no write path |
+|---------------------------|----------------------------------------------------------------------|
+| `RPM limiter` | Reads 0 in every slot of the as-patched bin, so what a non-zero value means — and whether 0 means "leave the OEM limiter alone" — is inferred, not established. Writing an uncharacterised override is how you get a rev limit you did not intend. |
+| `Speed limiter` | Same: 0 everywhere, meaning of non-zero unestablished. |
+| `Manual AFU` | Not a flag at all. A 0–1 fraction stored **/128**, so a "toggle" writes 128× what anyone meant. The XDF says it "only adjusts the value"; the patch's own logging category mentions "manual e content", so it is *probably* hand-set ethanol fraction — probably is not good enough for a fuel-composition input the engine trusts. |
+| `Gauge settings (bitmask)` | No source we have says what any individual bit means, and a bitmask written as a whole number sets seven bits you did not choose. |
+
+Tapping a row's name opens the description, the units, the caution, and — for
+these four — the reason verbatim. `set_slot_flag()` refuses all four engine-side
+regardless of what any UI does.
+
+### Three refusals, not one
+
+`switchpatch.set_slot_flag()` rejects an unknown key (a typo that wrote nothing
+looks exactly like a flag that does not work), a non-flag or read-only setting,
+and — the last line of defence — **a flag whose stored byte is neither 0 nor 1**.
+These sixteen tables sit within a few bytes of each other, so a mis-bound
+uniqueid lands on a neighbour holding something else; reading before writing is
+what makes that a loud failure instead of a silent corruption. The tables are
+`owner`-tagged like every other patch table, so the generic `edit` op cannot
+reach them either.
+
+### Toggles are not staged
+
+Unlike the table and boost editors, there is no draft and no Apply. A flag has
+two states and no shape to review, so an Apply step would gate the write on a
+review of nothing. Each tap is one bridge call, one journal entry, one undo
+point — which is the granularity a person actually wants to step back through.
+Nothing flips optimistically: the reply carries the whole board and the grid
+redraws from it, so a refused write never looked, even for a frame, like it
+worked.
+
+`refreshOpenViews()` re-reads the switchboard after undo/redo for the same
+reason it re-reads the other editors. Caught on-device: before that, undoing a
+toggle left the row still reading "on" — this screen's entire job is to say which
+slots have a feature on, so being stale about that is being wrong about the only
+thing it claims to know.
+
+### What the switchboard does not cover
+
+Seven per-slot tables remain unexposed: `Spark modifier` (16×16 °), `Lambda
+modifier` (8×12), and five `Torque Request` maps (9×20 / 7×20 Nm). The two
+modifiers are grids the generic editor could show if they were mapped; the torque
+maps are held deliberately — 25 grids of 180 cells whose Type 1/2/3 semantics are
+not established anywhere, and no revision in the lineage has touched them.
+Offering a table this project cannot describe cuts against how the catalog is
+built.
 
 ### What V8 still owes, and why it needs hardware
 

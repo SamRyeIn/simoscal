@@ -19,8 +19,21 @@ import org.json.JSONObject
  * to the engine (see [QuickEditViewModel.restoreTable]).
  */
 
-/** One decoded breakpoint axis, as the bridge reports it. */
-data class TableAxis(val units: String, val values: List<Double>)
+/**
+ * One decoded breakpoint axis, as the bridge reports it.
+ *
+ * [label] is ``Quantity [unit]`` — "Engine speed [rpm]" — resolved engine-side
+ * from the axis's own A2L symbol. Breakpoints without it are unreadable in the
+ * way that matters: "4000" across the top of a grid is engine speed on one table
+ * and turbocharger air mass flow on the next, and editing the wrong column
+ * because they look alike is a real tuning mistake, not a cosmetic one.
+ */
+data class TableAxis(
+    val units: String,
+    val values: List<Double>,
+    val symbol: String? = null,
+    val label: String = "",
+)
 
 /** A read-only description of one editable table. Mirrors `simoscal.tune.catalog.TableInfo`. */
 data class TableSummary(
@@ -47,6 +60,19 @@ data class TableSummary(
      * compose a proposal whose only possible outcome is a refusal.
      */
     val owner: String = "",
+    /**
+     * [units] spelled out — the XDF's bare `-` becomes "dimensionless", which is
+     * a statement rather than the missing-metadata a dash reads as.
+     */
+    val unitsDescription: String = "",
+    /**
+     * What the table *is*, in one line: cell unit against its axes, e.g.
+     * "hPa vs. Engine speed [rpm] and Manifold pressure setpoint [hPa]".
+     *
+     * The title names the table; this names its dimensions. Resolved engine-side
+     * so the app and any report say the same thing about the same table.
+     */
+    val signature: String = "",
 ) {
 
     /**
@@ -57,10 +83,31 @@ data class TableSummary(
      * identify which of several similar tables was touched.
      */
     val idAndDescription: String
-        get() {
-            val id = symbol ?: uniqueidHex
-            val text = description.ifBlank { title ?: "(no description)" }
-            return "$id — $text"
+        get() = "$id — $describedAs"
+
+    /**
+     * The ID half on its own — the A2L symbol, or the uniqueid for a table that
+     * has none. Exposed because the screens set it in a monospace face and the
+     * description beside it in prose; the two halves of [idAndDescription] are
+     * different kinds of text and are typeset as such.
+     */
+    val id: String
+        get() = symbol ?: uniqueidHex
+
+    /** The plain-English half on its own. Never blank — an absence is stated. */
+    val describedAs: String
+        get() = description.ifBlank { title ?: "(no description)" }
+
+    /**
+     * The unit, always as words. Never blank and never a bare `-`.
+     *
+     * The engine sends [unitsDescription]; the fallback repeats its rule rather
+     * than letting an older bridge put a lone dash on screen, where it reads as
+     * "nobody recorded this" instead of "this is a ratio".
+     */
+    val unitsText: String
+        get() = unitsDescription.ifBlank {
+            if (units.isBlank() || units == "-") "dimensionless" else units
         }
 
     companion object {
@@ -81,6 +128,8 @@ data class TableSummary(
                 isAxis = json.optBoolean("is_axis", false),
                 categories = json.stringList("categories"),
                 owner = json.optString("owner", ""),
+                unitsDescription = json.optString("units_description", ""),
+                signature = json.optString("signature", ""),
             )
         }
     }
@@ -145,7 +194,7 @@ data class TablesUiState(
         get() = draft.size == committed.size &&
             draft.indices.any { row ->
                 draft[row].size == committed[row].size &&
-                    draft[row].indices.any { col -> abs(draft[row][col] - committed[row][col]) > 1e-12 }
+                    draft[row].indices.any { col -> abs(draft[row][col] - committed[row][col]) > CHANGE_EPSILON }
             }
 
     /**
@@ -171,7 +220,7 @@ data class TablesUiState(
             draft[row].indices
                 .filter { col ->
                     val before = committedRow.getOrNull(col)
-                    before != null && abs(draft[row][col] - before) > 1e-12
+                    before != null && abs(draft[row][col] - before) > CHANGE_EPSILON
                 }
                 .map { col -> CellRef(row, col) }
         }
@@ -390,5 +439,7 @@ internal fun JSONObject.axis(key: String): TableAxis? {
     return TableAxis(
         units = node.optString("units", ""),
         values = (0 until values.length()).map { values.optDouble(it) },
+        symbol = node.optStringOrNull("symbol"),
+        label = node.optString("label", ""),
     )
 }

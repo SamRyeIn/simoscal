@@ -368,6 +368,91 @@ def test_generic_edit_of_the_axis_length_header_is_refused(boost_session: str):
     assert err_code(env) == ErrorCode.EDIT_REJECTED.value
 
 
+# --------------------------------------------------------------------------- #
+# the per-slot switchboard
+# --------------------------------------------------------------------------- #
+def test_slot_settings_reports_every_scalar_against_every_slot(boost_session: str):
+    rows = ok_result(call("slot_settings", session_id=boost_session))["settings"]
+
+    assert len(rows) == 16
+    by_key = {r["key"]: r for r in rows}
+    assert by_key["enable_sl_tc"]["writable"] is True
+    assert by_key["rpm_limiter"]["writable"] is False
+    for row in rows:
+        assert len(row["values"]) == 5
+        assert row["title"] and row["description"]
+
+
+def test_a_flag_write_returns_the_whole_board(boost_session: str):
+    """The reply carries the new state so the app never redraws from a guess."""
+    res = ok_result(call(
+        "slot_flag", session_id=boost_session,
+        key="enable_lc", slots=[2, 4], on=True, intent="test",
+    ))
+
+    by_key = {r["key"]: r for r in res["settings"]}
+    assert by_key["enable_lc"]["values"] == [0.0, 1.0, 0.0, 1.0, 0.0]
+    assert len(res["entries"]) == 2
+    assert res["can_undo"] is True
+
+
+def test_a_flag_write_is_one_undo_point_per_slot(boost_session: str):
+    ok_result(call("slot_flag", session_id=boost_session,
+                   key="pops_enable", slots=[1], on=True))
+    ok_result(call("undo", session_id=boost_session))
+
+    rows = ok_result(call("slot_settings", session_id=boost_session))["settings"]
+    by_key = {r["key"]: r for r in rows}
+    assert by_key["pops_enable"]["values"] == [0.0] * 5
+
+
+@pytest.mark.parametrize(
+    "key", ["rpm_limiter", "speed_limiter", "manual_afu", "gauge_settings"]
+)
+def test_a_read_only_setting_is_refused_over_the_bridge(boost_session: str, key: str):
+    env = call("slot_flag", session_id=boost_session, key=key, slots=[1], on=True)
+
+    assert err_code(env) == ErrorCode.EDIT_REJECTED.value
+    # Refused before anything was written: no undo point, no journal entry.
+    assert ok_result(call("undo", session_id=boost_session))["done"] is False
+
+
+def test_an_unknown_flag_is_refused(boost_session: str):
+    env = call("slot_flag", session_id=boost_session,
+               key="enable_launch_control", slots=[1], on=True)
+    assert err_code(env) == ErrorCode.EDIT_REJECTED.value
+
+
+def test_slot_flag_needs_at_least_one_slot(boost_session: str):
+    env = call("slot_flag", session_id=boost_session,
+               key="enable_lc", slots=[], on=True)
+    assert err_code(env) == ErrorCode.BAD_PARAMS.value
+
+
+def test_the_switchboard_needs_the_switch_patch_space(session: str):
+    """A base-only session has none of these tables; say so rather than crash."""
+    assert err_code(call("slot_settings", session_id=session)) == \
+        ErrorCode.TUNE_ERROR.value
+    assert err_code(call("slot_flag", session_id=session,
+                         key="enable_lc", slots=[1], on=True)) == \
+        ErrorCode.TUNE_ERROR.value
+
+
+def test_generic_edit_of_a_slot_flag_is_refused(boost_session: str):
+    """The switchboard's tables are owned like every other patch table.
+
+    These sixteen sit within a few bytes of each other, so a generic write that
+    skipped the domain call's "does this byte actually read 0 or 1" check would
+    quietly overwrite a neighbour if a binding were ever wrong.
+    """
+    env = call(
+        "edit", session_id=boost_session, space="patch",
+        name="slot1_enable_lc", op="set",
+        selection={"kind": "all"}, value=1.0,
+    )
+    assert err_code(env) == ErrorCode.EDIT_REJECTED.value
+
+
 def test_generic_restore_of_a_domain_owned_table_is_refused(boost_session: str):
     """Every generic op, not only the obviously destructive ones.
 

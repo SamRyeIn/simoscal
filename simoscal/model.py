@@ -348,6 +348,16 @@ class Axis:
     embedded: Optional[EmbeddedData] = None
     scaling: Optional[ScalingEquation] = None
     labels: tuple[str, ...] = ()
+    #: The uniqueid of the standalone XDFTABLE this axis is embedded from
+    #: (``<embedinfo linkobjid="…">``), or ``None``.
+    #:
+    #: A breakpoint axis is stored once and referenced by every table that uses
+    #: it, and only that standalone table carries the axis's own A2L symbol —
+    #: ``ldp_n_ip_cha_max`` rather than "the x axis of IP_PQ_CHA_MAX". Without
+    #: the link there is no way to say *what quantity* an axis measures, which
+    #: is exactly what an editor has to label it with. Read-only metadata: it
+    #: names a sibling table, it does not affect decoding.
+    link_uniqueid: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.axis_id not in ("x", "y", "z"):

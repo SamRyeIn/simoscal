@@ -364,6 +364,17 @@ def _parse_axis(ax: ET.Element, defaults: Defaults, uniqueid: int) -> Axis:
         for lbl in ax.findall("LABEL")
     )
 
+    # The standalone XDFTABLE this axis is embedded from, when the file says so.
+    # Malformed or absent -> None: a link that cannot be parsed costs a label,
+    # never a decode, so it is not worth failing a whole XDF over.
+    embedinfo = ax.find("embedinfo")
+    link_uniqueid = None
+    if embedinfo is not None and embedinfo.get("linkobjid"):
+        try:
+            link_uniqueid = _parse_int(embedinfo.get("linkobjid"))
+        except ValueError:
+            link_uniqueid = None
+
     return Axis(
         axis_id=axis_id,
         units=ax.findtext("units"),
@@ -372,6 +383,7 @@ def _parse_axis(ax: ET.Element, defaults: Defaults, uniqueid: int) -> Axis:
         embedded=embedded,
         scaling=scaling,
         labels=labels,
+        link_uniqueid=link_uniqueid,
     )
 
 

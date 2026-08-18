@@ -7,11 +7,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -21,6 +17,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -58,7 +55,7 @@ fun BuildScreen(viewModel: QuickEditViewModel) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text("Build", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        ScreenHeader(kicker = "Verify, then you flash it", title = "Build")
 
         OutlinedTextField(
             value = revision,
@@ -68,7 +65,7 @@ fun BuildScreen(viewModel: QuickEditViewModel) {
             modifier = Modifier.fillMaxWidth(),
         )
 
-        Button(
+        PromoButton(
             onClick = { viewModel.build(revision) },
             enabled = state.canBuild && revision.isNotBlank(),
             modifier = Modifier.fillMaxWidth(),
@@ -78,7 +75,7 @@ fun BuildScreen(viewModel: QuickEditViewModel) {
 
         when (val build = state.build) {
             is BuildState.NotBuilt -> {
-                Text("Nothing built yet.", style = MaterialTheme.typography.bodyMedium)
+                Caption("Nothing built yet.")
             }
             is BuildState.Running -> {
                 Row {
@@ -96,7 +93,7 @@ fun BuildScreen(viewModel: QuickEditViewModel) {
                 // the declared paths, and losing the whole screen would take the
                 // build report down with it.
                 var shareError by remember { mutableStateOf<String?>(null) }
-                Button(
+                PromoButton(
                     onClick = {
                         shareError = runCatching {
                             context.startActivity(ShareBin.intentFor(context, build))
@@ -112,7 +109,7 @@ fun BuildScreen(viewModel: QuickEditViewModel) {
             }
         }
 
-        Divider()
+        HairRule()
         Text(
             stringResource(R.string.build_disclaimer),
             style = MaterialTheme.typography.bodySmall,
@@ -123,43 +120,38 @@ fun BuildScreen(viewModel: QuickEditViewModel) {
 
 @Composable
 private fun FailedCard(build: BuildState.Failed) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                "Build failed",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onErrorContainer,
-            )
-            Text(build.summary, color = MaterialTheme.colorScheme.onErrorContainer)
-            build.reasons.forEach { reason ->
-                Text("• $reason", color = MaterialTheme.colorScheme.onErrorContainer)
-            }
+    Panel(tone = PanelTone.Danger) {
+        PanelTitle("Build failed", tone = PanelTone.Danger)
+        Text(build.summary)
+        build.reasons.forEach { reason ->
+            Text("• $reason")
         }
     }
 }
 
 @Composable
 private fun VerifiedCard(build: BuildState.Verified, advanced: Boolean) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Verified", style = MaterialTheme.typography.titleMedium)
-            Text("Revision ${build.revision}")
-            Text(build.binName)
+    Panel(tone = PanelTone.Good, spacing = 8.dp) {
+        PanelTitle("Verified", tone = PanelTone.Good)
+        Text("Revision ${build.revision}")
+        // The built file's name, monospace: it is the string that gets picked out
+        // of a share sheet later, and one wrong revision digit is the whole point
+        // of naming it at all.
+        Identifier(build.binName)
 
-            Divider()
-            Text("Changed tables", style = MaterialTheme.typography.titleSmall)
-            if (build.changedTables.isEmpty()) {
-                Text("No tables were changed.", style = MaterialTheme.typography.bodyMedium)
-            } else {
-                build.changedTables.forEach { label ->
-                    Text("• $label", style = MaterialTheme.typography.bodyMedium)
-                }
+        HairRule(color = PromoPalette.Good.copy(alpha = 0.3f))
+        Kicker("Changed tables", color = PromoPalette.TextFaint)
+        if (build.changedTables.isEmpty()) {
+            Caption("No tables were changed.")
+        } else {
+            build.changedTables.forEach { label ->
+                Text("• $label", style = MaterialTheme.typography.bodyMedium)
             }
-
-            Divider()
-            Text("Gates", style = MaterialTheme.typography.titleSmall)
-            build.gates.forEach { gate -> GateRow(gate, advanced) }
         }
+
+        HairRule(color = PromoPalette.Good.copy(alpha = 0.3f))
+        Kicker("Gates", color = PromoPalette.TextFaint)
+        build.gates.forEach { gate -> GateRow(gate, advanced) }
     }
 }
 
@@ -173,18 +165,24 @@ private fun VerifiedCard(build: BuildState.Verified, advanced: Boolean) {
  */
 @Composable
 private fun GateRow(gate: GateResult, advanced: Boolean) {
+    // Straight off the palette's own vocabulary: `good` is a check that passed,
+    // `danger` is a refusal, and a gate that never ran is faint — it is not a
+    // verdict at all and must not be coloured like one.
     val (label, color) = when {
-        !gate.ran -> "DID NOT RUN" to MaterialTheme.colorScheme.onSurfaceVariant
-        gate.passed -> "PASSED" to MaterialTheme.colorScheme.primary
-        else -> "FAILED" to MaterialTheme.colorScheme.error
+        !gate.ran -> "DID NOT RUN" to PromoPalette.TextFaint
+        gate.passed -> "PASSED" to PromoPalette.Good
+        else -> "FAILED" to PromoPalette.Danger
     }
     Column(modifier = Modifier.padding(vertical = 4.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(label, color = color, fontWeight = FontWeight.Bold)
-            Text(gate.name)
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Kicker(label, color = color)
+            Text(gate.name, style = MaterialTheme.typography.bodyMedium)
         }
         if (advanced && gate.detail.isNotBlank()) {
-            Text(gate.detail, style = MaterialTheme.typography.bodySmall)
+            Caption(gate.detail)
         }
     }
 }

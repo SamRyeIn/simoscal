@@ -9,13 +9,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -25,8 +21,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -36,6 +32,7 @@ import com.simoscal.quickedit.Mode
 import com.simoscal.quickedit.display
 import com.simoscal.quickedit.QuickEditViewModel
 import com.simoscal.quickedit.SLOT_IDS
+import com.simoscal.quickedit.withFlippedSign
 import kotlin.math.abs
 
 /**
@@ -75,7 +72,7 @@ fun BoostScreen(viewModel: QuickEditViewModel) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text("Boost", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        ScreenHeader(kicker = "Five maps, one switch", title = "Boost")
 
         SessionProvenanceCard(binName = state.bin?.displayName, shortHash = state.bin?.shortHash, advanced = advanced)
 
@@ -120,21 +117,22 @@ fun BoostScreen(viewModel: QuickEditViewModel) {
         // the destination is never ambiguous: whatever is copied lands on the
         // slot the chips say is active.
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(onClick = { flatCapOpen = true }) { Text("Flat cap") }
-            OutlinedButton(onClick = viewModel::onBoostSmooth) { Text("Smooth") }
-            OutlinedButton(onClick = viewModel::onBoostDiscard, enabled = boost.dirty) { Text("Discard") }
+            PromoOutlinedButton(onClick = { flatCapOpen = true }) { Text("Flat cap") }
+            PromoOutlinedButton(onClick = viewModel::onBoostSmooth) { Text("Smooth") }
+            PromoOutlinedButton(onClick = viewModel::onBoostDiscard, enabled = boost.dirty) { Text("Discard") }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            Text(
+            Kicker(
                 "Copy from",
-                style = MaterialTheme.typography.labelLarge,
-                modifier = Modifier.padding(top = 8.dp),
+                color = PromoPalette.TextFaint,
+                modifier = Modifier.padding(top = 14.dp),
             )
             SLOT_IDS.filter { it != boost.activeSlot }.forEach { slot ->
                 AssistChip(
                     onClick = { viewModel.onBoostCopyFrom(slot) },
-                    label = { Text("$slot") },
+                    label = { Text("$slot", color = slotColor(slot)) },
+                    colors = promoAssistChipColors(),
                 )
             }
         }
@@ -147,7 +145,7 @@ fun BoostScreen(viewModel: QuickEditViewModel) {
             modifier = Modifier.fillMaxWidth(),
         )
 
-        Button(
+        PromoButton(
             onClick = {
                 viewModel.applyBoostDraft(
                     intent.ifBlank { "cap map slot ${boost.activeSlot} from the Quick Edit boost editor" }
@@ -170,33 +168,32 @@ fun BoostScreen(viewModel: QuickEditViewModel) {
         // re-read this editor from the engine on success, which would replace the
         // draft with committed values and drop the proposal without asking.
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
+            PromoOutlinedButton(
                 onClick = viewModel::undo,
                 enabled = state.canUndo && state.canMutateSession,
             ) { Text("Undo") }
-            OutlinedButton(
+            PromoOutlinedButton(
                 onClick = viewModel::redo,
                 enabled = state.canRedo && state.canMutateSession,
             ) { Text("Redo") }
         }
 
         if (advanced) {
-            OutlinedButton(
+            PromoOutlinedButton(
                 onClick = { axisOpen = true },
                 enabled = state.canMutateSession,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Edit shared rpm breakpoints")
             }
-            Text(
+            Caption(
                 "One rpm axis serves all five slots — moving it re-interprets every " +
-                    "slot curve at once, which is why it lives behind Advanced.",
-                style = MaterialTheme.typography.bodySmall,
+                    "slot curve at once, which is why it lives behind Advanced."
             )
         }
 
         state.dirtyDraftRefusal?.let { reason ->
-            Text(reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            Caption(reason, color = PromoPalette.Danger)
         }
     }
 
@@ -250,16 +247,26 @@ private fun SlotChips(activeSlot: Int, dirty: Boolean, onSelect: (Int) -> Unit) 
                 FilterChip(
                     selected = slot == activeSlot,
                     onClick = { onSelect(slot) },
-                    label = { Text("Slot $slot") },
+                    // The slot's own curve colour on its chip, so the chips and
+                    // the canvas name the same five things the same way — the
+                    // chip is how you pick a curve, and matching them is what
+                    // makes "which one am I about to edit" a glance rather than
+                    // a count.
+                    label = {
+                        Text(
+                            "Slot $slot",
+                            color = if (slot == activeSlot) slotColor(slot) else PromoPalette.TextDim,
+                        )
+                    },
+                    colors = promoFilterChipColors(),
                 )
             }
         }
         if (dirty) {
-            Text(
+            Caption(
                 "Slot $activeSlot has an unapplied change. Apply or discard it before " +
                     "switching slots.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
+                color = PromoPalette.Danger,
             )
         }
     }
@@ -271,26 +278,21 @@ private fun SlotChips(activeSlot: Int, dirty: Boolean, onSelect: (Int) -> Unit) 
  */
 @Composable
 private fun CeilingLegend(refusalPsi: Double, cappedCount: Int) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                "Solid line: the base `IP_PUT_SP` — Pressure up throttle setpoint " +
-                    "full-load ceiling. The ECU targets min(base, slot), so a slot " +
-                    "above it changes nothing at that rpm.",
-                style = MaterialTheme.typography.bodySmall,
+    Panel(padding = 12.dp) {
+        Caption(
+            "Solid line: the base `IP_PUT_SP` — Pressure up throttle setpoint " +
+                "full-load ceiling. The ECU targets min(base, slot), so a slot " +
+                "above it changes nothing at that rpm."
+        )
+        Caption(
+            "Dashed line: ${refusalPsi.display("%.2f")} psi. The engine refuses any cap that reaches it."
+        )
+        if (cappedCount > 0) {
+            Caption(
+                "$cappedCount breakpoint${if (cappedCount == 1) "" else "s"} of this " +
+                    "draft sit above the base ceiling and will have no effect there.",
+                color = PromoPalette.Danger,
             )
-            Text(
-                "Dashed line: ${refusalPsi.display("%.2f")} psi. The engine refuses any cap that reaches it.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            if (cappedCount > 0) {
-                Text(
-                    "$cappedCount breakpoint${if (cappedCount == 1) "" else "s"} of this " +
-                        "draft sit above the base ceiling and will have no effect there.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
         }
     }
 }
@@ -309,41 +311,43 @@ private fun EncodedReceiptCard(
     encoded: List<Double>,
     floored: Boolean,
 ) {
-    Card {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Slot $slot applied", style = MaterialTheme.typography.titleSmall)
-            val worst = requested.indices
-                .maxByOrNull { abs(requested[it] - encoded.getOrElse(it) { requested[it] }) }
-            if (floored && worst != null) {
-                Text(
-                    "Floored: asked ${requested[worst].display("%.2f")} psi, stored " +
-                        "${encoded.getOrElse(worst) { requested[worst] }.display("%.2f")} psi at the widest point.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            } else {
-                Text("Stored exactly as requested.", style = MaterialTheme.typography.bodyMedium)
-            }
+    // Accent: this panel is the thing that just changed, which is exactly what
+    // the palette reserves that colour for.
+    Panel(tone = PanelTone.Accent) {
+        PanelTitle("Slot $slot applied", tone = PanelTone.Accent)
+        val worst = requested.indices
+            .maxByOrNull { abs(requested[it] - encoded.getOrElse(it) { requested[it] }) }
+        if (floored && worst != null) {
             Text(
-                encoded.joinToString(" · ") { it.display("%.1f") },
-                style = MaterialTheme.typography.bodySmall,
+                "Floored: asked ${requested[worst].display("%.2f")} psi, stored " +
+                    "${encoded.getOrElse(worst) { requested[worst] }.display("%.2f")} psi at the widest point.",
+                style = MaterialTheme.typography.bodyMedium,
             )
+        } else {
+            Text("Stored exactly as requested.", style = MaterialTheme.typography.bodyMedium)
         }
+        // What actually landed in the bin, in a monospace row: twelve figures
+        // that should be compared against each other, which a proportional face
+        // makes needlessly hard.
+        Text(
+            encoded.joinToString(" · ") { it.display("%.1f") },
+            style = PromoType.figureSmall,
+            color = PromoPalette.TextDim,
+        )
     }
 }
 
+/**
+ * A titled block of prose. `emphasise` marks the ones that report a refusal —
+ * "Not applied" — and those take the danger tone; everything else is ordinary
+ * context and stays on the neutral hairline panel.
+ */
 @Composable
 internal fun NoticeCard(title: String, body: String, emphasise: Boolean = false) {
-    Card(
-        colors = if (emphasise) {
-            CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
-        } else {
-            CardDefaults.cardColors()
-        },
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(title, style = MaterialTheme.typography.titleSmall)
-            Text(body, style = MaterialTheme.typography.bodyMedium)
-        }
+    val tone = if (emphasise) PanelTone.Danger else PanelTone.Neutral
+    Panel(tone = tone) {
+        PanelTitle(title, tone = tone)
+        Text(body, style = MaterialTheme.typography.bodyMedium)
     }
 }
 
@@ -366,15 +370,35 @@ internal fun NumericEntryDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        // Explicit panel fill rather than Material's tonal-elevation surface: the
+        // scheme's `surfaceTint` is the accent, so an elevated dialog would lift
+        // the app's near-black ground toward orange for no reason anyone chose.
+        containerColor = PromoPalette.BgAlt,
         title = { Text(title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = text,
+                        onValueChange = { text = it },
+                        singleLine = true,
+                        // Decimal, not Number: `Number` asks the IME for digits only,
+                        // and every value this dialog edits is a Double. A cell holding
+                        // 3.100097 or an Offset of 0.05 cannot be typed on a keypad
+                        // with no decimal point, and the Set button stays disabled
+                        // because `toDoubleOrNull` never sees a parseable string.
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        textStyle = PromoType.identifier,
+                        modifier = Modifier.weight(1f),
+                    )
+                    // The sign, which no numeric IME will give us — see
+                    // `withFlippedSign`. Not a keyboard workaround so much as the
+                    // only reliable route to a negative number on this device.
+                    PromoOutlinedButton(onClick = { text = text.withFlippedSign() }) { Text("±") }
+                }
                 Text(supporting, style = MaterialTheme.typography.bodySmall)
             }
         },
@@ -409,6 +433,7 @@ private fun RpmAxisDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        containerColor = PromoPalette.BgAlt,
         title = { Text("Shared slot rpm axis") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -416,6 +441,7 @@ private fun RpmAxisDialog(
                     value = text,
                     onValueChange = { text = it },
                     label = { Text("${current.size} breakpoints, comma separated") },
+                    textStyle = PromoType.identifier,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(

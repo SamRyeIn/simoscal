@@ -13,7 +13,7 @@ package com.simoscal.quickedit
 enum class Mode { SIMPLE, ADVANCED }
 
 /** Workspace destinations, available only once a session is open. */
-enum class Destination { TABLES, BOOST, BUILD }
+enum class Destination { TABLES, BOOST, SLOTS, BUILD }
 
 sealed interface PreflightState {
     /** Inputs are not both chosen yet, or nothing has been checked. */
@@ -105,6 +105,7 @@ data class QuickEditUiState(
     val build: BuildState = BuildState.NotBuilt,
     val boost: BoostUiState = BoostUiState(),
     val tables: TablesUiState = TablesUiState(),
+    val slots: SlotsUiState = SlotsUiState(),
     val busy: Boolean = false,
     val error: UserFacingError? = null,
 ) {
@@ -136,8 +137,9 @@ data class QuickEditUiState(
     /** The workspace is reachable only with a live session. */
     fun destinationEnabled(destination: Destination): Boolean = when (destination) {
         Destination.TABLES, Destination.BUILD -> sessionOpen
-        // Boost needs the switch-patch space, which only exists if its XDF was imported.
-        Destination.BOOST -> sessionOpen && switchPatchXdf != null
+        // Boost and Slots both live in the switch-patch space, which only exists
+        // if its XDF was imported. Same gate, same reason.
+        Destination.BOOST, Destination.SLOTS -> sessionOpen && switchPatchXdf != null
     }
 
     val canBuild: Boolean

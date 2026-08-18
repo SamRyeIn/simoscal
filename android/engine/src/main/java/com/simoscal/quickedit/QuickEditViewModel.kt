@@ -299,6 +299,11 @@ class QuickEditViewModel(application: Application) : AndroidViewModel(applicatio
         val current = _state.value
         if (current.boost.model != null) loadBoostCurve()
         current.tables.detail?.summary?.let { openTable(it) }
+        // The switchboard too. It has no Apply step to poison, but it is the one
+        // screen whose entire job is to say which slots have a feature on — and
+        // an undone toggle still reading "on" is that screen being wrong about
+        // the only thing it claims to know.
+        if (current.slots.loaded) loadSlotSettings()
     }
 
     // ------------------------------------------------------------------ build
@@ -502,6 +507,89 @@ class QuickEditViewModel(application: Application) : AndroidViewModel(applicatio
                 }
             }
             if (outcome is BridgeOutcome.Ok) loadBoostCurve()
+            persistRecovery()
+        }
+    }
+
+    // ------------------------------------------------------------------ slots
+
+    fun onSlotSettingExpanded(key: String?) =
+        _state.update { it.copy(slots = it.slots.expanding(key)) }
+
+    fun dismissSlotNotice() = _state.update { it.copy(slots = it.slots.copy(notice = null)) }
+
+    /**
+     * Read every per-slot scalar against every slot, in one call.
+     *
+     * As with the boost model, a `TUNE_ERROR` means this session has no
+     * switch-patch space — a state of the session rather than a failed call — so
+     * the screen explains it instead of raising a snackbar nobody can act on.
+     */
+    fun loadSlotSettings() {
+        val sessionId = _state.value.sessionId ?: return
+        viewModelScope.launch {
+            _state.update { it.copy(slots = it.slots.loadingSettings()) }
+            val outcome = bridge.call("slot_settings", params { put("session_id", sessionId) })
+            _state.update { state ->
+                when (outcome) {
+                    is BridgeOutcome.Ok -> state.copy(
+                        slots = state.slots.withSettings(outcome.result.slotSettings()),
+                    )
+                    is BridgeOutcome.Failed -> state.copy(
+                        slots = state.slots.copy(loading = false, notice = outcome.message),
+                        error = if (outcome.code == "TUNE_ERROR") null else outcome.toUserFacing(),
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Turn one flag on or off, on one slot.
+     *
+     * Sent straight through rather than staged. A flag has two states and no
+     * shape to review, so an Apply step would gate the write on a review of
+     * nothing; each toggle is its own journal entry and its own undo point,
+     * which is the granularity a person actually wants to step back through.
+     *
+     * The whole switchboard comes back in the reply, so the grid redraws from
+     * what the engine now holds instead of from what the app assumed — a refused
+     * write must never have looked, even briefly, like it worked.
+     */
+    fun setSlotFlag(key: String, slot: Int, on: Boolean, intent: String = "") {
+        val current = _state.value
+        val sessionId = current.sessionId ?: return
+        if (!current.slots.canToggle(key)) return
+
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null, slots = it.slots.sending(key)) }
+            val outcome = bridge.call(
+                op = "slot_flag",
+                params = params {
+                    put("session_id", sessionId)
+                    put("key", key)
+                    put("slots", listOf(slot.toDouble()).toJsonArray())
+                    put("on", on)
+                    put("intent", intent)
+                },
+            )
+            _state.update { state ->
+                when (outcome) {
+                    is BridgeOutcome.Ok -> state.copy(
+                        busy = false,
+                        canUndo = outcome.result.optBoolean("can_undo", state.canUndo),
+                        canRedo = outcome.result.optBoolean("can_redo", state.canRedo),
+                        slots = state.slots.withSettings(outcome.result.slotSettings()),
+                    ).invalidatingBuild()
+                    // A refusal names a rule the person can read — it belongs on
+                    // the row it came from, not in a snackbar that scrolls away.
+                    is BridgeOutcome.Failed -> state.copy(
+                        busy = false,
+                        slots = state.slots.refused(key, outcome.message),
+                        error = if (outcome.code == "EDIT_REJECTED") null else outcome.toUserFacing(),
+                    )
+                }
+            }
             persistRecovery()
         }
     }

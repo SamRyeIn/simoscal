@@ -3,7 +3,18 @@
   A bare Material3 parent: the app's real colours come from the Compose theme, so
   this only needs to keep the system from drawing an ActionBar over the Compose
   content while the activity starts.
+
+  It does carry the promo ground, though. `windowBackground` is what fills the
+  screen between the launcher tap and the first composed frame, and on a build
+  that starts a Python runtime that gap is long enough to see: on the stock light
+  parent it was a white flash before a near-black app. The dark parent also makes
+  the system bars' own icons light, which is what they must be over `promo_bg`.
 -->
 <resources>
-    <style name="Theme.QuickEdit" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.QuickEdit" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/promo_bg</item>
+        <item name="android:colorBackground">@color/promo_bg</item>
+        <item name="android:statusBarColor">@color/promo_bg_alt</item>
+        <item name="android:navigationBarColor">@color/promo_bg_alt</item>
+    </style>
 </resources>

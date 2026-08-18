@@ -137,6 +137,41 @@ class TablesUiStateTest {
     }
 
     @Test
+    fun `a bridge payload carries the axis labels and the table signature through`() {
+        val payload = JSONObject(
+            """
+            {
+              "space": "base", "name": "pressure_quotient_max", "symbol": "IP_PQ_CHA_MAX",
+              "title": "Maximum allowed pressure quotient at turbo charger compressor",
+              "description": "Maximum allowed pressure quotient at turbo charger compressor",
+              "uniqueid_hex": "0x1ab9a", "units": "-", "shape": [1, 2], "ndim": 1,
+              "reversible": true, "is_axis": false, "categories": [], "owner": "",
+              "units_description": "dimensionless",
+              "signature": "dimensionless vs. Engine speed [rpm] and Compressor-inlet air temperature [°C]",
+              "values": [3.1, 3.1],
+              "x_axis": {
+                "units": "rpm", "values": [1000.0, 2000.0],
+                "symbol": "ldp_n_ip_cha_max", "label": "Engine speed [rpm]"
+              },
+              "y_axis": null
+            }
+            """.trimIndent()
+        )
+        val parsed = TableDetail.fromJson(payload)
+        assertEquals("Engine speed [rpm]", parsed.xAxis!!.label)
+        assertEquals("ldp_n_ip_cha_max", parsed.xAxis!!.symbol)
+        assertTrue(parsed.summary.signature.startsWith("dimensionless vs. Engine speed [rpm]"))
+        assertEquals("dimensionless", parsed.summary.unitsText)
+    }
+
+    @Test
+    fun `a bare XDF dash is spelled out rather than shown as a missing unit`() {
+        // An older bridge sends no units_description; the fallback still has to
+        // put words on screen, because "-" reads as "nobody recorded this".
+        assertEquals("dimensionless", summary().unitsText)
+    }
+
+    @Test
     fun `discarding returns the draft to what the engine holds`() {
         val state = open().withTypedCell(CellRef(0, 0), 99.0).discardingDraft()
         assertFalse(state.dirty)

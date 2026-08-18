@@ -1,11 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-      The name the launcher, the app switcher, and the app's own top bar all
-      show. "Quick Edit" survives as the internal name of the flow (and of the
-      package, the classes, and the plan's V7/V8 units); it is only the
-      user-facing product name that is simoscal, matching the library and the
-      promo material.
+      The name the launcher and the app switcher show. "Quick Edit" survives as
+      the internal name of the flow (and of the package, the classes, and the
+      plan's V7/V8 units); it is only the user-facing product name that is
+      simoscal, matching the library and the promo material.
+
+      In-app the same name appears as the two-tone `Wordmark` composable — a
+      logotype, drawn rather than set, exactly as the promo video draws it. That
+      is the one place the string is deliberately not reused: a mark whose halves
+      are separately coloured cannot be assembled from a translatable string, and
+      pretending otherwise would only mean the mark broke the first time this
+      value changed. If the product is ever renamed, both must move.
     -->
     <string name="app_name">simoscal</string>
 

@@ -10,6 +10,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -18,6 +19,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
@@ -25,6 +27,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -32,6 +35,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavDestination.Companion.hierarchy
@@ -104,45 +109,71 @@ fun QuickEditApp(viewModel: QuickEditViewModel) {
     }
 
     Scaffold(
+        containerColor = PromoPalette.Bg,
         topBar = {
-            TopAppBar(
-                title = { Text(stringResource(R.string.app_name)) },
-                actions = {
-                    ModeToggle(mode = state.mode, onModeChanged = viewModel::onModeChanged)
-                },
-            )
+            // The bar and the hairline under it are one unit: the video separates
+            // its chrome from its content with a rule and never with a shadow, and
+            // Material's own elevation overlay would tint the bar away from the
+            // app's ground the moment content scrolled beneath it.
+            Column {
+                TopAppBar(
+                    title = { Wordmark(fontSize = 20.sp) },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = PromoPalette.Bg,
+                        titleContentColor = PromoPalette.Text,
+                        actionIconContentColor = PromoPalette.TextDim,
+                    ),
+                    actions = {
+                        ModeToggle(mode = state.mode, onModeChanged = viewModel::onModeChanged)
+                    },
+                )
+                HairRule()
+            }
         },
         bottomBar = {
-            // The bar itself is the gate that keeps Tables/Boost/Build reachable
+            // The bar itself is the gate that keeps the editors reachable
             // only from a live session — it does not exist otherwise, rather than
             // existing-but-disabled, so there is nothing to tap toward at all.
             if (state.sessionOpen) {
                 val backStackEntry by navController.currentBackStackEntryAsState()
                 val currentRoute = backStackEntry?.destination?.hierarchy?.firstOrNull()?.route
-                NavigationBar {
-                    destinationItems().forEach { item ->
-                        NavigationBarItem(
-                            selected = currentRoute == item.route,
-                            enabled = state.destinationEnabled(item.destination),
-                            onClick = {
-                                navController.navigate(item.route) {
-                                    popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = true
+                Column {
+                    HairRule()
+                    NavigationBar(containerColor = PromoPalette.BgAlt) {
+                        destinationItems().forEach { item ->
+                            NavigationBarItem(
+                                selected = currentRoute == item.route,
+                                enabled = state.destinationEnabled(item.destination),
+                                onClick = {
+                                    navController.navigate(item.route) {
+                                        popUpTo(navController.graph.findStartDestination().id) {
+                                            saveState = true
+                                        }
+                                        launchSingleTop = true
+                                        restoreState = true
                                     }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
-                            },
-                            icon = { Icon(item.icon, contentDescription = item.label) },
-                            label = { Text(item.label) },
-                        )
+                                },
+                                icon = { Icon(item.icon, contentDescription = item.label) },
+                                label = { Text(item.label) },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = PromoPalette.Accent,
+                                    selectedTextColor = PromoPalette.Accent,
+                                    indicatorColor = PromoPalette.AccentContainer,
+                                    unselectedIconColor = PromoPalette.TextFaint,
+                                    unselectedTextColor = PromoPalette.TextFaint,
+                                ),
+                            )
+                        }
                     }
                 }
             }
         },
         snackbarHost = {
             SnackbarHost(snackbarHostState) { data ->
-                Snackbar { Text(data.visuals.message) }
+                Snackbar(
+                    containerColor = PromoPalette.BgAlt,
+                    contentColor = PromoPalette.Text,
+                ) { Text(data.visuals.message) }
             }
         },
     ) { padding ->
@@ -150,12 +181,17 @@ fun QuickEditApp(viewModel: QuickEditViewModel) {
             // Busy always shows, on every screen, so a person can never mistake a
             // slow bridge call for the app doing nothing.
             if (state.busy) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                LinearProgressIndicator(
+                    color = PromoPalette.Accent,
+                    trackColor = PromoPalette.Rule,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
             NavHost(navController = navController, startDestination = "import") {
                 composable("import") { ImportScreen(viewModel = viewModel, recoverable = recoverable) }
                 composable("tables") { TablesScreen(viewModel = viewModel) }
                 composable("boost") { BoostScreen(viewModel = viewModel) }
+                composable("slots") { SlotsScreen(viewModel = viewModel) }
                 composable("build") { BuildScreen(viewModel = viewModel) }
             }
         }
@@ -200,6 +236,7 @@ private data class DestinationItem(
 private fun destinationItems(): List<DestinationItem> = listOf(
     DestinationItem(Destination.TABLES, "tables", "Tables", Icons.Filled.List),
     DestinationItem(Destination.BOOST, "boost", "Boost", Icons.Filled.KeyboardArrowUp),
+    DestinationItem(Destination.SLOTS, "slots", "Slots", Icons.Filled.Settings),
     DestinationItem(Destination.BUILD, "build", "Build", Icons.Filled.Build),
 )
 
@@ -218,6 +255,8 @@ private fun ModeToggle(mode: Mode, onModeChanged: (Mode) -> Unit) {
         selected = mode == Mode.ADVANCED,
         onClick = { onModeChanged(if (mode == Mode.ADVANCED) Mode.SIMPLE else Mode.ADVANCED) },
         label = { Text(if (mode == Mode.ADVANCED) "Advanced" else "Simple") },
+        colors = promoFilterChipColors(),
+        modifier = Modifier.padding(end = 12.dp),
     )
 }
 
@@ -241,6 +280,11 @@ private fun BlockedDialog(
     AlertDialog(
         onDismissRequest = {},
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+        // The one dead end in the app, painted as one: the video reserves
+        // `danger` for limits and refusals, and this dialog is the app's.
+        containerColor = PromoPalette.DangerContainer,
+        titleContentColor = PromoPalette.Danger,
+        textContentColor = PromoPalette.Text,
         title = { Text(stringResource(R.string.preflight_blocked_title)) },
         text = {
             Column {

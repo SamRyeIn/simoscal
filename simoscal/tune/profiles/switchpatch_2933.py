@@ -13,6 +13,8 @@ Bindings were verified against both switch-patch XDFs on 2026-07-11; see
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 from ..profile import TAG_AXIS, TAG_NO_SYMBOL, Profile, TableSpec
 
 #: Slot count the 29.33 patch provides.
@@ -20,8 +22,6 @@ SLOTS = (1, 2, 3, 4, 5)
 
 # Per-slot uniqueids, verified on the as-patched bin.
 _PUT_GRID_UIDS = {1: "0x7d41a", 2: "0x7d4da", 3: "0x7d59a", 4: "0x7d65a", 5: "0x7d71a"}
-_ENABLE_SL_TC_UIDS = {1: "0x7d83f", 2: "0x7d840", 3: "0x7d841", 4: "0x7d842", 5: "0x7d843"}
-_DISABLE_OEM_TC_UIDS = {1: "0x7d83a", 2: "0x7d83b", 3: "0x7d83c", 4: "0x7d83d", 5: "0x7d83e"}
 
 #: Geometry of a slot's PUT setpoint grid: 8 uncharacterized Y rows × the 12
 #: breakpoints of the shared RPM axis. The lineage tiles one curve across all
@@ -47,6 +47,205 @@ _OWNER_AXIS_HEADER = (
     "writes it"
 )
 _OWNER_TRACTION = "tune.switchpatch.traction_control()"
+_OWNER_SLOT_FLAG = "tune.switchpatch.set_slot_flag() (bridge op `slot_flag`)"
+
+
+# --------------------------------------------------------------------------- #
+# The per-slot scalars — the switchboard
+# --------------------------------------------------------------------------- #
+# Sixteen 1×1 tables differ from slot to slot. They are what map switching is
+# *for* on this patch: one shared tune of every feature's internals, and a
+# per-slot decision about which features are on.
+#
+# They are described here rather than as sixteen hand-written specs because the
+# app renders them as a table — five slots across, one setting down — and that
+# grid needs the same facts the profile needs. One registry, both consumers, so
+# a setting cannot be writable in the app and unmapped in the profile.
+
+#: A 0/1 switch. The only kind this library writes.
+KIND_FLAG = "flag"
+#: A scalar with a unit and a meaningful range (rpm, kph, a fraction).
+KIND_NUMBER = "number"
+#: A packed value whose individual bits are not documented anywhere we have.
+KIND_OPAQUE = "opaque"
+
+
+@dataclass(frozen=True)
+class SlotSetting:
+    """One per-slot scalar: what it is, and whether we are willing to write it.
+
+    ``readonly`` is the important field. Empty means writable; anything else is
+    the *reason* it is not, carried all the way to the screen so a person sees
+    why a row will not toggle instead of finding it inert. The patch exposes
+    plenty we can read and describe but have no business writing yet, and
+    "shown, explained, and refused" is the honest presentation of that.
+
+    ``caution`` is different: the setting *is* writable, and this is what it
+    does to a moving car. It is not a confirmation gate, just the sentence the
+    person should have read first.
+    """
+
+    key: str                 # logical suffix — slot{N}_{key}
+    title: str               # the XDF title, verbatim
+    description: str         # what it does, in English
+    kind: str
+    uids: dict               # slot -> hex uniqueid string
+    units: str = ""
+    group: str = ""          # how the switchboard clusters rows
+    caution: str = ""
+    readonly: str = ""
+
+    @property
+    def writable(self) -> bool:
+        return not self.readonly
+
+
+_UNVERIFIED_NUMBER = (
+    "reads 0 in every slot of the as-patched bin, so the meaning of a non-zero "
+    "value — and whether 0 means 'leave the OEM limiter alone' — is inferred, "
+    "not established. Writing an override nobody has characterised is how you "
+    "get a rev limit you did not intend, so this library reads it and stops."
+)
+
+SLOT_SETTINGS = (
+    # ---- traction ---------------------------------------------------------- #
+    SlotSetting(
+        key="enable_sl_tc", title="Enable SL TC",
+        description="Enable the switch patch's own slip-based traction control "
+                    "(a PID controller intervening through ignition retard and "
+                    "the wastegate)",
+        kind=KIND_FLAG, group="Traction",
+        uids={1: "0x7d83f", 2: "0x7d840", 3: "0x7d841", 4: "0x7d842", 5: "0x7d843"},
+        caution="Its PID weights and slip targets are global, shared by every "
+                "slot, and ship at defaults nobody here has reviewed.",
+    ),
+    SlotSetting(
+        key="disable_oem_tc", title="Disable OEM TC",
+        description="Disable the factory ECU-side traction-control torque "
+                    "intervention",
+        kind=KIND_FLAG, group="Traction",
+        uids={1: "0x7d83a", 2: "0x7d83b", 3: "0x7d83c", 4: "0x7d83d", 5: "0x7d83e"},
+        caution="Turns off a driver-safety system on a road car. Pair it with "
+                "Enable SL TC — the two intervene differently and fighting each "
+                "other is worse than either alone. The ABS/ESC module's "
+                "brake-based intervention is a separate controller this cannot "
+                "touch.",
+    ),
+    # ---- features ---------------------------------------------------------- #
+    SlotSetting(
+        key="enable_lc", title="Enable LC",
+        description="Enable launch control (configured globally in the LC "
+                    "category: target rpm, timing during pull-up)",
+        kind=KIND_FLAG, group="Features",
+        uids={1: "0x7d835", 2: "0x7d836", 3: "0x7d837", 4: "0x7d838", 5: "0x7d839"},
+        caution="Launch control on a DSG loads the clutches and driveline hard.",
+    ),
+    SlotSetting(
+        key="enable_nls", title="Enable NLS",
+        description="Enable no-lift shift",
+        kind=KIND_FLAG, group="Features",
+        uids={1: "0x7d830", 2: "0x7d831", 3: "0x7d832", 4: "0x7d833", 5: "0x7d834"},
+        caution="Written for manual gearboxes; what it does on a DSG is not "
+                "established here.",
+    ),
+    SlotSetting(
+        key="enable_ral", title="Enable RAL",
+        description="Enable the patch's RAL feature — the expansion is not "
+                    "recorded in either switch-patch XDF or the knowledge base "
+                    "(commonly rolling anti-lag, unverified)",
+        kind=KIND_FLAG, group="Features",
+        uids={1: "0x7d81c", 2: "0x7d81d", 3: "0x7d81e", 4: "0x7d81f", 5: "0x7d820"},
+        caution="Turning on a feature whose name we cannot expand is a decision "
+                "to find out on the road.",
+    ),
+    SlotSetting(
+        key="pops_enable", title="Pops enable",
+        description="Enable pops and bangs / impulse combustion on overrun",
+        kind=KIND_FLAG, group="Features",
+        uids={1: "0x7cb54", 2: "0x7cb55", 3: "0x7cb56", 4: "0x7cb57", 5: "0x7cb58"},
+        caution="Puts combustion into the exhaust; hard on the turbine and the "
+                "catalyst.",
+    ),
+    # ---- flex fuel --------------------------------------------------------- #
+    # Six independent enables for the flex-fuel corrections, one per quantity
+    # the patch can trim against ethanol content.
+    SlotSetting(
+        key="enable_ff_spark", title="Enable flex fuel spark modifier",
+        description="Apply the flex-fuel ignition-timing correction",
+        kind=KIND_FLAG, group="Flex fuel",
+        uids={1: "0x7d7f4", 2: "0x7d7fa", 3: "0x7d800", 4: "0x7d806", 5: "0x7d80c"},
+    ),
+    SlotSetting(
+        key="enable_ff_put", title="Enable flex fuel PUT modifier",
+        description="Apply the flex-fuel boost-target correction",
+        kind=KIND_FLAG, group="Flex fuel",
+        uids={1: "0x7d7f5", 2: "0x7d7fb", 3: "0x7d801", 4: "0x7d807", 5: "0x7d80d"},
+    ),
+    SlotSetting(
+        key="enable_ff_lambda", title="Enable flex fuel lambda modifier",
+        description="Apply the flex-fuel lambda-setpoint correction",
+        kind=KIND_FLAG, group="Flex fuel",
+        uids={1: "0x7d7f6", 2: "0x7d7fc", 3: "0x7d802", 4: "0x7d808", 5: "0x7d80e"},
+    ),
+    SlotSetting(
+        key="enable_ff_tq", title="Enable flex fuel TQ modifier",
+        description="Apply the flex-fuel torque-model correction",
+        kind=KIND_FLAG, group="Flex fuel",
+        uids={1: "0x7d7f7", 2: "0x7d7fd", 3: "0x7d803", 4: "0x7d809", 5: "0x7d80f"},
+    ),
+    SlotSetting(
+        key="enable_ff_iat", title="Enable flex fuel IAT modifier",
+        description="Apply the flex-fuel intake-air-temperature correction",
+        kind=KIND_FLAG, group="Flex fuel",
+        uids={1: "0x7d7f8", 2: "0x7d7fe", 3: "0x7d804", 4: "0x7d80a", 5: "0x7d810"},
+    ),
+    SlotSetting(
+        key="enable_ff_mpi", title="Enable flex fuel MPI modifier",
+        description="Apply the flex-fuel port-injection correction",
+        kind=KIND_FLAG, group="Flex fuel",
+        uids={1: "0x7d7f9", 2: "0x7d7ff", 3: "0x7d805", 4: "0x7d80b", 5: "0x7d811"},
+    ),
+    # ---- read-only --------------------------------------------------------- #
+    SlotSetting(
+        key="rpm_limiter", title="RPM limiter",
+        description="Per-slot engine-speed limit override",
+        kind=KIND_NUMBER, units="rpm", group="Limits",
+        uids={1: "0x7cb40", 2: "0x7cb42", 3: "0x7cb44", 4: "0x7cb46", 5: "0x7cb48"},
+        readonly=_UNVERIFIED_NUMBER,
+    ),
+    SlotSetting(
+        key="speed_limiter", title="Speed limiter",
+        description="Per-slot road-speed limit override",
+        kind=KIND_NUMBER, units="kph", group="Limits",
+        uids={1: "0x7cb4a", 2: "0x7cb4c", 3: "0x7cb4e", 4: "0x7cb50", 5: "0x7cb52"},
+        readonly=_UNVERIFIED_NUMBER,
+    ),
+    SlotSetting(
+        key="manual_afu", title="Manual AFU",
+        description="A 0–1 fraction, stored /128. The XDF says it 'does not set "
+                    "manual AFU active, this only adjusts the value'; the "
+                    "patch's own logging category refers to 'manual e content', "
+                    "so this is most likely the hand-set ethanol fraction — "
+                    "likely, not established",
+        kind=KIND_NUMBER, group="Flex fuel",
+        uids={1: "0x7d85a", 2: "0x7d85b", 3: "0x7d85c", 4: "0x7d85d", 5: "0x7d85e"},
+        readonly="what quantity this actually sets is inferred from a category "
+                 "name, and a fuel-composition input the engine trusts is not "
+                 "something to write on an inference.",
+    ),
+    SlotSetting(
+        key="gauge_settings", title="Gauge settings (bitmask)",
+        description="Eight packed display/gauge option bits",
+        kind=KIND_OPAQUE, group="Display",
+        uids={1: "0x7f490", 2: "0x7f491", 3: "0x7f492", 4: "0x7f493", 5: "0x7f494"},
+        readonly="no source we have says what any individual bit means, and a "
+                 "bitmask written as a whole number sets seven bits you did not "
+                 "choose.",
+    ),
+)
+
+#: Settings by logical suffix, for the domain call and the bridge.
+SLOT_SETTINGS_BY_KEY = {s.key: s for s in SLOT_SETTINGS}
 
 _specs = [
     TableSpec(
@@ -72,21 +271,22 @@ for _slot in SLOTS:
             units="hPa", shape=SLOT_GRID_SHAPE, tags=frozenset({TAG_NO_SYMBOL}),
             owner=_OWNER_SLOT_CURVE,
         ),
-        TableSpec(
-            name=f"slot{_slot}_enable_sl_tc", key=_ENABLE_SL_TC_UIDS[_slot],
-            description=f"Enable SL TC — enable the switch patch's own "
-                        f"slip-based traction control on map slot {_slot}",
-            units="", shape=(1, 1), tags=frozenset({TAG_NO_SYMBOL}),
-            owner=_OWNER_TRACTION,
-        ),
-        TableSpec(
-            name=f"slot{_slot}_disable_oem_tc", key=_DISABLE_OEM_TC_UIDS[_slot],
-            description=f"Disable OEM TC — disable the factory ECU-side "
-                        f"traction-control torque intervention on map slot {_slot}",
-            units="", shape=(1, 1), tags=frozenset({TAG_NO_SYMBOL}),
-            owner=_OWNER_TRACTION,
-        ),
     ]
+    # The sixteen per-slot scalars, straight off the registry above. Owned like
+    # everything else in this profile: a flag is only written through the domain
+    # call that checks it *is* a flag first, and a read-only setting names the
+    # reason it has no write path at all.
+    for _setting in SLOT_SETTINGS:
+        _specs.append(TableSpec(
+            name=f"slot{_slot}_{_setting.key}", key=_setting.uids[_slot],
+            description=f"{_setting.title} — {_setting.description}, "
+                        f"map slot {_slot}",
+            units=_setting.units, shape=(1, 1), tags=frozenset({TAG_NO_SYMBOL}),
+            owner=(
+                _OWNER_SLOT_FLAG if _setting.writable
+                else f"no write path — {_setting.readonly}"
+            ),
+        ))
 
 
 def slot_names(kind: str) -> tuple[str, ...]:
@@ -114,5 +314,11 @@ __all__ = [
     "SLOT_GRID_SHAPE",
     "SLOT_DEFAULT_HPA",
     "SLOT_AXIS_HEADER_VALUE",
+    "SLOT_SETTINGS",
+    "SLOT_SETTINGS_BY_KEY",
+    "SlotSetting",
+    "KIND_FLAG",
+    "KIND_NUMBER",
+    "KIND_OPAQUE",
     "slot_names",
 ]

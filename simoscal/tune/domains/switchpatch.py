@@ -33,9 +33,12 @@ import numpy as np
 from ... import btp
 from ..journal import KIND_AXIS, KIND_CHECK, VERDICT_SKIPPED, EditEntry
 from ..profiles.switchpatch_2933 import (
+    KIND_FLAG,
     SLOT_AXIS_HEADER_VALUE,
     SLOT_DEFAULT_HPA,
     SLOT_GRID_SHAPE,
+    SLOT_SETTINGS,
+    SLOT_SETTINGS_BY_KEY,
     SLOTS,
 )
 from ..units import AMBIENT_HPA, hpa_from_psi, psi_from_hpa
@@ -158,31 +161,116 @@ class SwitchPatch(Domain):
         """
         if disable_oem is None:
             disable_oem = enable
-        wanted = {"enable_sl_tc": 1.0 if enable else 0.0,
-                  "disable_oem_tc": 1.0 if disable_oem else 0.0}
+        slots = tuple(slots)
 
-        entries = []
-        for slot in slots:
-            self._require_slot(slot)
-            for flag, value in wanted.items():
-                name = f"slot{slot}_{flag}"
-                current = float(
-                    self._tune.values(name, space=self.space).ravel()[0]
-                )
-                if current not in (0.0, 1.0):
-                    raise ValueError(
-                        f"switchpatch.traction_control: {name} reads "
-                        f"{current!r}, expected the 0/1 of a flag — refusing "
-                        "to write over something that is not a flag"
-                    )
-                entries.append(self._tune.write(
-                    name, [[value]], space=self.space,
+        entries: list[EditEntry] = []
+        for flag, value in (("enable_sl_tc", enable), ("disable_oem_tc", disable_oem)):
+            for slot in slots:
+                entries.append(self.set_slot_flag(
+                    flag, slots=(slot,), on=value,
                     intent=intent or (
                         f"{'enable' if value else 'disable'} "
                         f"{'the switch patch' if flag == 'enable_sl_tc' else 'the factory'}"
                         f" traction control on slot {slot}"
                     ),
-                ))
+                )[0])
+        return tuple(entries)
+
+    # -- the per-slot switchboard --------------------------------------------- #
+    def slot_settings(self) -> tuple[dict, ...]:
+        """Every per-slot scalar, with its five slot values. Read-only.
+
+        One call for the whole switchboard rather than sixteen reads times five
+        slots, because the question a person actually asks is comparative —
+        "which slots have launch control on" — and answering it by opening five
+        tables in turn is how you end up sure about a slot you never looked at.
+
+        Carries each setting's ``readonly`` reason and ``caution`` verbatim, so
+        whatever renders this cannot present a setting as safely toggleable that
+        this profile does not consider writable.
+        """
+        out = []
+        for setting in SLOT_SETTINGS:
+            out.append({
+                "key": setting.key,
+                "title": setting.title,
+                "description": setting.description,
+                "kind": setting.kind,
+                "units": setting.units,
+                "group": setting.group,
+                "caution": setting.caution,
+                "readonly": setting.readonly,
+                "writable": setting.writable,
+                "values": [
+                    float(self._tune.values(
+                        f"slot{slot}_{setting.key}", space=self.space
+                    ).ravel()[0])
+                    for slot in SLOTS
+                ],
+                "slots": list(SLOTS),
+            })
+        return tuple(out)
+
+    def set_slot_flag(
+        self,
+        key: str,
+        *,
+        slots: Iterable[int] = SLOTS,
+        on: bool,
+        intent: str = "",
+    ) -> tuple[EditEntry, ...]:
+        """Set one 0/1 per-slot flag on the given slots.
+
+        Three refusals, and each one is a mistake this makes impossible rather
+        than a style preference:
+
+        * an unknown ``key`` — the switchboard is a fixed set, and a typo that
+          silently wrote nothing would look exactly like a flag that does not
+          work;
+        * a setting this profile marks read-only, or one that is not a flag at
+          all — ``Manual AFU`` is a 0–1 *fraction* stored /128 and a "toggle" of
+          it would write 128× what the caller meant;
+        * a flag whose stored value is neither 0 nor 1 — that is not the table
+          we think it is, and writing a flag over it would destroy whatever it
+          really holds.
+        """
+        setting = SLOT_SETTINGS_BY_KEY.get(key)
+        if setting is None:
+            known = ", ".join(sorted(SLOT_SETTINGS_BY_KEY))
+            raise ValueError(
+                f"switchpatch.set_slot_flag: no per-slot setting {key!r}; "
+                f"this patch has {known}"
+            )
+        if not setting.writable:
+            raise ValueError(
+                f"switchpatch.set_slot_flag: {setting.title!r} is read-only — "
+                f"{setting.readonly}"
+            )
+        if setting.kind != KIND_FLAG:
+            raise ValueError(
+                f"switchpatch.set_slot_flag: {setting.title!r} is a "
+                f"{setting.kind}, not a 0/1 flag — it has no on/off to set"
+            )
+
+        value = 1.0 if on else 0.0
+        entries = []
+        for slot in slots:
+            self._require_slot(slot)
+            name = f"slot{slot}_{setting.key}"
+            current = float(self._tune.values(name, space=self.space).ravel()[0])
+            if current not in (0.0, 1.0):
+                raise ValueError(
+                    f"switchpatch.set_slot_flag: {name} reads {current!r}, "
+                    "expected the 0/1 of a flag — refusing to write over "
+                    "something that is not a flag"
+                )
+            entries.append(self._tune.write(
+                name, [[value]], space=self.space,
+                intent=intent or (
+                    f"{'enable' if on else 'disable'} {setting.title} "
+                    f"on slot {slot}"
+                ),
+            ))
         return tuple(entries)
 
     # -- gates ----------------------------------------------------------------- #

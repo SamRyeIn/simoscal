@@ -677,6 +677,72 @@ def _op_boost_rpm_axis(params: dict) -> dict:
     }
 
 
+def _op_slot_settings(params: dict) -> dict:
+    """The whole per-slot switchboard: every scalar, against all five slots.
+
+    One read rather than sixteen-times-five, because the question is comparative
+    and answering it a table at a time is how a slot goes unchecked.
+    """
+    sess = _session(params)
+    _require_patch_space(sess)
+    return {"settings": _jsonify(sess.tune.switchpatch.slot_settings())}
+
+
+def _op_slot_flag(params: dict) -> dict:
+    """Set one 0/1 per-slot flag on one or more slots.
+
+    Routed through ``switchpatch.set_slot_flag`` rather than the generic ``edit``
+    op for the same reason the boost curve is: the domain call is what checks the
+    setting is a flag this profile is willing to write, and that the byte it is
+    about to overwrite actually reads 0 or 1. A generic write to the same address
+    checks neither, and half of these tables sit within a few bytes of each other.
+    """
+    sess = _session(params)
+    key = _require(params, "key")
+    on = _require(params, "on")
+    intent = params.get("intent", "")
+    _require_patch_space(sess)
+
+    slots = params.get("slots")
+    if slots is None:
+        raise BridgeError(ErrorCode.BAD_PARAMS, "missing required parameter 'slots'")
+    try:
+        slots = tuple(int(s) for s in slots)
+    except (TypeError, ValueError):
+        raise BridgeError(ErrorCode.BAD_PARAMS, "slots must be a list of integers")
+    if not slots:
+        raise BridgeError(ErrorCode.BAD_PARAMS, "slots must name at least one slot")
+
+    try:
+        entries = sess.tune.switchpatch.set_slot_flag(
+            str(key), slots=slots, on=bool(on), intent=intent
+        )
+    except (EditRejected, ValueError) as exc:
+        raise BridgeError(ErrorCode.EDIT_REJECTED, str(exc))
+    except (TuneError, KeyError) as exc:
+        raise BridgeError(
+            ErrorCode.TUNE_ERROR,
+            f"the flag {key!r} could not be written",
+            advanced=str(exc),
+        )
+
+    sess.history.commit()
+    return {
+        "settings": _jsonify(sess.tune.switchpatch.slot_settings()),
+        "entries": [_entry_summary(e) for e in entries],
+        **_history_state(sess),
+    }
+
+
+def _require_patch_space(sess: _Session) -> None:
+    if PATCH_SPACE not in sess.tune.spaces:
+        raise BridgeError(
+            ErrorCode.TUNE_ERROR,
+            "this session has no switch-patch tables",
+            advanced="the tune was opened without the switch-patch profile",
+        )
+
+
 def _op_undo(params: dict) -> dict:
     """Step back one committed edit. ``done`` is false when there is nothing to undo."""
     sess = _session(params)
@@ -787,6 +853,9 @@ OPS: dict[str, Callable[[dict], dict]] = {
     # rather than a field read two different ways — which is what the version
     # gate exists to prevent.
     "boost_rpm_axis": _op_boost_rpm_axis,
+    # The per-slot switchboard. Same versioning reasoning as the ops above.
+    "slot_settings": _op_slot_settings,
+    "slot_flag": _op_slot_flag,
     "undo": _op_undo,
     "redo": _op_redo,
     "build": _op_build,

@@ -25,16 +25,29 @@ import numpy as np
 
 from .profile import TAG_AXIS
 from .project import Tune
+from .quantities import axis_label, table_signature, units_label
 
 __all__ = ["AxisInfo", "TableInfo", "catalog", "table_detail"]
 
 
 @dataclass(frozen=True)
 class AxisInfo:
-    """One decoded breakpoint axis of a table (x = columns, y = rows)."""
+    """One decoded breakpoint axis of a table (x = columns, y = rows).
+
+    ``symbol`` and ``label`` are what make the axis nameable. The breakpoints
+    alone say how the table is indexed but not *on what* — and an editor that
+    cannot say which quantity a column stands for is one where someone edits the
+    wrong column. See :mod:`simoscal.tune.quantities` for where the English
+    comes from and what happens when it is not known.
+    """
 
     units: str
     values: tuple[float, ...]
+    #: The axis's own A2L symbol, from the standalone breakpoint table it is
+    #: embedded from, or ``None`` when the XDF records no link.
+    symbol: Optional[str] = None
+    #: ``Quantity [unit]`` — the label an editor puts beside the breakpoints.
+    label: str = ""
 
 
 @dataclass(frozen=True)
@@ -68,6 +81,13 @@ class TableInfo:
     x_axis: Optional[AxisInfo]
     y_axis: Optional[AxisInfo]
     values: tuple            # nested tuples of floats (JSON/data friendly)
+    #: ``units`` spelled out — a bare XDF ``-`` becomes "dimensionless", so an
+    #: intentionally unitless ratio never reads as missing metadata.
+    units_description: str = ""
+    #: One line saying what the table *is*: cell unit against its axes, e.g.
+    #: ``"hPa vs. Engine speed [rpm] and Manifold pressure setpoint [hPa]"``.
+    #: The title names the table; this names its dimensions.
+    signature: str = ""
 
     @property
     def id_and_description(self) -> str:
@@ -85,13 +105,35 @@ def _ndim(shape: tuple[int, int]) -> int:
     return 2
 
 
-def _axis_info(view, which: str) -> Optional[AxisInfo]:
+def _axis_info(view, which: str, model) -> Optional[AxisInfo]:
     values = view.axis_values(which)
     if values is None:
         return None
     axis = getattr(view.table, which, None)
     units = (axis.units if axis is not None else "") or ""
-    return AxisInfo(units=units, values=tuple(float(v) for v in np.asarray(values).ravel()))
+    symbol = _axis_symbol(axis, model)
+    return AxisInfo(
+        units=units,
+        values=tuple(float(v) for v in np.asarray(values).ravel()),
+        symbol=symbol,
+        label=axis_label(symbol, units),
+    )
+
+
+def _axis_symbol(axis, model) -> Optional[str]:
+    """The A2L symbol of the standalone breakpoint table ``axis`` embeds.
+
+    A breakpoint axis is stored once and shared: the symbol that names the
+    quantity lives on that standalone table, not on the ``XDFAXIS`` element of
+    every table that references it. A missing or dangling link yields ``None``
+    rather than an error — an unlabelled axis is a worse editor, not an unsafe
+    one.
+    """
+    link = getattr(axis, "link_uniqueid", None) if axis is not None else None
+    if link is None or model is None:
+        return None
+    linked = model.by_id.get(link)
+    return linked.symbol if linked is not None else None
 
 
 def _reversible(view) -> bool:
@@ -114,7 +156,11 @@ def _nested(values: np.ndarray) -> tuple:
 def _table_info(tune: Tune, space: str, name: str) -> TableInfo:
     resolved = tune.table(name, space=space)
     view = resolved.view
+    model = getattr(tune.space(space).cal, "model", None)
     shape = tuple(view.shape) if view.shape is not None else (1, 1)
+    units = view.units or ""
+    x_axis = _axis_info(view, "x", model)
+    y_axis = _axis_info(view, "y", model)
     categories = tuple(
         c.name for c in getattr(view.table, "categories", ()) or ()
     ) if hasattr(view.table, "categories") else ()
@@ -126,7 +172,7 @@ def _table_info(tune: Tune, space: str, name: str) -> TableInfo:
         description=resolved.spec.description if resolved.spec else (view.title or ""),
         key=resolved.spec.key if resolved.spec else (view.symbol or view.uniqueid_hex),
         uniqueid_hex=view.uniqueid_hex,
-        units=view.units or "",
+        units=units,
         shape=shape,
         ndim=_ndim(shape),
         reversible=_reversible(view),
@@ -137,9 +183,17 @@ def _table_info(tune: Tune, space: str, name: str) -> TableInfo:
         is_axis=bool(resolved.has(TAG_AXIS)),
         owner=resolved.owner,
         categories=categories,
-        x_axis=_axis_info(view, "x"),
-        y_axis=_axis_info(view, "y"),
+        x_axis=x_axis,
+        y_axis=y_axis,
         values=_nested(view.values),
+        units_description=units_label(units),
+        signature=table_signature(
+            units,
+            x_axis.label if x_axis else None,
+            y_axis.label if y_axis else None,
+            count=shape[0] * shape[1],
+            is_axis=bool(resolved.has(TAG_AXIS)),
+        ),
     )
 
 
