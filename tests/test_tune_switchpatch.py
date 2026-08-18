@@ -21,7 +21,11 @@ from simoscal.tune import (
     build,
 )
 from simoscal.tune.domains.switchpatch import PATCH_SPACE
-from simoscal.tune.profiles.switchpatch_2933 import SLOT_DEFAULT_HPA, SLOTS
+from simoscal.tune.profiles.switchpatch_2933 import (
+    SLOT_DEFAULT_HPA,
+    SLOT_SETTINGS,
+    SLOTS,
+)
 from simoscal.tune.units import hpa_from_psi
 from tests.conftest import requires_bintoolz
 
@@ -222,6 +226,99 @@ def test_traction_control_can_be_turned_off(patched: Tune) -> None:
         assert patched.values(
             f"slot{slot}_enable_sl_tc", space=PATCH_SPACE
         ).ravel()[0] == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# the per-slot switchboard
+# --------------------------------------------------------------------------- #
+def test_slot_settings_reads_every_scalar_against_every_slot(patched: Tune) -> None:
+    settings = patched.switchpatch.slot_settings()
+
+    assert len(settings) == len(SLOT_SETTINGS)
+    for row in settings:
+        assert len(row["values"]) == len(SLOTS)
+        assert row["slots"] == list(SLOTS)
+        # Every row is describable: the app renders these verbatim, and a blank
+        # here would be an unlabelled switch on a screen full of switches.
+        assert row["title"] and row["description"]
+
+
+def test_slot_settings_marks_the_uncharacterised_ones_read_only(patched: Tune) -> None:
+    by_key = {row["key"]: row for row in patched.switchpatch.slot_settings()}
+
+    for key in ("rpm_limiter", "speed_limiter", "manual_afu", "gauge_settings"):
+        assert by_key[key]["writable"] is False
+        # The reason travels with the refusal — a row that will not toggle and
+        # does not say why reads as a bug.
+        assert by_key[key]["readonly"]
+    assert by_key["enable_sl_tc"]["writable"] is True
+    assert by_key["enable_sl_tc"]["readonly"] == ""
+
+
+def test_a_flag_is_set_only_on_the_slots_named(patched: Tune) -> None:
+    patched.switchpatch.set_slot_flag("enable_lc", slots=(2, 4), on=True)
+
+    by_key = {row["key"]: row for row in patched.switchpatch.slot_settings()}
+    assert by_key["enable_lc"]["values"] == [0.0, 1.0, 0.0, 1.0, 0.0]
+
+
+def test_a_flag_can_be_turned_back_off(patched: Tune) -> None:
+    patched.switchpatch.set_slot_flag("pops_enable", on=True)
+    patched.switchpatch.set_slot_flag("pops_enable", slots=(3,), on=False)
+
+    by_key = {row["key"]: row for row in patched.switchpatch.slot_settings()}
+    assert by_key["pops_enable"]["values"] == [1.0, 1.0, 0.0, 1.0, 1.0]
+
+
+def test_an_unknown_setting_is_refused_and_names_the_real_ones(patched: Tune) -> None:
+    # A typo that wrote nothing would be indistinguishable from a flag the patch
+    # ignores, so it fails loud and lists what it does have.
+    with pytest.raises(ValueError, match="no per-slot setting"):
+        patched.switchpatch.set_slot_flag("enable_launch_control", on=True)
+
+
+@pytest.mark.parametrize(
+    "key", ["rpm_limiter", "speed_limiter", "manual_afu", "gauge_settings"]
+)
+def test_a_read_only_setting_cannot_be_toggled(patched: Tune, key: str) -> None:
+    """The four we can read and describe but have no business writing.
+
+    ``Manual AFU`` is the sharpest of them: it is a 0–1 fraction stored ``/128``,
+    so a "toggle" would write 128× what a caller meant.
+    """
+    with pytest.raises(ValueError, match="read-only"):
+        patched.switchpatch.set_slot_flag(key, on=True)
+
+    assert patched.values(f"slot1_{key}", space=PATCH_SPACE).ravel()[0] == 0.0
+
+
+def test_a_byte_that_is_not_a_flag_is_never_overwritten(patched: Tune) -> None:
+    """The last line of defence if a binding is ever wrong.
+
+    Half these tables sit within a few bytes of each other, so a mis-bound
+    uniqueid lands on a neighbour that holds something else entirely. Writing a
+    0/1 over it would destroy that value silently; reading it first does not.
+    """
+    patched.write("slot2_enable_nls", [[1.0]], space=PATCH_SPACE, intent="setup")
+    view = patched.table("slot2_enable_nls", space=PATCH_SPACE).view
+    view.set_raw([[7]])
+
+    with pytest.raises(ValueError, match="expected the 0/1 of a flag"):
+        patched.switchpatch.set_slot_flag("enable_nls", slots=(2,), on=True)
+
+
+def test_every_switchboard_setting_is_mapped_and_owned(patched: Tune) -> None:
+    """The registry and the profile cannot drift apart.
+
+    They are generated from one source precisely so a setting cannot be
+    toggleable in the app and unmapped in the profile — this asserts the
+    generation actually happened for all five slots.
+    """
+    for setting in SLOT_SETTINGS:
+        for slot in SLOTS:
+            resolved = patched.table(f"slot{slot}_{setting.key}", space=PATCH_SPACE)
+            assert resolved.spec.owner, f"slot{slot}_{setting.key} is unowned"
+            assert tuple(resolved.view.shape) == (1, 1)
 
 
 # --------------------------------------------------------------------------- #

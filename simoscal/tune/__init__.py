@@ -31,7 +31,17 @@ from __future__ import annotations
 
 from .audit import Allowance, RawDiffAudit, RawDiffError, raw_diff_audit
 from .journal import EditEntry, Journal
-from .pipeline import BuildFailed, BuildResult, build
+from .pipeline import BuildFailed, BuildResult, GateOutcome, build, run_gates
+from .build_service import (
+    AuditModel,
+    BuildReport,
+    ChecksumModel,
+    EditModel,
+    GateResult,
+    TableRef,
+    build_report,
+    build_revision,
+)
 from .profile import (
     Profile,
     ProfileResolutionError,
@@ -42,6 +52,23 @@ from .profile import (
 )
 from .profiles import PROFILES, SC8S50, SWITCH_PATCH_2933
 from .project import BASE_SPACE, PatchSpec, TableSpace, Tune, TuneError
+from .recovery import (
+    RecoveryError,
+    SessionHistory,
+    load_session,
+    restore_session,
+    save_session,
+    serialize_session,
+)
+from .catalog import AxisInfo, TableInfo, catalog, table_detail
+from .editing import EditOp, EditRejected, EditResult, Selection, apply_op
+from .boostcurve import (
+    BoostCurveModel,
+    SlotCurve,
+    SlotCurveResult,
+    boost_curve_model,
+    slot_curve_result,
+)
 
 __all__ = [
     # authoring
@@ -50,6 +77,17 @@ __all__ = [
     "build",
     "BuildResult",
     "BuildFailed",
+    # renderer-independent build service
+    "run_gates",
+    "GateOutcome",
+    "build_revision",
+    "build_report",
+    "BuildReport",
+    "GateResult",
+    "ChecksumModel",
+    "AuditModel",
+    "EditModel",
+    "TableRef",
     # profiles
     "PROFILES",
     "SC8S50",
@@ -71,4 +109,28 @@ __all__ = [
     "TableSpace",
     "TuneError",
     "RawDiffError",
+    # session recovery
+    "serialize_session",
+    "restore_session",
+    "save_session",
+    "load_session",
+    "SessionHistory",
+    "RecoveryError",
+    # read-only catalog
+    "catalog",
+    "table_detail",
+    "TableInfo",
+    "AxisInfo",
+    # generic edit ops
+    "apply_op",
+    "EditOp",
+    "Selection",
+    "EditResult",
+    "EditRejected",
+    # boost-curve model
+    "boost_curve_model",
+    "BoostCurveModel",
+    "SlotCurve",
+    "slot_curve_result",
+    "SlotCurveResult",
 ]

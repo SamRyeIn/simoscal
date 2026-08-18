@@ -139,6 +139,73 @@ so the traps are unavailable rather than merely documented:
 complete R00–R12 calibration in one page of domain calls, verified byte-identical
 to the hand-written R12 output (`tests/test_acceptance_tune.py`).
 
+### Renderer-independent build service — `simoscal.tune.build_service`
+
+`build()` above is the *desktop* build: it runs the gate chain and then renders
+it — comparison PNGs (matplotlib), `report.md`, `report.html`. An embedded
+runtime (Android/Chaquopy) carries no matplotlib and cannot open a browser, so it
+needs the same gates and the same verdicts returned as **one machine-readable
+model**, not as files.
+
+`build_revision()` does exactly that. It runs `run_gates()` — the identical
+save → checksum-verify → readback → blocked-write → coherence → post-check →
+byte-audit spine, now factored out of `build()` so the safety gates live once —
+and returns a `BuildReport`: a frozen, JSON-serializable object a UI (or a
+bridge, or a test) reads. Like `preflight()`, it returns a verdict rather
+than raising on a failed gate.
+
+```python
+from simoscal.tune import SC8S50, Tune, build_revision
+
+tune = Tune.open(SC8S50, xdf=XDF_PATH, bin=IMPORTED_BIN)
+tune.boost.put_ceiling_psi(24.0, intent="park the full-load ceiling")
+
+# For v1 the imported bin is both the edit baseline and the byte-audit reference.
+report = build_revision(tune, "R01", staging_dir=STAGING,
+                        reference_bin=IMPORTED_BIN, source_bin=IMPORTED_BIN)
+
+if report.verified:
+    share(report.share_path)     # the staged bin, or None on any gate failure
+print(report.to_json())          # deterministic; the bridge/golden-gate wire form
+```
+
+Three properties are structural, not conventions:
+
+- the model is **derived from the journal** (same source as
+  `report.md`/`report.html`, so it cannot describe something other than what the
+  build did);
+- **sharing is gated on the verdict** — `report.share_path` is the staged bin
+  only when every gate passed *and* the byte audit ran, else `None`. A failed
+  build has no shareable bin;
+- **a shared candidate is immutable** — each build writes into its own fresh
+  `staging_dir/<revision>-<id>/` directory and never reuses a path, so bytes
+  already handed to another app (Android grants a content URI that cannot be
+  revoked) can never be rewritten by a later or failing build. `revision` and
+  `bin_name` must each be a bare file name; anything carrying a path separator
+  raises rather than being sanitized, because on the phone `bin_name` originates
+  as an untrusted document-provider display name.
+
+The module imports no matplotlib, so it runs in the on-device engine unchanged.
+
+### The bridge and recoverable sessions
+
+`simoscal.bridge.dispatch()` is the sole Python boundary an embedded client
+calls. It accepts and returns deterministic, versioned JSON envelopes; files
+cross as private absolute paths plus SHA-256 hashes, never as base64 or Python
+objects. Session creation re-runs compatibility preflight itself. Supplying a
+switch-patch XDF for an unpatched bin is therefore a hard
+`PREFLIGHT_BLOCKED` result rather than a live session over invalid addresses.
+
+Recovery records pin the engine version, source-bin hash, and every XDF hash.
+They preserve the ordered journal, compact undo/redo snapshots, and registered
+finished-file safety gates. Restore refuses changed provenance or an unknown
+gate instead of silently weakening the reopened session. Where the imported bin
+is both the source and the byte-audit reference, the bridge enforces that
+identity before `build_revision()` can expose a share path.
+
+A client owns scheduling and lifecycle only; Python remains authoritative for
+preflight, edits, checksums, readback, byte audit, and the share verdict.
+
 ## API surface
 
 ### `CalFile`

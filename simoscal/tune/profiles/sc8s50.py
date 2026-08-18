@@ -14,13 +14,13 @@ called.
 
 from __future__ import annotations
 
-from ..profile import TAG_FLOAT_BUG, TAG_KG_PER_STROKE, Profile, TableSpec
+from ..profile import TAG_AXIS, TAG_FLOAT_BUG, TAG_KG_PER_STROKE, Profile, TableSpec
 
 
-def _spec(name, key, description, units="", shape=None, tags=frozenset()):
+def _spec(name, key, description, units="", shape=None, tags=frozenset(), owner=""):
     return TableSpec(
         name=name, key=key, description=description,
-        units=units, shape=shape, tags=tags,
+        units=units, shape=shape, tags=tags, owner=owner,
     )
 
 
@@ -29,7 +29,8 @@ _SPECS = [
     _spec("put_setpoint", "IP_PUT_SP",
           "Pressure up throttle setpoint", "hPa", (4, 6)),
     _spec("put_setpoint_rpm_axis", "ldp_n_ip_put_sp",
-          "Pressure up throttle setpoint : x axis (engine speed)", "rpm", (1, 6)),
+          "Pressure up throttle setpoint : x axis (engine speed)", "rpm", (1, 6),
+          frozenset({TAG_AXIS})),
     _spec("pressure_quotient_max", "IP_PQ_CHA_MAX",
           "Maximum allowed pressure quotient at turbo charger compressor",
           "-", (8, 8)),
@@ -43,10 +44,34 @@ _SPECS = [
           "pressure setpoint)", "hPa", (1, 1), frozenset({TAG_FLOAT_BUG})),
     # THE kg/stk trap. The XDF labels this identity-scaled mg/stk; the ECU
     # stores kg/stk. Any mg/stk API must divide by 1e6 — writing raw 2000 here
-    # raises the ceiling ~1.44 million-fold, i.e. removes the limiter.
+    # raises the ceiling ~1.44 million-fold (stock is 0.001389 kg/stk), i.e.
+    # removes the limiter.
+    #
+    # Domain-owned, and this one is owned for a different reason than the switch
+    # patch's tables: not a structural invariant, but a *unit* the display
+    # actively contradicts. The generic editor shows "0.002" beside the XDF's
+    # "mg/stk" label, and the sane-looking correction — type 2000 — is the
+    # catastrophic one. No guard catches it either: the table is float-bug
+    # flagged, but its declared max is 20000, so 2000 breaches nothing
+    # (CR-20260815-04). The mg/stk entry point is the domain call.
     _spec("airmass_setpoint_max", "C_M_AIR_CYL_SP_MAX",
           "Maximum allowed M_AIR_CYL_SP (maximum allowed airmass setpoint)",
-          "mg/stk", (1, 1), frozenset({TAG_KG_PER_STROKE, TAG_FLOAT_BUG})),
+          "mg/stk", (1, 1), frozenset({TAG_KG_PER_STROKE, TAG_FLOAT_BUG}),
+          owner="tune.limits.airmass_cap_mg(), which takes mg/stk and stores "
+                "kg/stk — the XDF's mg/stk label is wrong"),
+    # Same symbol family, same "mg/stk" label, same declared 0..20000 range, and
+    # float-bug flagged like its sibling above — but it reads 0.0 in both the
+    # stock and every patched bin, so nothing here proves whether it stores
+    # kg/stk too. Mapped solely to carry that doubt into the catalog: an
+    # unmapped table arrives with no tags and no owner, which is precisely how
+    # this one stayed generically writable. No domain call writes it and no
+    # revision ever has, so refusing costs nothing today; if a use for it
+    # appears, settle the units first and give it a real writer.
+    _spec("airmass_full_load", "C_M_AIR_CYL_FL",
+          "Airmass per cylinder at full load (units unconfirmed — see owner)",
+          "mg/stk", (1, 1), frozenset({TAG_FLOAT_BUG}),
+          owner="no verified write path — this table's units are unconfirmed "
+                "and may be kg/stk like C_M_AIR_CYL_SP_MAX"),
     _spec("intake_air_max_vvl0", "IP_M_AIR_CYL_MAX_STND_VVL[STND]",
           "Maximum intake air of the engine at standardized ambient pressure, "
           "valve lift STND", "mg/stk", (1, 12)),
@@ -67,7 +92,8 @@ _SPECS = [
     # re-breakpoints both wastegate maps at once.
     _spec("wastegate_exh_flow_axis", "ldp_fac_1_ip_fac_bpa_sp",
           "Map for boost pressure actuator setpoint : x axis "
-          "(exhaust flow factor), shared by VVL 0 and VVL 1", "-", (1, 16)),
+          "(exhaust flow factor), shared by VVL 0 and VVL 1", "-", (1, 16),
+          frozenset({TAG_AXIS})),
 
     # ---- fueling ---------------------------------------------------------- #
     _spec("lambda_basic", "IP_LAMB_BAS[1]",
@@ -79,10 +105,10 @@ _SPECS = [
     # Shared by the three lambda grids above.
     _spec("lambda_rpm_axis", "ldpm_n_32_1_lasp",
           "Basic lambda setpoint : x axis (engine speed), shared by "
-          "BAS/HPDI/MPI", "rpm", (1, 12)),
+          "BAS/HPDI/MPI", "rpm", (1, 12), frozenset({TAG_AXIS})),
     _spec("lambda_load_axis", "ldpm_maf_1_lasp",
           "Basic lambda setpoint : y axis (airmass load), shared by "
-          "BAS/HPDI/MPI", "mg/stk", (1, 8)),
+          "BAS/HPDI/MPI", "mg/stk", (1, 8), frozenset({TAG_AXIS})),
     _spec("lambda_setpoint_min", "C_LAMB_BAS_COR_MIN",
           "Minimal value for lambda setpoint", "-", (1, 1)),
     _spec("lambda_catalyst_min", "IP_LAMB_COP_MIN",

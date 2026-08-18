@@ -33,6 +33,7 @@ from ..model import AmbiguousTableError, SimosCalError
 
 __all__ = [
     "TAG_FLOAT_BUG",
+    "TAG_AXIS",
     "TAG_KG_PER_STROKE",
     "TAG_NO_SYMBOL",
     "Profile",
@@ -61,6 +62,10 @@ TAG_KG_PER_STROKE = "kg_per_stroke"
 #: Patch-added table with no A2L symbol — addressable only by uniqueid.
 TAG_NO_SYMBOL = "no_symbol"
 
+#: Breakpoint vector. Generic writes must preserve a strictly increasing axis;
+#: a non-monotonic axis makes every table sharing it ambiguous or unreachable.
+TAG_AXIS = "axis"
+
 
 @dataclass(frozen=True)
 class TableSpec:
@@ -71,6 +76,9 @@ class TableSpec:
     uniqueid. ``description`` is the plain-English meaning — normally the XDF
     ``title``, or a clearer phrasing when the title is terse or, as with the
     five identically-titled ``PUT setpoint`` slot grids, non-unique.
+
+    ``owner`` names the domain call that is the **only** legitimate way to write
+    this table (see :attr:`owner`). Empty means the generic editor may write it.
     """
 
     name: str
@@ -79,6 +87,16 @@ class TableSpec:
     units: str = ""
     shape: Optional[tuple[int, int]] = None  # asserted at resolve time when set
     tags: frozenset[str] = frozenset()
+    #: The domain call that owns writes to this table, phrased for an error
+    #: message (e.g. ``"tune.switchpatch.slot_curve() (bridge op boost_edit)"``).
+    #: Some tables carry structural invariants no generic grid write can honour —
+    #: the switch patch's eight-row tiling, its below-base-ceiling rule, its
+    #: separate axis-length header — and those invariants live in the domain
+    #: method, not in the byte writer. Declaring the owner here rather than in
+    #: the domain method means the *generic* path can refuse the table without
+    #: knowing anything about the patch: :func:`~simoscal.tune.editing.apply_op`
+    #: rejects an owned table, and the catalog stops offering it (CR-20260813-01).
+    owner: str = ""
 
     @property
     def label(self) -> str:
@@ -87,6 +105,11 @@ class TableSpec:
 
     def has(self, tag: str) -> bool:
         return tag in self.tags
+
+    @property
+    def domain_owned(self) -> bool:
+        """Whether writes to this table must go through :attr:`owner`."""
+        return bool(self.owner)
 
 
 @dataclass(frozen=True)
@@ -169,6 +192,15 @@ class ResolvedTable:
 
     def has(self, tag: str) -> bool:
         return self.spec.has(tag)
+
+    @property
+    def owner(self) -> str:
+        """The domain call that owns writes to this table; empty if generic."""
+        return self.spec.owner
+
+    @property
+    def domain_owned(self) -> bool:
+        return self.spec.domain_owned
 
 
 @dataclass(frozen=True)

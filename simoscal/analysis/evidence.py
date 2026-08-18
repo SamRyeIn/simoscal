@@ -38,7 +38,6 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
-from matplotlib.figure import Figure
 
 from .checks import (
     BOOST_HIGH_KPA,
@@ -67,6 +66,26 @@ __all__ = ["AnalyzeResult", "analyze_folder", "resolve_bin", "resolve_xdf"]
 
 _DPI = 160
 _PLOTS_SUBDIR = "plots"
+
+
+def _figure(*args, **kwargs):
+    """Construct a matplotlib ``Figure``, importing it lazily.
+
+    matplotlib is an optional ``plot`` extra, not a core dependency, so the
+    library stays importable on-device without it. The analysis battery only
+    needs matplotlib when it actually renders evidence plots; touching this
+    helper without matplotlib installed raises an actionable error naming the
+    extra rather than failing at import time.
+    """
+    try:
+        from matplotlib.figure import Figure
+    except ImportError as exc:  # pragma: no cover - env-dependent
+        raise ImportError(
+            "Rendering analysis evidence plots needs the optional 'plot' "
+            "dependencies (matplotlib). Install them with: "
+            "pip install 'simoscal[plot]'"
+        ) from exc
+    return Figure(*args, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -309,7 +328,7 @@ def _plot_boost(ctx, path) -> bool:
     # shown when ambient pressure was logged (else we'd have to guess a baseline).
     show_boost = ctx.logset.has("ambient_press") and ctx.logset.has("put")
     n = 3 if show_boost else 2
-    fig = Figure(figsize=(10, 4 * n))
+    fig = _figure(figsize=(10, 4 * n))
     row = 1
     drew = []
     if show_boost:
@@ -339,7 +358,7 @@ def _plot_boost(ctx, path) -> bool:
 
 
 def _plot_knock(ctx, path) -> bool:
-    fig = Figure(figsize=(10, 5.5))
+    fig = _figure(figsize=(10, 5.5))
     ax = fig.add_subplot()
     drew = _pull_lines(ax, ctx, _min_knock_fn, role="primary")
     ax.axhline(0.0, color="0.3", lw=0.9)
@@ -354,7 +373,7 @@ def _plot_knock(ctx, path) -> bool:
 
 
 def _plot_lambda(ctx, path) -> bool:
-    fig = Figure(figsize=(10, 5.5))
+    fig = _figure(figsize=(10, 5.5))
     ax = fig.add_subplot()
     _transient_scatter(ctx, ax, _lambda_error_fn)
     drew = _pull_lines(ax, ctx, _lambda_error_fn, mask="settled", role="primary")
@@ -369,7 +388,7 @@ def _plot_lambda(ctx, path) -> bool:
 
 
 def _plot_rail(ctx, path) -> bool:
-    fig = Figure(figsize=(10, 8))
+    fig = _figure(figsize=(10, 8))
     ax0 = fig.add_subplot(2, 1, 1)
     d0 = _pull_lines(ax0, ctx, _di_error_fn, role="primary")
     ax0.axhline(0.0, color="0.3", lw=0.9)
@@ -389,7 +408,7 @@ def _plot_rail(ctx, path) -> bool:
 
 
 def _plot_turbo(ctx, path) -> bool:
-    fig = Figure(figsize=(10, 5.5))
+    fig = _figure(figsize=(10, 5.5))
     ax = fig.add_subplot()
     drew = _pull_lines(ax, ctx, "turbo_speed", role="primary")
     ax.axhline(TURBO_SPEED_WATCH_K, color="tab:orange", ls="--", lw=0.9, label=f"{TURBO_SPEED_WATCH_K:.0f}k watch")
@@ -403,7 +422,7 @@ def _plot_turbo(ctx, path) -> bool:
 
 
 def _plot_wastegate(ctx, path) -> bool:
-    fig = Figure(figsize=(10, 8))
+    fig = _figure(figsize=(10, 8))
     ax0 = fig.add_subplot(2, 1, 1)
     d0 = _pull_lines(ax0, ctx, "wg_pos_final", role="primary", label="Final")
     d1 = _pull_lines(ax0, ctx, "wg_pos_base", role="reference", label="Base")
@@ -428,7 +447,7 @@ def _plot_wastegate(ctx, path) -> bool:
 
 def _plot_ignition(ctx, path) -> bool:
     """U3 — the timing the engine actually ran (`ign_avg`) vs the table (`ign_table`)."""
-    fig = Figure(figsize=(10, 5.5))
+    fig = _figure(figsize=(10, 5.5))
     ax = fig.add_subplot()
     d0 = _pull_lines(ax, ctx, "ign_avg", role="primary", label="Ign Avg")
     d1 = _pull_lines(ax, ctx, "ign_table", role="reference", label="Ign Table")
@@ -546,7 +565,7 @@ def _plot_overview(ctx, lf, path) -> bool:
                                               color="tab:brown"), "Intake air temp", "IAT (deg C)"))
     if not panels:
         return False
-    fig = Figure(figsize=(11, 2.1 * len(panels)))
+    fig = _figure(figsize=(11, 2.1 * len(panels)))
     _render_stacked(fig, panels, spans)
     fig.tight_layout(); fig.savefig(path, format="png", dpi=_DPI)
     return True
@@ -607,7 +626,7 @@ def _plot_tc_activity(ctx, lf, path) -> bool:
         panels.append((_torque, "Torque: delivered vs request", "Nm"))
     if not panels:
         return False
-    fig = Figure(figsize=(11, 2.1 * len(panels)))
+    fig = _figure(figsize=(11, 2.1 * len(panels)))
     _render_stacked(fig, panels, spans)
     fig.tight_layout(); fig.savefig(path, format="png", dpi=_DPI)
     return True
@@ -623,7 +642,7 @@ def _plot_coverage(cov: CoverageResult, path: Path) -> bool:
         return False   # 1D coverage heatmaps not rendered in v1
     whole = np.array(cov.counts_whole, dtype=float)
     wot = np.array(cov.counts_wot, dtype=float)
-    fig = Figure(figsize=(12, 5))
+    fig = _figure(figsize=(12, 5))
     vmax = max(whole.max(), 1.0)
     for pos, (grid, name) in enumerate(((whole, "Whole log"), (wot, "WOT pulls")), start=1):
         ax = fig.add_subplot(1, 2, pos)

@@ -260,6 +260,30 @@ def test_real_embedded_axis_count(real: XdfModel):
 
 
 @requires_real
+def test_real_axis_links_resolve_to_their_breakpoint_table(real: XdfModel):
+    """``<embedinfo linkobjid>`` names the standalone table an axis embeds.
+
+    That link is the only route from "the x axis of IP_PQ_CHA_MAX" to the symbol
+    that says what the axis *measures* — the shared breakpoint table carries it,
+    the referencing table's XDFAXIS element does not. A link that parsed but
+    pointed nowhere would silently cost every axis its name.
+    """
+    x_axis = real.get("IP_PQ_CHA_MAX").x
+    assert x_axis is not None and x_axis.link_uniqueid is not None
+    assert real.by_id[x_axis.link_uniqueid].symbol == "ldp_n_ip_cha_max"
+
+    dangling = [
+        (t.uniqueid_hex, ax.axis_id)
+        for t in real.tables
+        for ax in (t.x, t.y, t.z)
+        if ax is not None
+        and ax.link_uniqueid is not None
+        and ax.link_uniqueid not in real.by_id
+    ]
+    assert dangling == []
+
+
+@requires_real
 def test_real_every_equation_linear(real: XdfModel):
     total = 0
     nonlinear = []

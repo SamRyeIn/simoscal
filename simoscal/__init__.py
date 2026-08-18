@@ -37,14 +37,7 @@ from .codec import (
 )
 from .calfile import CalFile, TableView
 from .render import RenderedTable, render_table
-from .export import export_tables, select_tables, write_csv, write_xlsx
-from .plot import (
-    TableMismatchError,
-    compare_bins,
-    compare_tables,
-    plot_table,
-    plot_tables,
-)
+from .preflight import ChecksumState, Verdict, preflight
 from .sop_recipe import (
     RecipeReport,
     SYMBOL_MAP,
@@ -88,6 +81,45 @@ from .btp import (
 
 __version__ = "0.1.0"
 
+# -- lazy heavy-dependency symbols (PEP 562) --------------------------------- #
+# The core library depends only on numpy so it stays importable on-device
+# (Chaquopy/Android) with no matplotlib/openpyxl. CSV/xlsx export and PNG
+# visualization live behind the ``export`` and ``plot`` extras and are resolved
+# lazily on first attribute access. Touching one without its extra installed
+# raises an actionable ImportError naming the extra, rather than failing eagerly
+# at ``import simoscal``.
+_LAZY_EXPORT = {"export_tables", "select_tables", "write_csv", "write_xlsx"}
+_LAZY_PLOT = {
+    "TableMismatchError",
+    "compare_bins",
+    "compare_tables",
+    "plot_table",
+    "plot_tables",
+}
+
+
+def __getattr__(name: str):  # noqa: N807 — module-level PEP 562 hook
+    if name in _LAZY_EXPORT:
+        try:
+            from . import export as _mod
+        except ImportError as exc:  # pragma: no cover - env-dependent
+            raise ImportError(
+                f"simoscal.{name} needs the optional 'export' dependencies "
+                f"(openpyxl). Install them with: pip install 'simoscal[export]'"
+            ) from exc
+        return getattr(_mod, name)
+    if name in _LAZY_PLOT:
+        try:
+            from . import plot as _mod
+        except ImportError as exc:  # pragma: no cover - env-dependent
+            raise ImportError(
+                f"simoscal.{name} needs the optional 'plot' dependencies "
+                f"(matplotlib). Install them with: pip install 'simoscal[plot]'"
+            ) from exc
+        return getattr(_mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "__version__",
     "ScalingEquation",
@@ -115,6 +147,9 @@ __all__ = [
     "TableView",
     "RenderedTable",
     "render_table",
+    "ChecksumState",
+    "Verdict",
+    "preflight",
     "select_tables",
     "write_csv",
     "write_xlsx",

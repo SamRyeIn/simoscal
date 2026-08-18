@@ -1,0 +1,79 @@
+Third-party notices for simoscal
+================================
+
+simoscal as a whole is licensed under the GNU General Public License v3.0 (see
+LICENSE). It incorporates work from the projects below, whose own licences and
+copyright notices are reproduced here and continue to apply to that work.
+
+
+-------------------------------------------------------------------------------
+VW_Flash — Simos18 checksum and CRC
+-------------------------------------------------------------------------------
+
+Project:  VW_Flash — https://github.com/bri3d/VW_Flash
+Author:   Brian Ledbetter and contributors
+Licence:  BSD 2-Clause "Simplified" License
+
+Used in:  simoscal/checksum.py
+
+The Simos18 CAL checksum implementation in simoscal/checksum.py — the CRC32
+parameters and lookup-table construction, the checksum header layout, and the
+ECM3 monitor summation — is adapted from VW_Flash's lib/checksum.py and
+lib/fastcrc.py. The CRC lookup table is generated at import time rather than
+vendored, and reproduces VW_Flash's table byte-for-byte.
+
+BSD 2-Clause is compatible with the GNU General Public License v3.0. The notice
+below is reproduced as clause 1 of that licence requires.
+
+Note: VW_Flash's own LICENSE file records that standalone software in its `lzss`
+subdirectory is licensed under the GNU General Public License instead. simoscal
+incorporates no code from that subdirectory.
+
+  BSD 2-Clause License
+
+  Copyright (c) 2022-2024, Brian Ledbetter and contributors
+  All rights reserved.
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are met:
+
+  1. Redistributions of source code must retain the above copyright notice, this
+     list of conditions and the following disclaimer.
+
+  2. Redistributions in binary form must reproduce the above copyright notice,
+     this list of conditions and the following disclaimer in the documentation
+     and/or other materials provided with the distribution.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+  DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+  FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+  SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+  OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+-------------------------------------------------------------------------------
+Material distributed alongside simoscal that this licence does NOT cover
+-------------------------------------------------------------------------------
+
+Some files ship in this repository for convenience but are not simoscal's to
+license. The GPL grant in LICENSE does not extend to them:
+
+  bin/5G0906259L__0002.bin
+      An OEM Volkswagen ECU calibration image (box code 5G0906259L_0002, Simos
+      18.1/18.6). Copyright Volkswagen AG. Included as a reference and recovery
+      image for development against the SC8S50 file structure. No licence to it
+      is granted or implied by this project.
+
+  xdf/*.xdf
+      TunerPro XDF definition files describing the SC8S50 file structure,
+      including switch-patch definitions originating with BinToolz. These are
+      community-authored works whose copyright rests with their respective
+      authors, not with this project. No licence to them is granted or implied.
+
+If you redistribute this repository, these files are your responsibility to
+account for, not simoscal's.

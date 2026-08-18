@@ -53,7 +53,14 @@ from .journal import (
 )
 from .project import BASE_SPACE, Tune
 
-__all__ = ["BuildFailed", "BuildResult", "build"]
+__all__ = [
+    "BuildFailed",
+    "BuildResult",
+    "GateOutcome",
+    "JournalFingerprint",
+    "build",
+    "run_gates",
+]
 
 #: Physical-unit tolerance for the final-bin readback. A table is stored
 #: quantized, so a written 3.1 reads back as 3.100098; anything past this is a
@@ -100,6 +107,71 @@ class BuildFailed(SimosCalError):
             f"Report written to {out_dir / 'report.md'} — the bin is NOT "
             "flash-ready."
         )
+
+
+@dataclass(frozen=True)
+class JournalFingerprint:
+    """A cheap identity of the journal at gate time.
+
+    :func:`run_gates` derives the audit allowances from the journal and captures
+    this alongside the verdicts. A renderer that builds its model from the *live*
+    journal (:mod:`simoscal.tune.build_service`) compares this to the journal it
+    is about to read: if they differ, the journal was mutated after the gates
+    ran, so the model would describe a bin the gates never saw — and the build
+    must not be presented as verified (CR-20260724-02).
+
+    ``entry_count`` catches an appended entry; the two offset sets catch a value
+    change to an existing entry (measured moves) or a re-declared extent.
+    """
+
+    entry_count: int
+    changed_offsets: frozenset[int]
+    declared_offsets: frozenset[int]
+
+    @classmethod
+    def of(cls, journal: Journal) -> "JournalFingerprint":
+        return cls(
+            entry_count=len(journal),
+            changed_offsets=journal.changed_offsets(),
+            declared_offsets=journal.declared_offsets(),
+        )
+
+
+@dataclass
+class GateOutcome:
+    """The verified core of a build: the bin was saved and every mandatory gate
+    voted, with nothing rendered yet.
+
+    :func:`run_gates` is the safety spine — save, checksum verify, readback,
+    blocked-write, recipe coherence, post-save checks, byte audit — factored out
+    of :func:`build` so it lives *once*. Rendering (comparison PNGs, ``report.md``,
+    ``report.html``, the app's report model) is layered on top of this outcome.
+    Because it imports no matplotlib, an embedded runtime (the Android engine)
+    can run the full gate chain and read the verdicts without the desktop plotting
+    stack — which is what :mod:`simoscal.tune.build_service` is built on.
+
+    :attr:`journal` fingerprints the journal the gates were computed against, so
+    a downstream model derived from a later, mutated journal is detectable.
+    """
+
+    bin_path: Path
+    checksums: tuple[ChecksumReport, ...]
+    checksum_state: str
+    readback_failures: tuple[str, ...]
+    diff: Optional[audit.RawDiffAudit]
+    problems: tuple[str, ...]
+    #: The journal at the instant the gates finished (after post-save checks were
+    #: journaled). ``None`` only for a hand-constructed outcome that never ran the
+    #: gates — the freshness check is skipped then, so it never masks a real drift.
+    journal: Optional[JournalFingerprint] = None
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems
+
+    @property
+    def checksums_clean(self) -> bool:
+        return self.checksum_state == CHECKSUM_CLEAN
 
 
 @dataclass
@@ -169,6 +241,78 @@ def build(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     bin_path = out_dir / (bin_name or f"{revision}.bin")
+
+    # 1–4. save + the mandatory verification gates, factored into run_gates so
+    # the safety spine lives once and cannot drift between the desktop build and
+    # the embedded build service. -------------------------------------------- #
+    outcome = run_gates(
+        tune, bin_path,
+        reference_bin=reference_bin, extra_allowances=extra_allowances,
+    )
+
+    # 5. comparison plots ---------------------------------------------------- #
+    plots_by_table: dict[tuple[str, Union[str, int]], tuple[Path, ...]] = {}
+    if plots and reference_bin is not None:
+        plots_by_table = _compare_plots(tune, reference_bin, bin_path, out_dir / "compare")
+    plot_paths = tuple(p for group in plots_by_table.values() for p in group)
+
+    # 6. report --------------------------------------------------------------- #
+    result = BuildResult(
+        revision=revision,
+        out_dir=out_dir,
+        bin_path=bin_path,
+        report_path=out_dir / "report.md",
+        journal=tune.journal,
+        checksums=outcome.checksums,
+        readback_failures=outcome.readback_failures,
+        diff=outcome.diff,
+        plots=plot_paths,
+        plots_by_table=plots_by_table,
+        html_report_path=out_dir / "report.html",
+        problems=outcome.problems,
+    )
+    result.report_path.write_text(
+        render_report(tune, result, title=title, summary=summary), encoding="utf-8"
+    )
+    # The reviewer-facing page: same journal and gate verdicts as report.md,
+    # laid out for a browser at the flash gate. Rendered from the journal too,
+    # so it cannot drift from report.md or from what the build did.
+    result.html_report_path.write_text(
+        render_report_html(tune, result, title=title, summary=summary),
+        encoding="utf-8",
+    )
+
+    if outcome.problems:
+        raise BuildFailed(revision, outcome.problems, out_dir)
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# gates
+# --------------------------------------------------------------------------- #
+def run_gates(
+    tune: Tune,
+    bin_path: Union[str, Path],
+    *,
+    reference_bin: Optional[Union[str, Path]] = None,
+    extra_allowances: Sequence[audit.Allowance] = (),
+) -> GateOutcome:
+    """Save ``tune`` to ``bin_path`` and run every mandatory verification gate.
+
+    This is the safety spine of a build, in a fixed order: save with checksums
+    corrected; verify those checksums independently off the written file; read
+    every journaled table back off the saved bin; fail on any guard-blocked
+    write, any DO-NOT-FLASH recipe-coherence finding, and any failed post-save
+    check; then, when a ``reference_bin`` is declared, audit the saved bin
+    against it byte for byte with an allowance derived from the journal.
+
+    Returns a :class:`GateOutcome` whose :attr:`~GateOutcome.problems` is the
+    collected list of gate failures — the caller decides how to surface them
+    (raise, render a report, or return a model). Renders nothing and imports no
+    matplotlib, so an embedded runtime can run the whole chain and read the
+    verdicts. Never flashes.
+    """
+    bin_path = Path(bin_path)
     problems: list[str] = []
 
     # 1. save (checksums corrected) --------------------------------------- #
@@ -236,46 +380,19 @@ def build(
         if not diff.clean:
             problems.append(f"{len(diff.unexplained)} unexplained changed byte(s)")
 
-    # 5. comparison plots ---------------------------------------------------- #
-    plots_by_table: dict[tuple[str, Union[str, int]], tuple[Path, ...]] = {}
-    if plots and reference_bin is not None:
-        plots_by_table = _compare_plots(tune, reference_bin, bin_path, out_dir / "compare")
-    plot_paths = tuple(p for group in plots_by_table.values() for p in group)
-
-    # 6. report --------------------------------------------------------------- #
-    result = BuildResult(
-        revision=revision,
-        out_dir=out_dir,
+    return GateOutcome(
         bin_path=bin_path,
-        report_path=out_dir / "report.md",
-        journal=tune.journal,
         checksums=checksums,
+        checksum_state=checksum_state,
         readback_failures=readback_failures,
         diff=diff,
-        plots=plot_paths,
-        plots_by_table=plots_by_table,
-        html_report_path=out_dir / "report.html",
         problems=tuple(problems),
-    )
-    result.report_path.write_text(
-        render_report(tune, result, title=title, summary=summary), encoding="utf-8"
-    )
-    # The reviewer-facing page: same journal and gate verdicts as report.md,
-    # laid out for a browser at the flash gate. Rendered from the journal too,
-    # so it cannot drift from report.md or from what the build did.
-    result.html_report_path.write_text(
-        render_report_html(tune, result, title=title, summary=summary),
-        encoding="utf-8",
+        # Captured last: the post-save checks above appended KIND_CHECK entries,
+        # so this fingerprints the journal the returned model will be built from.
+        journal=JournalFingerprint.of(tune.journal),
     )
 
-    if problems:
-        raise BuildFailed(revision, problems, out_dir)
-    return result
 
-
-# --------------------------------------------------------------------------- #
-# gates
-# --------------------------------------------------------------------------- #
 def _readback(tune: Tune, bin_path: Path) -> tuple[str, ...]:
     """Re-read every journaled table off the saved file; report mismatches.
 

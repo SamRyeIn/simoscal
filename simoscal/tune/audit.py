@@ -153,6 +153,11 @@ class RawDiffAudit:
     unexplained: tuple[int, ...] = ()
     #: allowance label → how many of its bytes actually changed
     attributed: dict[str, int] = field(default_factory=dict)
+    #: every file offset whose byte differs between reference and candidate —
+    #: the truth of what moved this revision. ``changed`` is its cardinality;
+    #: this is the set itself, which reviewer-facing renderers need to decide
+    #: which tables actually changed (vs. were carried forward unchanged).
+    changed_offsets: frozenset[int] = frozenset()
 
     @property
     def clean(self) -> bool:
@@ -205,4 +210,5 @@ def raw_diff_audit(
         changed=len(changed),
         unexplained=tuple(sorted(remaining)),
         attributed=attributed,
+        changed_offsets=frozenset(changed),
     )
