@@ -4,6 +4,10 @@ Welcome, and thanks for trying this. You're here because you tune Simos18 cars
 and you're willing to point a young tool at a real engine. This guide gets you
 from zero to a verified bin, and tells you honestly where the tool stops.
 
+**In a hurry?** [`simoscal_tutorial.mp4`](simoscal_tutorial.mp4) (2½ min, silent)
+shows the whole workflow — writing a revision, running it, reading the report —
+before you read a word of this. Then come back to §4 to install.
+
 > **Draft status.** Two things this guide describes are not built yet:
 > the `python -m simoscal.preflight` command (§3) and the validated-profile
 > model for other box codes (§6). Both are in the beta plan. Everything else —
@@ -143,6 +147,12 @@ git clone https://github.com/SamRyeIn/gti-tune.git
 A **revision** is one Python script that declares an entire calibration and
 builds one bin. Revisions are numbered and never edited in place: to make R02,
 copy R01, change the numbers, run it.
+
+If you'd rather watch it first, **[`simoscal_tutorial.mp4`](simoscal_tutorial.mp4)**
+(2½ min, silent, in this folder) walks through exactly this: what a revision is,
+a real script written top to bottom, running it, and reading the report it wrote.
+Every frame is real output, not a mockup. It covers the same ground as §§1–2 of
+the written guide below.
 
 The full walkthrough is **[`authoring-a-revision.md`](authoring-a-revision.md)**
 — start there, it assumes you know Simos18 tuning and have never seen this
