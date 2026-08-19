@@ -116,23 +116,43 @@ that starts a Python runtime, the gap between the launcher tap and the first
 composed frame is long enough to see, and on the stock light parent it was a
 white flash before a near-black app.
 
-**How much of the repaint has been seen running (2026-08-17).** 158 unit tests
-and the no-permissions gate are green and the APK builds, but those say nothing
-about how it looks. On the `v0_arm64` emulator, the **import screen and the
-passed-preflight verdict** were driven for real and screenshotted against the
-promo stills: wordmark, hairline panels, tracked kickers, monospace filename and
-hash, squared accent buttons, the green `good` verdict panel.
+**How much of the repaint has been seen running (2026-08-19).** Every screen has
+now been driven on the target device — a Galaxy Tab A9+ (`SM-X210`, Android 16,
+1200x1920 at 240 dpi) over adb — and screenshotted against the promo stills.
+Import and the passed-preflight verdict were checked on the `v0_arm64` emulator
+on 2026-08-17; **Tables, the table grid, Boost, Slots, and Build** were checked
+on the tablet on 2026-08-19.
 
-**Tables, Boost, Slots, and Build have not been seen rendered** — only compiled.
-Reaching them needs an open session, and on an emulated arm64 device the engine's
-XDF parse runs about four minutes per call (preflight, then again on session
-open); the first attempt was killed when the emulator ran out of memory partway
-through. Nothing in those four screens is new logic — they use the same `Panel`,
-`Kicker`, and `PromoType` as the two that were verified — but the boost canvas's
-five slot colours and the grid's cell/heatmap interplay are worth a look on the
-tablet before this is called done. That is the same gap V8 already records as
-"no Compose screenshot tests", and this repaint is the second unit to be stopped
-by it.
+What held: the wordmark and its orange `cal`, tracked kickers over bold headings,
+flat hairlined panels, table IDs in mono over descriptions in italic prose,
+squared accent buttons, and the five `SLOT_STYLE` hues reading the same in the
+boost canvas's curve labels, the slot chips, and the switchboard's column
+headings. The heatmap grid switches cell text between light and dark by cell
+luminance, so the cold blue end stays legible — the one interplay the emulator
+run could not check.
+
+Three defects the screenshots caught, all fixed in the same pass:
+
+- `BoostCanvas` drew the `rpm` unit label and the last rpm tick label on the same
+  baseline, both anchored to `geometry.right`, so they overprinted into an
+  illegible blot at every canvas width. `rpm` now sits top-right, mirroring `psi`
+  top-left.
+- The ceiling legend fenced `IP_PUT_SP` in literal backticks, which nothing
+  parses. `Caption` gained an `AnnotatedString` overload and `IdentifierSpan`, so
+  a parameter ID sets in mono inside a sentence of prose.
+- The "N breakpoints ... will have no effect there" caption was painted `Danger`.
+  That is the *swallow* case, not a refusal, so it is `Warn` now — the same
+  distinction the function's own doc comment draws.
+
+Reaching the session screens is cheap on real hardware and expensive on an
+emulator: resuming a saved session opened in about 15 s on the tablet, against
+roughly four minutes per XDF parse on `v0_arm64`, where an earlier attempt was
+killed by the emulator running out of memory partway through. Drive the tablet,
+not the emulator.
+
+Still no Compose screenshot tests, so none of the above is guarded against
+regression — the gap V8 already records, and the reason three rendering defects
+survived to a hand-driven pass.
 
 ### Why DataStore rather than Room
 

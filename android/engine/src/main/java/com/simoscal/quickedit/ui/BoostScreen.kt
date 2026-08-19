@@ -25,6 +25,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -280,9 +282,15 @@ private fun SlotChips(activeSlot: Int, dirty: Boolean, onSelect: (Int) -> Unit) 
 private fun CeilingLegend(refusalPsi: Double, cappedCount: Int) {
     Panel(padding = 12.dp) {
         Caption(
-            "Solid line: the base `IP_PUT_SP` — Pressure up throttle setpoint " +
-                "full-load ceiling. The ECU targets min(base, slot), so a slot " +
-                "above it changes nothing at that rpm."
+            buildAnnotatedString {
+                append("Solid line: the base ")
+                withStyle(IdentifierSpan) { append("IP_PUT_SP") }
+                append(
+                    " — Pressure up throttle setpoint full-load ceiling. The ECU " +
+                        "targets min(base, slot), so a slot above it changes nothing " +
+                        "at that rpm."
+                )
+            }
         )
         Caption(
             "Dashed line: ${refusalPsi.display("%.2f")} psi. The engine refuses any cap that reaches it."
@@ -291,7 +299,9 @@ private fun CeilingLegend(refusalPsi: Double, cappedCount: Int) {
             Caption(
                 "$cappedCount breakpoint${if (cappedCount == 1) "" else "s"} of this " +
                     "draft sit above the base ceiling and will have no effect there.",
-                color = PromoPalette.Danger,
+                // Warn, not Danger: the base ceiling swallows these breakpoints, it
+                // does not refuse the edit. Danger is reserved for a refusal.
+                color = PromoPalette.Warn,
             )
         }
     }

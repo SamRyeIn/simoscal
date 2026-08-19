@@ -265,10 +265,12 @@ private fun DrawScope.drawFrameAndGrid(
         topLeft = Offset(geometry.left - 46f, geometry.top - 2f),
         style = labelStyle,
     )
+    // Top-right, mirroring "psi" at top-left. Below the axis it would land on
+    // top of the last rpm tick label, which is anchored to the same right edge.
     drawText(
         textMeasurer = measurer,
         text = "rpm",
-        topLeft = Offset(geometry.right - 26f, geometry.bottom + 6f),
+        topLeft = Offset(geometry.right - 26f, geometry.top - 2f),
         style = labelStyle,
     )
 }

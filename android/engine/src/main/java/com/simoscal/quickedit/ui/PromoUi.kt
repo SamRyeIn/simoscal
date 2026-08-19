@@ -23,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -222,6 +223,18 @@ fun PanelTitle(text: String, tone: PanelTone = PanelTone.Neutral, modifier: Modi
 fun Caption(text: String, modifier: Modifier = Modifier, color: Color = PromoPalette.TextDim) {
     Text(text, style = MaterialTheme.typography.bodySmall, color = color, modifier = modifier)
 }
+
+/**
+ * Caption whose text carries its own spans, so a parameter ID can sit in mono
+ * inside a sentence of prose rather than being fenced in literal backticks.
+ */
+@Composable
+fun Caption(text: AnnotatedString, modifier: Modifier = Modifier, color: Color = PromoPalette.TextDim) {
+    Text(text, style = MaterialTheme.typography.bodySmall, color = color, modifier = modifier)
+}
+
+/** The span an inline parameter ID wears inside a [Caption]. */
+val IdentifierSpan = SpanStyle(fontFamily = FontFamily.Monospace, color = PromoPalette.Text)
 
 /** Monospace, for anything that identifies a file, a table, or a hash. */
 @Composable
