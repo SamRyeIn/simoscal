@@ -31,6 +31,17 @@ python -m venv .venv
 Requires Python ≥ 3.11. Runtime dependencies: `numpy`, `openpyxl` (xlsx export,
 Phase 2), and `matplotlib` (PNG visualization, Phase 3).
 
+### You supply the bin and the XDF
+
+This repository ships **source only**. It does not distribute an OEM calibration
+image (VW's copyright) or the SC8S50 XDF definitions (community-authored, not
+ours to relicense) — see [`LICENSE-THIRD-PARTY`](LICENSE-THIRD-PARTY). `bin/`
+and `xdf/` are gitignored; drop your own files there and every path in the
+examples below resolves. Tests that need them skip cleanly when they're absent.
+
+Read the bin off your own car. Even on the same box code, build from the file
+your ECU actually has, and keep that stock read untouched as your recovery image.
+
 ## Quick start
 
 ```python

@@ -57,9 +57,11 @@ someone else's assumptions about hardware you don't have. Read the lineage for
 
 ### Use your own bin
 
-The repo ships a stock bin at `bin/5G0906259L__0002.bin`, and the examples in
-[`authoring-a-revision.md`](authoring-a-revision.md) use it, because they were
-written for the car it came off.
+The repo does **not** ship a bin or an XDF — neither is the maintainer's to
+redistribute (see §Licence). You supply both. The examples throughout the docs
+name `bin/5G0906259L__0002.bin` and `xdf/SC8S50.V1.0.xdf` because they were
+written for the car that file came off; `bin/` and `xdf/` are gitignored, so
+drop your own files there and the paths in the examples line up.
 
 **Read your own bin off your own car and build from that.** Even on the same box
 code, build from the file your ECU actually has. Never flash a bin derived from
@@ -308,10 +310,10 @@ Portions of `simoscal/checksum.py` adapt the Simos18 checksum and CRC work from
 **BSD-2-Clause**. See [`LICENSE-THIRD-PARTY`](../LICENSE-THIRD-PARTY).
 
 **What the licence does not cover.** The GPL grant applies to this project's own
-source. It does **not** grant you rights to the OEM firmware image in `bin/`,
-which is VW's copyright, nor to the community-authored XDF definitions in
-`xdf/`, which aren't the maintainer's to relicense. They ship here for beta
-convenience; treat their distribution as the beta's business, not yours.
+source, which is all this repository contains. It grants you no rights to an OEM
+firmware image — that is VW's copyright — nor to the community-authored XDF
+definitions, which aren't the maintainer's to relicense. Neither is distributed
+here for exactly that reason; sourcing them is your business, not the project's.
 
 **Contributing.** See [`CONTRIBUTING.md`](../CONTRIBUTING.md) before opening a
 PR — it includes a short grant you'll be asked to acknowledge, which keeps

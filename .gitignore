@@ -24,3 +24,10 @@ demos/*.xlsx
 demos/plots/
 demos/apply_sop_recipe_out/
 demos/apply_btp_patch_out/
+
+# Not ours to redistribute — see LICENSE-THIRD-PARTY.
+# OEM VW calibration images and the community/BinToolz XDF definitions live
+# here locally but are never committed. Bring your own; see docs/BETA_GUIDE.md.
+bin/
+xdf/
+android/parity/fixtures/

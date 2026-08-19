@@ -1,15 +1,16 @@
 """Shared fixtures for the simoscal test suite (U6).
 
-The acceptance suite runs end-to-end against the real bundled files:
+The acceptance suite runs end-to-end against the real files:
 
     xdf/SC8S50.V1.0.xdf      the TunerPro definition
     bin/5G0906259L__0002.bin the 4 MB stock calibration
 
-Both live at the repo root (``Code/``). They are large binaries that may be
-absent from a lean checkout, so every fixture that needs them **skips cleanly
-rather than failing** when they are missing — the TunerPro-free acceptance
-subset (AE2-AE5) then simply doesn't collect, and CI on a machine without the
-files stays green.
+Both belong at the repo root (``Code/``) but are **not committed** — neither is
+ours to redistribute (see ``LICENSE-THIRD-PARTY``), so ``bin/`` and ``xdf/`` are
+gitignored and you drop your own copies in. Every fixture that needs them
+**skips cleanly rather than failing** when they are missing — the TunerPro-free
+acceptance subset (AE2-AE5) then simply doesn't collect, and a fresh clone or CI
+without the files stays green.
 
 AE1 (TunerPro parity) additionally needs a one-time capture,
 ``tests/fixtures/tunerpro_oracle.json``, recorded on Windows (see

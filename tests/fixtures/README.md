@@ -5,14 +5,16 @@
 | `mini.xdf` | Hand-written 3-table XDF snippet for parser unit tests. | In-repo. |
 | `tunerpro_oracle.json` | **Not committed by default.** The one-time TunerPro read-parity capture that AE1 checks against. | Recorded on Windows — see below. |
 
-The large real files the acceptance suite runs against live at the **repo root**
-(`Code/`), not here:
+The large real files the acceptance suite runs against belong at the **repo
+root** (`Code/`), not here, and are **not committed** — neither an OEM bin nor
+the SC8S50 XDFs are ours to redistribute (see `LICENSE-THIRD-PARTY`), so `bin/`
+and `xdf/` are gitignored. Supply your own:
 
 - `../../xdf/SC8S50.V1.0.xdf`
 - `../../bin/5G0906259L__0002.bin`
 
 `conftest.py` resolves them and **skips** any test needing them when they are
-absent, so a lean checkout still runs green.
+absent, so a fresh clone still runs green.
 
 ---
 

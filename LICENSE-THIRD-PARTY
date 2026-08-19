@@ -57,23 +57,22 @@ incorporates no code from that subdirectory.
 
 
 -------------------------------------------------------------------------------
-Material distributed alongside simoscal that this licence does NOT cover
+Material this licence does NOT cover
 -------------------------------------------------------------------------------
 
-Some files ship in this repository for convenience but are not simoscal's to
-license. The GPL grant in LICENSE does not extend to them:
+simoscal reads two kinds of file that are not its to license, and that this
+repository therefore does not distribute. Both are gitignored (`bin/`, `xdf/`);
+you supply your own copies locally.
 
-  bin/5G0906259L__0002.bin
-      An OEM Volkswagen ECU calibration image (box code 5G0906259L_0002, Simos
-      18.1/18.6). Copyright Volkswagen AG. Included as a reference and recovery
-      image for development against the SC8S50 file structure. No licence to it
-      is granted or implied by this project.
+  An OEM ECU calibration image (e.g. box code 5G0906259L_0002, Simos 18.1/18.6).
+      Copyright Volkswagen AG. Read one off your own car; that read is also your
+      recovery image. No licence to any such image is granted or implied here.
 
-  xdf/*.xdf
-      TunerPro XDF definition files describing the SC8S50 file structure,
-      including switch-patch definitions originating with BinToolz. These are
-      community-authored works whose copyright rests with their respective
-      authors, not with this project. No licence to them is granted or implied.
+  TunerPro XDF definition files describing the SC8S50 file structure, including
+  switch-patch definitions originating with BinToolz.
+      Community-authored works whose copyright rests with their respective
+      authors, not with this project. Obtain them from their authors. No licence
+      to them is granted or implied here.
 
-If you redistribute this repository, these files are your responsibility to
-account for, not simoscal's.
+Nothing in this repository grants rights to either. Sourcing them, and complying
+with whatever terms attach to them, is the user's responsibility.
