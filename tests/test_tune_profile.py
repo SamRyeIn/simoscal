@@ -247,9 +247,37 @@ def test_switch_patch_map_binds_every_slot_by_uniqueid() -> None:
 
 
 def test_lineage_helper_tuples_name_real_entries() -> None:
-    for name in (*sc_map.IGNITION_BASE_VVL0, *sc_map.LAMBDA_FAMILY,
-                 *sc_map.LAMBDA_FLOORS, *sc_map.WASTEGATE_MAPS):
+    for name in (*sc_map.IGNITION_BASE_VVL0, *sc_map.IGNITION_TEMP_CORRECTION,
+                 *sc_map.LAMBDA_FAMILY, *sc_map.LAMBDA_FLOORS,
+                 *sc_map.WASTEGATE_MAPS):
         assert name in SC8S50
+
+
+def test_iat_timing_correction_pair_is_mapped_with_its_shared_axes() -> None:
+    """The spark-vs-IAT tables, mapped as a pair with both shared axes.
+
+    Basic and Reference are separate corrections that share *both* breakpoint
+    axes, so a re-breakpoint of either axis moves both grids (and, on the rpm
+    axis, eight further IGA correction tables this profile does not map). The
+    axes are tagged so a generic write must keep them strictly increasing.
+    """
+    basic = SC8S50["ignition_temp_correction_basic"]
+    reference = SC8S50["ignition_temp_correction_reference"]
+    assert basic.key == "IP_IGA_BAS_TEMP_N_32"
+    assert reference.key == "IP_IGA_REF_TEMP_N_32"
+    for spec in (basic, reference):
+        assert spec.shape == (10, 10)
+        assert not spec.domain_owned, "the generic grid editor must reach these"
+        assert not spec.has(prof.TAG_AXIS)
+
+    rpm_axis = SC8S50["ignition_temp_rpm_axis"]
+    iat_axis = SC8S50["ignition_temp_iat_axis"]
+    assert rpm_axis.key == "ldpm_n_32_5_igsp"
+    assert iat_axis.key == "ldpm_tia_iga_cor_sel"
+    for spec in (rpm_axis, iat_axis):
+        assert spec.shape == (1, 10)
+        assert spec.has(prof.TAG_AXIS)
+    assert iat_axis.units == "\N{DEGREE SIGN}C"
 
 
 # --------------------------------------------------------------------------- #
@@ -264,6 +292,22 @@ def test_sc8s50_profile_resolves_completely_on_the_real_xdf(real_cal: CalFile) -
     assert put.view.symbol == "IP_PUT_SP"
     assert put.view.shape == (4, 6)
     assert put.label == "`IP_PUT_SP` — Pressure up throttle setpoint"
+
+    # The IAT timing pair really does share one y axis: the axis this profile
+    # names is the same table the Basic grid embeds as its own y breakpoints.
+    basic = resolved["ignition_temp_correction_basic"]
+    reference = resolved["ignition_temp_correction_reference"]
+    iat_axis = resolved["ignition_temp_iat_axis"]
+    assert basic.view.shape == reference.view.shape == (10, 10)
+    for grid in (basic, reference):
+        assert grid.view.table.y.link_uniqueid == iat_axis.view.uniqueid
+        assert grid.view.table.x.link_uniqueid == (
+            resolved["ignition_temp_rpm_axis"].view.uniqueid
+        )
+    # Stock IAT breakpoints, in degC — the guide's re-breakpoint starts here.
+    assert iat_axis.view.values.ravel() == pytest.approx(
+        [-30, -20.25, -9.75, 0, 30, 40.5, 50.25, 60, 70.5, 80.25], abs=1e-6
+    )
 
 
 def test_switch_patch_profile_resolves_on_its_real_xdf(
