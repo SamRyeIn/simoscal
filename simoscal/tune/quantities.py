@@ -53,6 +53,7 @@ AXIS_QUANTITIES: dict[str, str] = {
     "ldpm_n_1_insy": "Engine speed",
     "ldpm_n_32_1_lasp": "Engine speed",
     "ldpm_n_ip_iga_bas_igsp": "Engine speed",
+    "ldpm_n_32_5_igsp": "Engine speed",
 
     # -- airmass / flow ----------------------------------------------------- #
     # mg/stk ladders (70–1400): airmass per stroke, the load axis the ignition
@@ -69,6 +70,10 @@ AXIS_QUANTITIES: dict[str, str] = {
     # °C, -20.25 to 50.25. `tia_cha_up` = intake air temperature upstream of the
     # charger, i.e. what the compressor inlet sees.
     "ldp_tia_cha_up_ip_pq_cha_max": "Compressor-inlet air temperature",
+    # °C, -30 to 80.25. `tia` with no station qualifier: the sensed intake air
+    # temperature the IGA temperature corrections are selected on. Distinct from
+    # the compressor-inlet axis above — same unit, different station.
+    "ldpm_tia_iga_cor_sel": "Intake air temperature",
 
     # -- wastegate feedforward ---------------------------------------------- #
     # The two flow factors IP_FAC_BPA_SP[0]/[1] are indexed on; both 0–1.5.
