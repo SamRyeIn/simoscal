@@ -1092,3 +1092,125 @@ def test_dispatch_obj_and_dispatch_agree(files: dict):
     from_obj = dispatch_obj(dict(req))
     from_str = json.loads(dispatch(json.dumps(req)))
     assert from_obj == from_str
+
+
+# --------------------------------------------------------------------------- #
+# analyze_logs — read-only, sessionless datalog analysis
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def log_params(tmp_path) -> dict:
+    """Two synthetic datalogs in the shape the app passes them: path + hash + name."""
+    from tests.faultinject import PullSpec, build_folder
+
+    build_folder(
+        tmp_path,
+        [PullSpec(put_overshoot=25.0, knock={3: -3.0}), PullSpec()],
+        wastegate=True,
+        ign_table=True,
+    )
+    return {
+        "logs": [
+            {
+                "log_path": str(csv),
+                "log_sha256": _sha256(csv),
+                "display_name": csv.name,
+            }
+            for csv in sorted(tmp_path.glob("simostools-*.csv"))
+        ]
+    }
+
+
+def test_analyze_logs_happy_path(log_params: dict):
+    result = ok_result(call("analyze_logs", **log_params))
+    assert result["logs"] and result["pulls"]
+    assert result["ran"], "some checks must have run"
+    # The two calibration-aware checks skip without a bin, exactly as on desktop.
+    assert {"boost_cal", "boost_p0234"} <= {s["check_id"] for s in result["skipped"]}
+    assert result["cal_resolved"] is False
+
+
+def test_analyze_logs_needs_no_session():
+    """Reading a datalog has nothing to do with editing a bin, so it is not gated on one."""
+    assert bridge._SESSIONS == {}
+    # (the happy path above already ran with an empty registry; this pins the
+    # intent so a future session gate on this op fails a test rather than a user)
+    assert "session_id" not in bridge.OPS["analyze_logs"].__doc__
+
+
+def test_analyze_logs_returns_every_plot_in_the_inventory(log_params: dict):
+    from simoscal.analysis import PLOT_SPECS
+
+    result = ok_result(call("analyze_logs", **log_params))
+    assert [p["id"] for p in result["plots"]] == [s.id for s in PLOT_SPECS]
+    for plot in result["plots"]:
+        # The copy the app renders above each plot travels with it.
+        assert plot["title"] and plot["description"] and plot["tip"]
+        assert plot["panels"]
+
+
+def test_analyze_logs_plot_series_are_plain_json_numbers(log_params: dict):
+    """No numpy scalar may reach the wire — the same rule every other op obeys."""
+    result = ok_result(call("analyze_logs", **log_params))
+    drawn = [p for p in result["plots"] if p["drawn"]]
+    assert drawn, "the synthetic logs should draw something"
+    for plot in drawn:
+        for panel in plot["panels"]:
+            for series in panel["series"]:
+                for segment in series["segments"]:
+                    assert len(segment["x"]) == len(segment["y"])
+                    assert all(isinstance(v, float) for v in segment["x"])
+                    assert all(isinstance(v, float) for v in segment["y"])
+
+
+def test_analyze_logs_rejects_a_changed_file(log_params: dict, tmp_path):
+    """A CSV edited after the app hashed it is refused before it is parsed."""
+    target = Path(log_params["logs"][0]["log_path"])
+    target.write_text(target.read_text() + "\n0,0,0\n")
+    assert err_code(call("analyze_logs", **log_params)) == ErrorCode.HASH_MISMATCH.value
+
+
+def test_analyze_logs_missing_file_is_file_not_found(log_params: dict):
+    log_params["logs"][0]["log_path"] = "/nonexistent/simostools-gone.csv"
+    assert err_code(call("analyze_logs", **log_params)) == ErrorCode.FILE_NOT_FOUND.value
+
+
+def test_analyze_logs_requires_a_non_empty_list():
+    assert err_code(call("analyze_logs", logs=[])) == ErrorCode.BAD_PARAMS.value
+    assert err_code(call("analyze_logs", logs="nope")) == ErrorCode.BAD_PARAMS.value
+    assert err_code(call("analyze_logs", logs=["nope"])) == ErrorCode.BAD_PARAMS.value
+    assert err_code(call("analyze_logs")) == ErrorCode.BAD_PARAMS.value
+
+
+def test_analyze_logs_unparseable_csv_is_an_analysis_error(tmp_path):
+    junk = tmp_path / "simostools-junk.csv"
+    junk.write_text("")                       # no header row at all
+    env = call("analyze_logs", logs=[{"log_path": str(junk), "log_sha256": _sha256(junk)}])
+    assert err_code(env) == ErrorCode.ANALYSIS_ERROR.value
+    assert "Traceback" not in json.dumps(env)
+
+
+def test_analyze_logs_display_name_labels_the_pulls(log_params: dict):
+    """The app's copy is content-addressed, so the name a person sees must travel."""
+    for entry in log_params["logs"]:
+        entry["display_name"] = "my drive.csv" if entry is log_params["logs"][0] else "second.csv"
+    result = ok_result(call("analyze_logs", **log_params))
+    names = {log["name"] for log in result["logs"]}
+    assert "my drive.csv" in names
+    assert {pull["file"] for pull in result["pulls"]} <= names
+
+
+def test_analyze_logs_runs_cal_checks_when_a_bin_is_supplied(log_params: dict, files: dict):
+    """With a bin + XDF the two calibration-aware checks run instead of skipping."""
+    result = ok_result(call("analyze_logs", **log_params, **files))
+    assert result["cal_resolved"] is True
+    assert {"boost_cal", "boost_p0234"} <= set(result["ran"])
+
+
+def test_analyze_logs_is_deterministic(log_params: dict):
+    first = dispatch(json.dumps(
+        {"bridge_version": BRIDGE_VERSION, "op": "analyze_logs", "params": log_params}
+    ))
+    second = dispatch(json.dumps(
+        {"bridge_version": BRIDGE_VERSION, "op": "analyze_logs", "params": log_params}
+    ))
+    assert first == second

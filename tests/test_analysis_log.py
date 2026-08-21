@@ -12,6 +12,7 @@ from simoscal.analysis import (
     GearResolution,
     load_logfile,
     load_logset,
+    load_logset_files,
 )
 from simoscal.analysis.log import AnalysisError
 
@@ -228,3 +229,53 @@ def test_dedup_keeps_distinct_captures(tmp_path):
     ls = load_logset(tmp_path)
     assert len(ls) == 2
     assert ls.notes == ()
+
+
+# --------------------------------------------------------------------------- #
+# load_logset_files — the explicit-path form the embedded client uses
+# --------------------------------------------------------------------------- #
+def test_load_logset_files_takes_explicit_paths(tmp_path):
+    """No glob and no folder convention: the app has neither."""
+    a = write_log(tmp_path / "aaa.csv", clean_pull_columns(n=40, t0=0.0))
+    b = write_log(tmp_path / "bbb.csv", clean_pull_columns(n=40, t0=500.0))
+    logset = load_logset_files([a, b])
+    assert [f.name for f in logset.files] == ["aaa", "bbb"]
+    assert logset.has("rpm")
+
+
+def test_load_logset_files_honours_display_names(tmp_path):
+    """The app's copy is content-addressed, so the recognisable name is passed in."""
+    hashed = write_log(tmp_path / "9f86d081884c.csv", clean_pull_columns(n=40, t0=0.0))
+    logset = load_logset_files([hashed], names={str(hashed): "sunday morning pull.csv"})
+    assert [f.name for f in logset.files] == ["sunday morning pull.csv"]
+
+
+def test_load_logset_files_still_dedups_overlapping_captures(tmp_path):
+    """A trimmed re-export must not double-count its pull, however the file arrived."""
+    full = write_log(tmp_path / "full.csv", clean_pull_columns(n=80, t0=0.0))
+    trim = write_log(tmp_path / "trim.csv", clean_pull_columns(n=40, t0=0.0))
+    logset = load_logset_files([full, trim])
+    assert len(logset.files) == 1
+    assert logset.files[0].name == "full"          # the superset survives
+    assert logset.notes, "the dedup decision is reported, never silent"
+
+
+def test_load_logset_files_fails_loud_on_an_empty_list(tmp_path):
+    with pytest.raises(AnalysisError, match="no log files"):
+        load_logset_files([])
+
+
+def test_load_logset_files_fails_loud_on_a_missing_path(tmp_path):
+    real = write_log(tmp_path / "real.csv", clean_pull_columns(n=40, t0=0.0))
+    with pytest.raises(AnalysisError, match="not found"):
+        load_logset_files([real, tmp_path / "gone.csv"])
+
+
+def test_load_logset_and_load_logset_files_agree(tmp_path):
+    """The folder form delegates to the explicit form; they must not diverge."""
+    write_log(tmp_path / "simostools-a.csv", clean_pull_columns(n=40, t0=0.0))
+    write_log(tmp_path / "simostools-b.csv", clean_pull_columns(n=40, t0=500.0))
+    by_folder = load_logset(tmp_path)
+    by_paths = load_logset_files(sorted(tmp_path.glob("simostools-*.csv")), folder=tmp_path)
+    assert [f.name for f in by_folder.files] == [f.name for f in by_paths.files]
+    assert by_folder.channels() == by_paths.channels()

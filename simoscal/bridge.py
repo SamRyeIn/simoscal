@@ -114,6 +114,7 @@ class ErrorCode(str, Enum):
     PROFILE_ERROR = "PROFILE_ERROR"      # the XDF does not resolve the profile
     TUNE_ERROR = "TUNE_ERROR"            # opening/editing the tune failed loudly
     BUSY = "BUSY"                        # another call holds the engine lock
+    ANALYSIS_ERROR = "ANALYSIS_ERROR"    # a datalog could not be parsed or analyzed
     INTERNAL = "INTERNAL"                # an unexpected exception (logged)
 
 
@@ -897,6 +898,116 @@ def _op_build(params: dict) -> dict:
     return {"report": report.to_dict()}
 
 
+# --------------------------------------------------------------------------- #
+# log analysis — read-only, sessionless
+# --------------------------------------------------------------------------- #
+def _verified_logs(params: dict) -> tuple[list[Path], dict[str, str]]:
+    """Resolve the ``logs`` list into verified paths plus their display names.
+
+    Each element is ``{"log_path", "log_sha256", "display_name"?}`` — the same
+    ``<name>_path`` / ``<name>_sha256`` suffix contract every other file-naming
+    op uses, so one element goes straight through :func:`_verified_path` and
+    inherits its ``FILE_NOT_FOUND`` / ``HASH_MISMATCH`` behaviour unchanged.
+
+    The display name is carried separately because the app's copy of a picked
+    CSV is content-addressed: the filename on disk is a hash, and the name a
+    person recognises — the one that ends up labelling a pull — is what the
+    picker showed them.
+    """
+    raw = _require(params, "logs")
+    if not isinstance(raw, list) or not raw:
+        raise BridgeError(ErrorCode.BAD_PARAMS, "'logs' must be a non-empty list")
+    paths: list[Path] = []
+    names: dict[str, str] = {}
+    for element in raw:
+        if not isinstance(element, dict):
+            raise BridgeError(ErrorCode.BAD_PARAMS, "each entry in 'logs' must be an object")
+        path = _verified_path(element, "log")
+        paths.append(path)
+        display = element.get("display_name")
+        if isinstance(display, str) and display:
+            names[str(path)] = display
+    return paths, names
+
+
+def _op_analyze_logs(params: dict) -> dict:
+    """Run the analysis battery over a set of verified datalog CSVs. Read-only.
+
+    Nothing here writes a file, opens a session, or touches a bin's bytes: it
+    parses logs, detects pulls, runs the same battery
+    ``python -m simoscal.analysis`` runs, and hands back the findings plus the
+    plot series. The op is deliberately sessionless — reading a datalog has
+    nothing to do with editing a calibration, and requiring an open session to
+    look at a log would be a gate with no safety behind it.
+
+    A bin + XDF may be supplied (both, or neither); with them the two
+    calibration-aware checks run, and without them they land in SKIPPED exactly
+    as they do on the desktop when no bin resolves. The desktop's *autolocation*
+    of a bin deliberately does not happen here — there is no project tree on a
+    phone, and a check that silently found some other bin would be worse than
+    one that skipped.
+
+    **Plots are series, not images.** matplotlib is outside the mobile
+    dependency closure on purpose, so the engine sends the same masked, sorted
+    samples its own PNGs are drawn from (:func:`simoscal.analysis.plot_payload`)
+    and the app draws them. The inventory — which channel belongs on which
+    panel, and in which role — is the engine's either way.
+    """
+    from .analysis import (
+        AnalysisError,
+        CheckContext,
+        default_battery,
+        detect_pulls,
+        findings_to_dict,
+        load_logset_files,
+        plot_payload,
+        run_battery,
+    )
+
+    paths, names = _verified_logs(params)
+    bin_path = _verified_path(params, "bin", required=False)
+    xdf_path = _verified_path(params, "xdf", required=False)
+
+    try:
+        logset = load_logset_files(paths, names=names)
+        pulls = detect_pulls(logset)
+    except AnalysisError as exc:
+        raise BridgeError(
+            ErrorCode.ANALYSIS_ERROR,
+            "those datalogs could not be read",
+            advanced=str(exc),
+        ) from exc
+
+    cal = None
+    cal_note = ""
+    if bin_path is not None and xdf_path is not None:
+        try:
+            from .calfile import CalFile
+
+            cal = CalFile.open(str(xdf_path), str(bin_path))
+        except Exception as exc:
+            # A calibration that will not open must not sink the whole analysis:
+            # every channel-based finding is still valid without it. It is
+            # reported rather than swallowed, and the two cal-aware checks skip.
+            cal_note = f"could not open the calibration: {exc}"
+
+    ctx = CheckContext(logset=logset, pulls=pulls, cal=cal)
+    try:
+        result = run_battery(default_battery(), ctx)
+        document = findings_to_dict(result)
+        document["plots"] = plot_payload(ctx)
+    except AnalysisError as exc:
+        raise BridgeError(
+            ErrorCode.ANALYSIS_ERROR,
+            "those datalogs could not be analysed",
+            advanced=str(exc),
+        ) from exc
+
+    if cal_note:
+        document["cal_notes"] = [cal_note]
+    return _jsonify(document)
+
+
 #: The closed op table. If an op is not here, it is not something the phone can do.
 OPS: dict[str, Callable[[dict], dict]] = {
     "bridge_info": _op_bridge_info,
@@ -924,6 +1035,11 @@ OPS: dict[str, Callable[[dict], dict]] = {
     "undo": _op_undo,
     "redo": _op_redo,
     "build": _op_build,
+    # Read-only and sessionless: it analyses datalogs and never touches a bin.
+    # Additive, so BRIDGE_VERSION is unchanged for the same reason the V8 ops
+    # left it alone — an older app never names it, and a newer app against an
+    # older engine gets a clean UNKNOWN_OP.
+    "analyze_logs": _op_analyze_logs,
 }
 
 

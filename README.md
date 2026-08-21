@@ -217,6 +217,33 @@ identity before `build_revision()` can expose a share path.
 A client owns scheduling and lifecycle only; Python remains authoritative for
 preflight, edits, checksums, readback, byte audit, and the share verdict.
 
+The read-only `journal` op hands back a live session's whole edit journal as flat
+text, so a client can show a person what they have changed so far. It is
+pointedly **not** a report: no verified flag, no gate rows, no checksum state, no
+share path. A report is only ever the atomic product of a `build` gate run
+(CR-20260724-02), and re-deriving one from the live journal is the drift that
+finding closed — a client rendering this op owes its reader a plain statement
+that the list is unverified. Because undo and redo restore the journal wholesale,
+re-reading this op is also the only way a client stays correct about what a
+session holds; a tally accumulated from edit replies drifts on the first undo.
+
+The read-only `analyze_logs` op runs the whole analysis battery over a set of
+verified datalog CSVs and returns the findings document plus `plot_payload()`.
+It is **sessionless on purpose**: reading a datalog has nothing to do with
+editing a calibration, and requiring an open session would be a gate with no
+safety behind it. It writes no file — the desktop entry point's
+`analysis_findings.{json,md}` and `plots/` are folder artifacts, and an embedded
+client has neither a folder nor a reason for them.
+
+Two differences from `analyze_folder` are deliberate. Bin **autolocation does
+not happen**: there is no project tree on a phone, and a check that quietly found
+some other bin would be worse than one that skipped, so the calibration is passed
+explicitly or the two `needs_cal` checks report SKIPPED. And plots cross as
+*series*, not images: matplotlib is outside the embedded dependency closure, so
+the client draws them from `PLOT_SPECS`' own declarations rather than deciding
+for itself what belongs on a panel. `analyze_logs` is additive and does not bump
+`BRIDGE_VERSION`, for the same reason the V8 ops did not.
+
 ## API surface
 
 ### `CalFile`
@@ -447,6 +474,8 @@ python -m simoscal.analysis --print-battery          # enumerate the battery, ru
 |--------|-------------|
 | `analyze_folder(folder, *, xdf_path=None, bin_path=None, make_plots=True)` → `AnalyzeResult` | Load CSVs, detect pulls, autolocate the bin, run the battery + coverage, write `analysis_findings.{json,md}` and `plots/analysis_*.png` into the folder. |
 | `load_logset(folder)` → `LogSet` | Parse `simostools-*.csv` into canonical, unit-normalized channels (airmass→mg/stk, rail→bar) with header-rule gear resolution and a non-mutating quality preflight; dedups trimmed re-exports of one capture. |
+| `load_logset_files(paths, *, folder=None, dedup=True, names=None)` → `LogSet` | The explicit-path form `load_logset` delegates to, for a caller with no folder to glob — the Android app, whose copy of each CSV is content-addressed. `names` carries the display name the picker showed, since the filename on disk is a hash. |
+| `plot_payload(ctx)` → `list[dict]` | Every evidence plot in `PLOT_SPECS` as JSON-safe series — the same masked, segmented, rpm-sorted samples the PNGs are drawn from. What the bridge's `analyze_logs` op sends a client that cannot render matplotlib. |
 | `detect_pulls(logset)` → `list[Pull]` | Segment WOT pulls + per-pull summary with environment context. |
 | `default_battery()` → `list[Check]` · `run_battery(checks, ctx)` → `BatteryResult` | The v1 battery (knock, boost, wastegate, lambda, rail, timing, turbo/heat, torque limiter, data quality, + a `needs_cal` boost-ceiling check) and its runner. |
 | `compute_coverage(ctx)` → `(results, skipped)` | Per-cell hit-count maps (whole-log + WOT-only) for the primary tuning tables via ECU-lookup simulation. |
@@ -465,6 +494,18 @@ panel-stack per CSV vs time with detected pull windows shaded), and
 `tc_activity_<log>` (per CSV, inferring the switch-patch slip-based TC — wheel
 slip, ignition, wastegate, torque — skipped when no wheel-speed channel is
 present).
+**The plot inventory is data, in one place.** `simoscal/analysis/series.py`
+declares every rpm-axis evidence plot — panels, series and their roles, threshold
+lines, and the description/tip prose printed above each one — as `PLOT_SPECS`.
+`evidence.py` renders those declarations to PNG and `bridge.analyze_logs`
+serializes them to JSON, both drawing their samples from the one shared
+`series_segments()`. The reason is drift: matplotlib is outside the Android
+dependency closure, so the app must draw its own plots, and an inventory decided
+twice is an inventory that ends up describing the same log two ways.
+`test_plot_payload_matches_the_png_inventory` pins the two together. The
+per-file time-axis plots (`overview`, `tc_activity`) stay imperative and
+desktop-only.
+
 Thresholds are seeded from the R01/R04 reviews and live as inspectable registry
 data. Acceptance replay (`tests/test_acceptance_analysis.py`) reproduces the
 R01/R04 headline findings with **no false High** — every High the tool emits is

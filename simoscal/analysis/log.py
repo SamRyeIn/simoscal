@@ -28,7 +28,7 @@ from __future__ import annotations
 import csv
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional
 
@@ -45,6 +45,7 @@ __all__ = [
     "LogFile",
     "LogSet",
     "load_logset",
+    "load_logset_files",
 ]
 
 CSV_GLOB = "simostools-*.csv"
@@ -546,8 +547,56 @@ def load_logset(folder: str | Path, *, glob: str = CSV_GLOB, dedup: bool = True)
     paths = sorted(folder.glob(glob))
     if not paths:
         raise AnalysisError(f"no {glob} files found under {folder}")
-    files = tuple(load_logfile(p) for p in paths)
+    return load_logset_files(paths, folder=folder, dedup=dedup)
+
+
+def load_logset_files(
+    paths,
+    *,
+    folder: Optional[str | Path] = None,
+    dedup: bool = True,
+    names: Optional[dict] = None,
+) -> LogSet:
+    """Load an explicit, ordered list of CSV paths into a :class:`LogSet`.
+
+    :func:`load_logset` is the folder form and delegates here. This form exists
+    for the embedded client: the Android app copies each picked CSV into
+    app-private storage under a *content-addressed* name, so there is no folder
+    to glob and no ``simostools-*.csv`` filename left to match. It is handed the
+    verified paths instead.
+
+    ``names`` optionally maps a path (as ``str``) to the display name the file
+    should carry — again for the app, where the content-addressed filename on
+    disk is a hash and the name a person recognises is the one the picker showed.
+    A path absent from the map keeps its own stem, so the desktop path through
+    this function is unchanged.
+
+    Deduplication of overlapping captures still applies (see
+    :func:`_dedup_overlapping`), because counting one pull twice is just as wrong
+    whichever way the files arrived.
+    """
+    paths = [Path(p) for p in paths]
+    if not paths:
+        raise AnalysisError("no log files given")
+    missing = [p for p in paths if not p.is_file()]
+    if missing:
+        raise AnalysisError(f"log file not found: {missing[0]}")
+
+    files = []
+    for path in paths:
+        logfile = load_logfile(path)
+        display = (names or {}).get(str(path))
+        # Rename only the label. `LogFile.name` is what pulls, findings, and the
+        # per-file plots key off, so it has to be the name a person will
+        # recognise — but nothing about the parse depends on it.
+        files.append(replace(logfile, name=display) if display else logfile)
+    files = tuple(files)
+
     notes: list[str] = []
     if dedup:
         files, notes = _dedup_overlapping(files)
-    return LogSet(folder=folder, files=files, notes=tuple(notes))
+    return LogSet(
+        folder=Path(folder) if folder is not None else paths[0].parent,
+        files=files,
+        notes=tuple(notes),
+    )

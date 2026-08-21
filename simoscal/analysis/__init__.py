@@ -42,6 +42,7 @@ from .log import (
     SPEC_BY_ID,
     load_logfile,
     load_logset,
+    load_logset_files,
 )
 from .pulls import (
     PULL_DETECTION_CONSTANTS,
@@ -74,6 +75,17 @@ from .coverage import (
     compute_coverage,
 )
 from .evidence import AnalyzeResult, analyze_folder, resolve_bin, resolve_xdf
+from .series import (
+    PLOT_SPECS,
+    PanelSpec,
+    PlotSpec,
+    Role,
+    SeriesSpec,
+    ThresholdSpec,
+    Tone,
+    plot_payload,
+    series_segments,
+)
 
 __all__ = [
     "AnalysisError",
@@ -88,6 +100,7 @@ __all__ = [
     "LogSet",
     "load_logfile",
     "load_logset",
+    "load_logset_files",
     "PULL_DETECTION_CONSTANTS",
     "Pull",
     "PullEnvironment",
@@ -114,4 +127,13 @@ __all__ = [
     "CoverageSpec",
     "DEFAULT_COVERAGE_SPECS",
     "compute_coverage",
+    "PLOT_SPECS",
+    "PanelSpec",
+    "PlotSpec",
+    "Role",
+    "SeriesSpec",
+    "ThresholdSpec",
+    "Tone",
+    "plot_payload",
+    "series_segments",
 ]
