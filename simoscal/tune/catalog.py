@@ -84,6 +84,15 @@ class TableInfo:
     #: ``units`` spelled out — a bare XDF ``-`` becomes "dimensionless", so an
     #: intentionally unitless ratio never reads as missing metadata.
     units_description: str = ""
+    #: The table as the **imported bin** held it, before this session wrote
+    #: anything — the "stock ghost" an editor draws behind a working curve.
+    #:
+    #: ``None`` means not requested (:func:`catalog` omits it: decoding a second
+    #: copy of every table to list them would be paid for by every browse) or not
+    #: available, which is the honest answer when a session was recovered rather
+    #: than opened and the pre-edit buffer is not in hand. A screen must treat
+    #: ``None`` as "no ghost to draw", never as "unchanged".
+    source_values: Optional[tuple] = None
     #: One line saying what the table *is*: cell unit against its axes, e.g.
     #: ``"hPa vs. Engine speed [rpm] and Manifold pressure setpoint [hPa]"``.
     #: The title names the table; this names its dimensions.
@@ -153,7 +162,42 @@ def _nested(values: np.ndarray) -> tuple:
     return tuple(tuple(float(v) for v in row) for row in arr)
 
 
-def _table_info(tune: Tune, space: str, name: str) -> TableInfo:
+def _source_values(tune: Tune, space: str, name: str) -> Optional[tuple]:
+    """The table's values in the buffer the build started from, or ``None``.
+
+    Decoded from :attr:`~simoscal.tune.project.Tune.source_snapshot` — the
+    patched-stock bytes captured before any write — through the *same* XDF model
+    the live space uses, so the ghost and the working values are the same
+    quantity decoded the same way.
+
+    Every failure path returns ``None`` rather than raising or guessing. A ghost
+    is a nicety; a table detail that could not be read at all because its
+    optional reference copy would not decode is a real editing surface lost to a
+    decoration.
+    """
+    snapshot = getattr(tune, "source_snapshot", b"")
+    if not snapshot:
+        return None
+    try:
+        from ..binimage import BinImage
+        from ..calfile import CalFile
+
+        table_space = tune.space(space)
+        model = table_space.cal.model
+        image = BinImage(
+            snapshot,
+            region_start=model.region_start,
+            region_size=model.region_size,
+        )
+        view = CalFile(model, image).get(table_space.tables[name].spec.key)
+        return _nested(view.values)
+    except Exception:  # noqa: BLE001 - a missing ghost must never break the read
+        return None
+
+
+def _table_info(
+    tune: Tune, space: str, name: str, *, include_source: bool = False
+) -> TableInfo:
     resolved = tune.table(name, space=space)
     view = resolved.view
     model = getattr(tune.space(space).cal, "model", None)
@@ -186,6 +230,7 @@ def _table_info(tune: Tune, space: str, name: str) -> TableInfo:
         x_axis=x_axis,
         y_axis=y_axis,
         values=_nested(view.values),
+        source_values=_source_values(tune, space, name) if include_source else None,
         units_description=units_label(units),
         signature=table_signature(
             units,
@@ -230,5 +275,11 @@ def catalog(
 
 
 def table_detail(tune: Tune, name: str, *, space: str = "base") -> TableInfo:
-    """The :class:`TableInfo` for one table, including its current values."""
-    return _table_info(tune, space, name)
+    """The :class:`TableInfo` for one table, with current *and* source values.
+
+    Unlike :func:`catalog`, this carries :attr:`TableInfo.source_values` — what
+    the imported bin held before this session touched the table. One table's
+    second decode is cheap; the whole catalog's would be paid for on every
+    browse, which is why the list form does without it.
+    """
+    return _table_info(tune, space, name, include_source=True)

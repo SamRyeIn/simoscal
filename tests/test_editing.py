@@ -271,3 +271,50 @@ def test_slot_curve_above_base_ceiling_is_refused() -> None:
     over = max(m.base_ceiling_own_psi) + 20.0
     with pytest.raises(ValueError, match="base"):
         slot_curve_result(tune, 5, psi=over, intent="above the base ceiling")
+
+
+# --------------------------------------------------------------------------- #
+# the source-value ghost (U6): what the imported bin held, before this session
+# --------------------------------------------------------------------------- #
+@requires_base
+def test_table_detail_carries_the_imported_bin_s_values() -> None:
+    """The ghost a curve editor draws behind a working draft.
+
+    It must track the *source*, not the last-applied values — otherwise the
+    reference moves every time an edit lands and stops being a reference.
+    """
+    tune = _open_base()
+    before = table_detail(tune, "pedal_threshold_full_load")
+    assert before.source_values == before.values, "nothing edited yet"
+
+    tune.fueling.pedal_threshold(90.0)
+    after = table_detail(tune, "pedal_threshold_full_load")
+
+    assert after.values[0][0] != after.source_values[0][0]
+    assert after.source_values == before.values, "the ghost stayed at stock"
+
+
+@requires_base
+def test_a_second_edit_does_not_move_the_ghost() -> None:
+    tune = _open_base()
+    stock = table_detail(tune, "pedal_threshold_full_load").source_values
+
+    tune.fueling.pedal_threshold(90.0)
+    tune.fueling.pedal_threshold(80.0)
+    assert table_detail(tune, "pedal_threshold_full_load").source_values == stock
+
+
+@requires_base
+def test_the_catalog_does_not_pay_for_a_ghost_it_never_draws() -> None:
+    """Listing tables decodes each once; only the detail view decodes twice."""
+    tune = _open_base()
+    assert all(info.source_values is None for info in catalog(tune))
+    assert table_detail(tune, "put_setpoint").source_values is not None
+
+
+@requires_base
+def test_the_ghost_is_absent_rather_than_wrong_when_unavailable() -> None:
+    """No pre-edit buffer means no ghost — never a guess at one."""
+    tune = _open_base()
+    tune._source_snapshot = b""
+    assert table_detail(tune, "put_setpoint").source_values is None
