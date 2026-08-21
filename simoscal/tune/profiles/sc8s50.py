@@ -141,9 +141,50 @@ for _intake in range(3):
             "°CRK", (16, 16),
         ))
 
+# ---- ignition: intake-air-temperature correction --------------------------- #
+# The spark-vs-IAT tables. Stock pulls timing above 30 degC and adds it when
+# very cold; the basics guide's author does neither on an upgraded intercooler
+# (see knowledge/ecu-tuning-basics.md, "Spark IAT correction").
+#
+# Basic and Reference are separate corrections applied to separate angles, but
+# they share BOTH breakpoint axes and nothing in the XDF says so at the point of
+# edit. They are mapped as a pair so that fact is visible in one place.
+_SPECS.extend([
+    _spec("ignition_temp_correction_basic", "IP_IGA_BAS_TEMP_N_32",
+          "Basis for temperature correction of Basic IGA versus N_32, TIA "
+          "(timing offset vs engine speed and intake air temperature)",
+          "\N{DEGREE SIGN}CRK", (10, 10)),
+    _spec("ignition_temp_correction_reference", "IP_IGA_REF_TEMP_N_32",
+          "Basis for temperature correction of Reference IGA versus N_32, TIA "
+          "(timing offset vs engine speed and intake air temperature)",
+          "\N{DEGREE SIGN}CRK", (10, 10)),
+    # Shared axes. The x axis is the wider hazard of the two: it breakpoints ten
+    # ignition-correction tables (IP_IGA_BAS_TEMP_*, IP_IGA_REF_TEMP_*, and the
+    # coolant-temperature TCO variants), only two of which are mapped here, so a
+    # re-breakpoint moves eight tables this profile cannot show you. The y axis
+    # is shared by exactly the two tables above and nothing else.
+    _spec("ignition_temp_rpm_axis", "ldpm_n_32_5_igsp",
+          "Basis for temperature correction of IGA versus N_32, TIA : x axis "
+          "(engine speed), shared by ten IGA temperature-correction tables",
+          "rpm", (1, 10), frozenset({TAG_AXIS})),
+    _spec("ignition_temp_iat_axis", "ldpm_tia_iga_cor_sel",
+          "Basis for temperature correction of IGA versus N_32, TIA : y axis "
+          "(intake air temperature), shared by Basic and Reference",
+          "\N{DEGREE SIGN}C", (1, 10), frozenset({TAG_AXIS})),
+])
+
 #: Every base-timing logical name, in the order the ECU's cam grid runs.
 IGNITION_BASE_VVL0 = tuple(
     f"ignition_base_vvl0_i{i}_e{e}" for i in range(3) for e in range(3)
+)
+
+#: The two IAT timing corrections and the two axes they share, in the order a
+#: revision should think about them: cells first, axes last.
+IGNITION_TEMP_CORRECTION = (
+    "ignition_temp_correction_basic",
+    "ignition_temp_correction_reference",
+    "ignition_temp_rpm_axis",
+    "ignition_temp_iat_axis",
 )
 
 #: The three lambda grids that share ``lambda_rpm_axis`` / ``lambda_load_axis``.
@@ -165,6 +206,7 @@ SC8S50 = Profile(
 __all__ = [
     "SC8S50",
     "IGNITION_BASE_VVL0",
+    "IGNITION_TEMP_CORRECTION",
     "LAMBDA_FAMILY",
     "LAMBDA_FLOORS",
     "WASTEGATE_MAPS",
