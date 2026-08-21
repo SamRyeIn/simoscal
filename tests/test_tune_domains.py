@@ -339,3 +339,213 @@ def test_limits_reproduce_the_r03_limiter_writes(
     ):
         expected = _table(reference, real_xdf, symbol)
         assert np.allclose(tune.values(name), expected, rtol=0, atol=1e-9), name
+
+
+# --------------------------------------------------------------------------- #
+# U2 — the coherent multi-table limiters and the lambda lean bound
+#
+# These are the ops the Limiters and Lambda screens drive. What is tested is not
+# "the write lands" but the refusals: an incoherent trio, a partial quartet, and
+# a lean full-load setpoint are the three states the screens must not be able to
+# produce, and each must leave the tables and the journal untouched.
+# --------------------------------------------------------------------------- #
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SWITCH_XDF = REPO_ROOT / "BinToolz-main" / "definitions" / "S50 Switch Patch.29.33.V2.xdf"
+PATCHED_BIN = (
+    REPO_ROOT / "Tunes" / "TuningBasicsGuide" / "BinToolz-patched"
+    / "CB_HSL_SP2933_5G0906259L_0002_BasicsGuide_R04.bin"
+)
+
+requires_patch = pytest.mark.skipif(
+    not (PATCHED_BIN.is_file() and SWITCH_XDF.is_file()),
+    reason="patched bin / switch-patch XDF absent",
+)
+
+
+@pytest.fixture
+def patched_tune(real_xdf: Path) -> Tune:
+    from simoscal.tune.domains.switchpatch import PATCH_SPACE
+    from simoscal.tune.profiles import SWITCH_PATCH_2933
+
+    return Tune.open(
+        SC8S50, xdf=real_xdf, bin=PATCHED_BIN,
+        extra_spaces={PATCH_SPACE: (SWITCH_PATCH_2933, SWITCH_XDF)},
+    )
+
+
+def _trio(tune: Tune) -> list[float]:
+    from simoscal.tune.profiles.switchpatch_2933 import REV_LIMIT_TRIO
+
+    return [
+        float(tune.values(name, space="patch").ravel()[0])
+        for name in REV_LIMIT_TRIO
+    ]
+
+
+# ---- rev limits: the escalation invariant ---------------------------------- #
+@requires_patch
+def test_rev_limits_writes_the_trio_as_three_journaled_entries(
+    patched_tune: Tune,
+) -> None:
+    entries = patched_tune.limits.rev_limits(soft=100, medium=200, hard=300)
+
+    assert len(entries) == 3
+    assert _trio(patched_tune) == [100.0, 200.0, 300.0]
+    # Every entry names the whole resulting trio, so a reviewer reading one row
+    # of the journal can see the state it left behind.
+    for entry in entries:
+        assert "soft=100" in entry.detail and "hard=300" in entry.detail
+
+
+@requires_patch
+def test_rev_limits_refuses_a_backwards_trio_atomically(patched_tune: Tune) -> None:
+    before = _trio(patched_tune)
+    journal_len = len(patched_tune.journal)
+
+    with pytest.raises(ValueError, match="escalate"):
+        patched_tune.limits.rev_limits(soft=500, medium=200, hard=300)
+
+    assert _trio(patched_tune) == before, "a refused trio must move no table"
+    assert len(patched_tune.journal) == journal_len, "and journal nothing"
+
+
+@requires_patch
+def test_a_single_rev_limit_is_revalidated_against_the_live_others(
+    patched_tune: Tune,
+) -> None:
+    """Passing one value still checks the trio the ECU would end up holding."""
+    patched_tune.limits.rev_limits(soft=100, medium=200, hard=300)
+
+    # 250 as the soft limit would sit above the live medium (200).
+    with pytest.raises(ValueError, match="escalate"):
+        patched_tune.limits.rev_limits(soft=250)
+    assert _trio(patched_tune) == [100.0, 200.0, 300.0]
+
+    # 150 fits under it, and writes only the one table it was given.
+    (entry,) = patched_tune.limits.rev_limits(soft=150)
+    assert entry.name == "rev_limit_soft"
+    assert _trio(patched_tune) == [150.0, 200.0, 300.0]
+
+
+@requires_patch
+def test_rev_limits_refuses_a_value_past_the_encodable_range(
+    patched_tune: Tune,
+) -> None:
+    before = _trio(patched_tune)
+    with pytest.raises(ValueError, match="declared range"):
+        patched_tune.limits.rev_limits(hard=9000)   # field maxes at 8160 rpm
+    assert _trio(patched_tune) == before
+
+
+@requires_patch
+def test_rev_limits_requires_at_least_one_value(patched_tune: Tune) -> None:
+    with pytest.raises(ValueError, match="at least one"):
+        patched_tune.limits.rev_limits()
+
+
+# ---- speed limiter: the quartet ------------------------------------------- #
+def test_speed_limiter_writes_every_quartet_scalar(tune: Tune) -> None:
+    from simoscal.tune.profiles.sc8s50 import SPEED_LIMITER
+
+    entries = tune.limits.speed_limiter(250)
+
+    assert len(entries) == len(SPEED_LIMITER) == 4
+    for name in SPEED_LIMITER:
+        assert float(tune.values(name).ravel()[0]) == pytest.approx(250.0)
+    assert {e.name for e in entries} == set(SPEED_LIMITER)
+
+
+def test_speed_limiter_refuses_an_unencodable_speed(tune: Tune) -> None:
+    from simoscal.tune.profiles.sc8s50 import SPEED_LIMITER
+
+    journal_len = len(tune.journal)
+    with pytest.raises(ValueError, match="declared range"):
+        tune.limits.speed_limiter(600)   # stored /128, so 511.99 km/h is the top
+
+    for name in SPEED_LIMITER:
+        assert float(tune.values(name).ravel()[0]) == pytest.approx(200.0)
+    assert len(tune.journal) == journal_len
+
+
+def test_speed_limiter_refuses_a_nonsense_speed(tune: Tune) -> None:
+    with pytest.raises(ValueError, match="positive road speed"):
+        tune.limits.speed_limiter(0)
+
+
+# ---- lambda full-load enrichment: the lean bound --------------------------- #
+def test_full_load_enrichment_writes_one_time_row(tune: Tune) -> None:
+    entry = tune.fueling.full_load_enrichment(0.85, row=4)
+    grid = tune.values("lambda_full_load")
+
+    assert np.allclose(grid[4], 0.85, atol=1e-3)
+    # Every other time-row is untouched — stock is a flat 1.00 map.
+    assert np.allclose(np.delete(grid, 4, axis=0), 1.0)
+    assert entry.rows_changed == (4,)
+
+
+def test_full_load_enrichment_selects_a_row_by_its_time_breakpoint(tune: Tune) -> None:
+    """`seconds=` picks the row by the axis's own units, not by index."""
+    tune.fueling.full_load_enrichment(0.82, seconds=30)
+    grid = tune.values("lambda_full_load")
+
+    y = tune.axis("lambda_full_load", "y")
+    expected_row = int(np.argmin(np.abs(y - 30.0)))
+    assert np.allclose(grid[expected_row], 0.82, atol=1e-3)
+
+
+def test_full_load_enrichment_takes_a_per_rpm_curve(tune: Tune) -> None:
+    cols = tune.values("lambda_full_load").shape[1]
+    curve = np.linspace(0.95, 0.80, cols)
+    tune.fueling.full_load_enrichment(curve, row=7)
+
+    assert np.allclose(tune.values("lambda_full_load")[7], curve, atol=1e-3)
+
+
+@pytest.mark.parametrize("lean", [1.0, 1.05, 1.5])
+def test_full_load_enrichment_refuses_a_lean_setpoint(tune: Tune, lean: float) -> None:
+    """The one refusal this op exists for: no enrichment at wide-open throttle."""
+    journal_len = len(tune.journal)
+    with pytest.raises(ValueError, match="at or above lambda"):
+        tune.fueling.full_load_enrichment(lean, row=4)
+
+    assert np.allclose(tune.values("lambda_full_load"), 1.0), "table untouched"
+    assert len(tune.journal) == journal_len, "and nothing journaled"
+
+
+def test_full_load_enrichment_refuses_a_lean_value_anywhere_in_the_curve(
+    tune: Tune,
+) -> None:
+    """One lean cell in an otherwise rich curve still refuses the whole write."""
+    cols = tune.values("lambda_full_load").shape[1]
+    curve = np.full(cols, 0.85)
+    curve[-1] = 1.0
+
+    with pytest.raises(ValueError, match="at or above lambda"):
+        tune.fueling.full_load_enrichment(curve, row=4)
+    assert np.allclose(tune.values("lambda_full_load"), 1.0)
+
+
+def test_full_load_enrichment_accepts_just_under_the_bound(tune: Tune) -> None:
+    """0.999 is accepted, and encodes at or below what was asked for."""
+    tune.fueling.full_load_enrichment(0.999, row=4)
+    encoded = tune.values("lambda_full_load")[4]
+
+    assert np.all(encoded < 1.0), "an accepted value must not encode lean of 1.00"
+    assert np.allclose(encoded, 0.999, atol=1e-3)
+
+
+def test_full_load_enrichment_refuses_a_mistyped_decimal(tune: Tune) -> None:
+    with pytest.raises(ValueError, match="at or below lambda"):
+        tune.fueling.full_load_enrichment(0.08, row=4)   # 0.80 with a slipped key
+
+
+def test_full_load_enrichment_refuses_a_row_outside_the_map(tune: Tune) -> None:
+    with pytest.raises(ValueError, match="time-rows"):
+        tune.fueling.full_load_enrichment(0.85, row=99)
+
+
+def test_full_load_enrichment_needs_exactly_one_row_selector(tune: Tune) -> None:
+    with pytest.raises(ValueError, match="exactly one"):
+        tune.fueling.full_load_enrichment(0.85)
+    with pytest.raises(ValueError, match="exactly one"):
+        tune.fueling.full_load_enrichment(0.85, row=1, seconds=30)

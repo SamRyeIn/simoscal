@@ -12,6 +12,13 @@ against stock breakpoints would put the guide's numbers at the wrong loads.
 
 That is a lean-risk failure, not a cosmetic one, so :meth:`Fueling.lambda_grid`
 refuses to write a grid whose declared breakpoints do not match the table's.
+
+:meth:`Fueling.full_load_enrichment` carries the same risk from the other
+direction. It writes the time-based full-load enrichment map, where the danger
+has a *direction*: leaner is hotter, and at wide-open throttle the enrichment in
+that map is what keeps the pistons and the turbine alive. So it refuses a
+setpoint at or above :data:`LAMBDA_FL_LEAN_MAX` rather than clamping to it —
+see that constant for why the bound sits where it does.
 """
 
 from __future__ import annotations
@@ -23,9 +30,26 @@ import numpy as np
 from ..journal import KIND_AXIS, EditEntry
 from ..profiles.sc8s50 import LAMBDA_FAMILY, LAMBDA_FLOORS
 from ..sop_bridge import positional_axis_match
-from ._common import Domain, require_shape
+from ._common import Domain, nearest_index, require_shape
 
-__all__ = ["Fueling"]
+__all__ = ["Fueling", "LAMBDA_FL_LEAN_MAX", "LAMBDA_FL_RICH_MIN"]
+
+#: The lean bound on full-load enrichment: a setpoint at or above this is
+#: refused outright, never clamped.
+#:
+#: Stoichiometric, and the direction of danger. At full load this map is the
+#: enrichment that carries heat out of the combustion chamber and off the
+#: turbine; a setpoint of 1.00 asks for no enrichment at all at wide-open
+#: throttle, which on a boosted engine is how pistons and turbine wheels are
+#: destroyed. It is a hard refusal rather than a warning because there is no
+#: legitimate reason to ask for it here — Sam's call, 2026-08-20. The UI warns
+#: from 0.90 up; that softer band is a screen concern, not this one.
+LAMBDA_FL_LEAN_MAX = 1.00
+
+#: The other end: richer than anything this calibration has a use for, and the
+#: shape a mistyped decimal takes (0.08 for 0.80). Refused for the same reason —
+#: loudly, so the typo is visible rather than encoded.
+LAMBDA_FL_RICH_MIN = 0.50
 
 
 class Fueling(Domain):
@@ -153,6 +177,107 @@ class Fueling(Domain):
                         "raising it toward 1.0 reduces protective enrichment"),
             ))
         return tuple(entries)
+
+    def full_load_enrichment(
+        self,
+        values,
+        *,
+        row: Optional[int] = None,
+        seconds: Optional[float] = None,
+        intent: str = "",
+    ) -> EditEntry:
+        """Write one time-row of the full-load enrichment map, in lambda.
+
+        The map is engine speed (columns) against **time at full load** (rows):
+        as a pull holds wide-open throttle, the ECU walks down the rows, so each
+        row is "how rich, this many seconds in". Give ``row`` as an index or
+        ``seconds`` to pick the row by its own breakpoint; ``values`` is one
+        lambda per rpm breakpoint, or a scalar for a flat row.
+
+        Stock is flat 1.00 across the whole map — this car does its enrichment
+        through the basic lambda grids — so every value written here below 1.00
+        is enrichment *added* on top of that.
+
+        Refuses any value at or above :data:`LAMBDA_FL_LEAN_MAX`, and any below
+        :data:`LAMBDA_FL_RICH_MIN`. Neither is clamped: a lean full-load
+        setpoint is the failure mode this whole domain exists to prevent, and
+        silently correcting one would hide that it was ever asked for.
+        """
+        name = "lambda_full_load"
+        grid = self._values(name)
+        rows, cols = grid.shape
+
+        index = self._enrichment_row(name, rows, row, seconds)
+        curve = np.atleast_1d(np.asarray(values, dtype=np.float64)).ravel()
+        if curve.size == 1:
+            curve = np.full(cols, float(curve[0]))
+        curve = require_shape(curve, (cols,), "fueling.full_load_enrichment")
+
+        lean = curve[curve >= LAMBDA_FL_LEAN_MAX]
+        if lean.size:
+            raise ValueError(
+                f"fueling.full_load_enrichment: {lean.size} value(s) at or above "
+                f"lambda {LAMBDA_FL_LEAN_MAX:.2f} (leanest {lean.max():.3f}). At "
+                "full load this map is what carries heat out of the chamber and "
+                "off the turbine, so a setpoint of 1.00 asks for no enrichment "
+                "at wide-open throttle. Refusing — nothing was written."
+            )
+        rich = curve[curve <= LAMBDA_FL_RICH_MIN]
+        if rich.size:
+            raise ValueError(
+                f"fueling.full_load_enrichment: {rich.size} value(s) at or below "
+                f"lambda {LAMBDA_FL_RICH_MIN:.2f} (richest {rich.min():.3f}), "
+                "richer than any use this calibration has — this is the shape a "
+                "mistyped decimal takes. Refusing rather than encoding it."
+            )
+
+        staged = grid.copy()
+        staged[index] = curve
+        seconds_label = self._row_seconds(name, index)
+        return self._tune.write(
+            name, staged,
+            intent=intent or (
+                "set the full-load enrichment curve at "
+                + (f"{seconds_label:g} s at full load" if seconds_label is not None
+                   else f"time-row {index}")
+            ),
+            detail=(
+                f"row {index}"
+                + (f" ({seconds_label:g} s at full load)"
+                   if seconds_label is not None else "")
+                + ": "
+                + ", ".join(f"{v:.3f}" for v in curve)
+                + f" lambda; richest {curve.min():.3f}. Every other time-row "
+                "left as it was."
+            ),
+        )
+
+    def _enrichment_row(
+        self, name: str, rows: int, row: Optional[int], seconds: Optional[float]
+    ) -> int:
+        if (row is None) == (seconds is None):
+            raise ValueError(
+                "fueling.full_load_enrichment: give exactly one of row= (index) "
+                "or seconds= (time at full load)"
+            )
+        if seconds is not None:
+            return nearest_index(
+                self._tune.axis(name, "y"), float(seconds),
+                "fueling.full_load_enrichment(seconds=)",
+            )
+        index = int(row)
+        if not 0 <= index < rows:
+            raise ValueError(
+                f"fueling.full_load_enrichment: row {row!r} is outside the map's "
+                f"{rows} time-rows (0–{rows - 1})"
+            )
+        return index
+
+    def _row_seconds(self, name: str, index: int) -> Optional[float]:
+        axis = self._tune.axis(name, "y")
+        if axis is None or index >= axis.size:
+            return None
+        return float(axis[index])
 
     def pedal_threshold(self, percent: float, *, intent: str = "") -> EditEntry:
         """Flatten the full-load pedal threshold, in percent.
