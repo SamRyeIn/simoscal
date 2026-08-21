@@ -78,6 +78,30 @@ def test_catalog_lists_profile_tables_with_detail() -> None:
 
 
 @requires_base
+def test_catalog_excludes_the_new_domain_owned_tables() -> None:
+    """The quartet + lambda FL main map are owned → out of the generic catalog;
+    the pedal maps and the FL context tables stay in (U1 verification)."""
+    from simoscal.tune.profiles.sc8s50 import (
+        LAMBDA_FULL_LOAD, PEDAL_MAPS, SPEED_LIMITER,
+    )
+
+    tune = _open_base()
+    default_names = {t.name for t in catalog(tune)}
+    all_names = {t.name for t in catalog(tune, include_domain_owned=True)}
+
+    owned = {*SPEED_LIMITER, "lambda_full_load"}
+    unowned = {*PEDAL_MAPS, *(set(LAMBDA_FULL_LOAD) - {"lambda_full_load"})}
+    assert owned.isdisjoint(default_names)
+    assert owned <= all_names
+    assert unowned <= default_names
+    # The catalog grew by exactly the added non-owned specs relative to the
+    # owned set: every owned table is exactly the difference between the views.
+    assert all_names - default_names == {
+        t.name for t in catalog(tune, include_domain_owned=True) if t.owner
+    }
+
+
+@requires_base
 def test_catalog_classifies_dimensionality() -> None:
     tune = _open_base()
     detail = table_detail(tune, "manifold_pressure_max")

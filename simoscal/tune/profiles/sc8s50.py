@@ -24,6 +24,19 @@ def _spec(name, key, description, units="", shape=None, tags=frozenset(), owner=
     )
 
 
+# Owners for the two base-space table sets whose writes carry an invariant a
+# generic grid edit cannot honour: the four-scalar speed-limiter coherence, and
+# the lambda full-load lean bound (refuse any setpoint ≥ 1.00).
+_OWNER_SPEED_LIMITER = (
+    "tune.limits.speed_limiter(), which writes all four quartet scalars as one "
+    "coherent set (bridge op `limiters_edit`)"
+)
+_OWNER_LAMBDA_FL = (
+    "tune.fueling.full_load_enrichment(), which refuses any setpoint at or "
+    "above lambda 1.00 (bridge op `lambda_fl_edit`)"
+)
+
+
 _SPECS = [
     # ---- boost ------------------------------------------------------------ #
     _spec("put_setpoint", "IP_PUT_SP",
@@ -183,12 +196,18 @@ _SPECS.extend([
 # `5G0906259L__0002` bin before being written down — the standard the existing
 # entries were added under.
 #
-# None of them is domain-owned. These are ordinary calibration values with no
-# unit the display contradicts and no structural invariant a partial write would
-# break, which is what `owner` exists for (see `airmass_setpoint_max` above and
-# the switch patch's slot grids). A limiter being *raised* by the SOP is not a
-# reason to hide it: the guide raises it, a person editing by hand may want to
-# put it back, and a ceiling you cannot see is a ceiling you cannot check.
+# Almost none of them is domain-owned. These are ordinary calibration values
+# with no unit the display contradicts and no structural invariant a partial
+# write would break, which is what `owner` exists for (see `airmass_setpoint_max`
+# above and the switch patch's slot grids). A limiter being *raised* by the SOP
+# is not a reason to hide it: the guide raises it, a person editing by hand may
+# want to put it back, and a ceiling you cannot see is a ceiling you cannot check.
+#
+# The exception is the road-speed limiter quartet, which *does* carry a
+# structural invariant — four tables holding one number, where a partial write
+# leaves the car limited by whichever un-written level the ECU happens to
+# select. That is exactly the coherence `owner` exists to protect, so the four
+# are owned by ``tune.limits.speed_limiter()``, which writes them as one set.
 _SPECS.extend([
     # ---- limiters: turbocharger protection --------------------------------- #
     # Stock 189000 / 179000 rpm. The pair is the hard ceiling and the setpoint
@@ -217,16 +236,27 @@ _SPECS.extend([
           "high (CAP_H) diagnosis", "hPa", (6, 6)),
     # Four scalars, all stock 200 km/h: the three speed-limiter levels and the
     # not-active value. They are separate tables holding the same number, so a
-    # change to one alone is almost certainly a mistake — raising the limiter
-    # means writing all four.
+    # change to one alone is almost certainly a mistake — moving the limiter
+    # means writing all four. That coherence is why they are domain-owned: a
+    # generic grid write to one leaves the car limited by whichever of the
+    # others the ECU selects, which looks like the edit silently failing.
+    # Quartet membership was confirmed against the XDF on 2026-08-20: these
+    # four are the only ``LMVLim_vMax_vLim_C_VW.*`` symbols it defines (the
+    # only other ``LMVLim`` entries are the P15A4 error-class scalars for
+    # ``LMVLim_bTrckAuth_VW``); there is no hysteresis sibling. Stored /128,
+    # so the real encodable ceiling is 511.99 km/h.
     _spec("speed_limiter_level1", "LMVLim_vMax_vLim_C_VW.VehSpdl2Lvl1",
-          "Overall maximal velocity, limiter level 1", "km/h", (1, 1)),
+          "Overall maximal velocity, limiter level 1", "km/h", (1, 1),
+          owner=_OWNER_SPEED_LIMITER),
     _spec("speed_limiter_level2", "LMVLim_vMax_vLim_C_VW.VehSpdl2Lvl2",
-          "Overall maximal velocity, limiter level 2", "km/h", (1, 1)),
+          "Overall maximal velocity, limiter level 2", "km/h", (1, 1),
+          owner=_OWNER_SPEED_LIMITER),
     _spec("speed_limiter_level3", "LMVLim_vMax_vLim_C_VW.VehSpdl2Lvl3",
-          "Overall maximal velocity, limiter level 3", "km/h", (1, 1)),
+          "Overall maximal velocity, limiter level 3", "km/h", (1, 1),
+          owner=_OWNER_SPEED_LIMITER),
     _spec("speed_limiter_inactive", "LMVLim_vMax_vLim_C_VW.VehSpdl2NotAcv",
-          "Overall maximal velocity, limiter not active", "km/h", (1, 1)),
+          "Overall maximal velocity, limiter not active", "km/h", (1, 1),
+          owner=_OWNER_SPEED_LIMITER),
 
     # ---- cooling ----------------------------------------------------------- #
     # Stock 80.25-107.2 degC against engine speed and relative charge. The guide
@@ -274,6 +304,74 @@ _SPECS.extend([
           "rpm", (1, 6), frozenset({TAG_AXIS})),
 ])
 
+# The pedal-feel and lambda full-load enrichment surfaces (app domain screens,
+# 2026-08-20 plan U1). Every entry was decoded off the stock ``5G0906259L__0002``
+# bin before being written down; none is float32 (no FLOAT_BUG candidates), and
+# every unit label was checked against its stored scale — torque factors are
+# /32768 fractions, lambda is /1024, both honestly labelled dimensionless.
+_SPECS.extend([
+    # ---- pedal feel: driver-interpretation maps ----------------------------- #
+    # Pedal % + engine speed → fraction of maximum torque requested (0..2,
+    # stock tops out at 1.0). This DSG car reads the DCT family; the MT/AT
+    # variants exist in the XDF but are dead tables for this transmission and
+    # are deliberately left unmapped — offering an editor for a map the car
+    # never reads invites editing the wrong one. Grid: rows = pedal value
+    # (y axis, %), columns = engine speed (x axis, rpm).
+    #
+    # None is domain-owned (dual-path by design): no unit lies and no
+    # cross-table invariant binds them — high/low-speed variants are *often*
+    # set identical, but that is a tuning choice, not a structural rule.
+    _spec("pedal_dct_high", "IP_FAC_TQ_REQ_DRIV_H_VS_DCT",
+          "Driver interpretation map for high vehicle speed (DCT)",
+          "-", (12, 12)),
+    _spec("pedal_dct_low", "IP_FAC_TQ_REQ_DRIV_L_VS_DCT",
+          "Driver interpretation map for low vehicle speed (DCT)",
+          "-", (12, 12)),
+    _spec("pedal_dct_sport_high", "IP_FAC_TQ_REQ_DRIV_H_VS_DCT_S",
+          "Driver interpretation map for high vehicle speed "
+          "(DCT, gear shift program = S)", "-", (12, 12)),
+    _spec("pedal_dct_sport_low", "IP_FAC_TQ_REQ_DRIV_L_VS_DCT_S",
+          "Driver interpretation map for low vehicle speed "
+          "(DCT, gear shift program = S)", "-", (12, 12)),
+    _spec("pedal_dct_offroad_high", "IP_FAC_TQ_REQ_DRIV_H_OFRD_DCT",
+          "Driver interpretation map for high vehicle speed (DCT) "
+          "at off-road mode", "-", (12, 12)),
+    # The XDF title for this one repeats the sport-program wording; it is the
+    # low-speed off-road DCT map (the symbol is the authority).
+    _spec("pedal_dct_offroad_low", "IP_FAC_TQ_REQ_DRIV_L_OFRD_DCT",
+          "Driver interpretation map for low vehicle speed (DCT) "
+          "at off-road mode", "-", (12, 12)),
+    _spec("pedal_drive_off", "IP_FAC_TQ_REQ_DRIV_DROF",
+          "Driver torque request factor at drive off situation",
+          "-", (8, 8)),
+
+    # ---- fueling: lambda full-load enrichment ------------------------------- #
+    # The time-based full-load enrichment map: columns = engine speed, rows =
+    # time at full load (0–60 s). Stock is flat 1.00 — this car's stock
+    # calibration does all its enrichment through the basic lambda grids, so
+    # any value written here below 1.00 is *added* enrichment as time at full
+    # load accumulates. Leaner is hotter: the danger direction is up, which is
+    # why the main map is domain-owned with a hard refusal at ≥ 1.00 (decided
+    # by Sam, 2026-08-20) rather than left to a grid cell edit.
+    _spec("lambda_full_load", "IP_LAMB_FL_SP",
+          "Lambda Full Load Enrichment depending on N_32 and time T_FL",
+          "-", (8, 12), owner=_OWNER_LAMBDA_FL),
+    # The IAT-conditional variant: same shape and axes, selected instead of the
+    # main map when intake air temperature exceeds the threshold below (with
+    # the hysteresis below that). Mapped but grid-editable — the screen edits
+    # the main map; this one is context a tuner reads and, rarely, edits by
+    # hand with the same care as any grid.
+    _spec("lambda_full_load_iat", "IP_LAMB_FL_SP_TIA",
+          "Lambda Full Load Enrichment map used in dependency of intake air "
+          "temperature", "-", (8, 12)),
+    _spec("lambda_full_load_iat_threshold", "C_TIA_THD_LAMB_FL_SP",
+          "Intake air temperature threshold for lambda full load enrichment",
+          "\N{DEGREE SIGN}C", (1, 1)),
+    _spec("lambda_full_load_iat_hysteresis", "C_TIA_HYS_LAMB_FL_SP",
+          "Intake air temperature hysteresis for lambda full load enrichment",
+          "\N{DEGREE SIGN}C", (1, 1)),
+])
+
 #: Every base-timing logical name, in the order the ECU's cam grid runs.
 IGNITION_BASE_VVL0 = tuple(
     f"ignition_base_vvl0_i{i}_e{e}" for i in range(3) for e in range(3)
@@ -310,10 +408,29 @@ TURBO_PROTECTION = (
 #: Grouped because they are four tables holding one number: the three levels and
 #: the not-active value. Writing one alone leaves the car limited by whichever of
 #: the others the ECU happens to select, which looks like the edit silently
-#: failing.
+#: failing — which is why all four are owned by ``tune.limits.speed_limiter()``.
 SPEED_LIMITER = (
     "speed_limiter_level1", "speed_limiter_level2",
     "speed_limiter_level3", "speed_limiter_inactive",
+)
+
+#: The DCT (DSG) driver-interpretation pedal maps, primary pair first, plus the
+#: drive-off factor. The MT/AT families are deliberately unmapped — dead tables
+#: for this transmission.
+PEDAL_MAPS = (
+    "pedal_dct_high", "pedal_dct_low",
+    "pedal_dct_sport_high", "pedal_dct_sport_low",
+    "pedal_dct_offroad_high", "pedal_dct_offroad_low",
+    "pedal_drive_off",
+)
+
+#: The lambda full-load enrichment set: the owned main map, then the
+#: grid-editable IAT variant and its threshold/hysteresis pair.
+LAMBDA_FULL_LOAD = (
+    "lambda_full_load",
+    "lambda_full_load_iat",
+    "lambda_full_load_iat_threshold",
+    "lambda_full_load_iat_hysteresis",
 )
 
 #: The CAP_H overboost-diagnosis cap and the two axes it is scheduled on. Both
@@ -348,6 +465,8 @@ __all__ = [
     "IGNITION_TEMP_CORRECTION",
     "LAMBDA_FAMILY",
     "LAMBDA_FLOORS",
+    "LAMBDA_FULL_LOAD",
+    "PEDAL_MAPS",
     "SPEED_LIMITER",
     "TURBO_PROTECTION",
     "WASTEGATE_MAPS",

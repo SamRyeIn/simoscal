@@ -48,6 +48,10 @@ _OWNER_AXIS_HEADER = (
 )
 _OWNER_TRACTION = "tune.switchpatch.traction_control()"
 _OWNER_SLOT_FLAG = "tune.switchpatch.set_slot_flag() (bridge op `slot_flag`)"
+_OWNER_REV_LIMITS = (
+    "tune.limits.rev_limits(), which writes the trio in one call and refuses "
+    "unless soft <= medium <= hard (bridge op `limiters_edit`)"
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -261,6 +265,65 @@ _specs = [
         units="", shape=(1, 1), tags=frozenset({TAG_NO_SYMBOL}),
         owner=_OWNER_AXIS_HEADER,
     ),
+
+    # ---- the progressive cylinder-cut trio ---------------------------------- #
+    # Three rpm *offsets*, not absolute rev limits, and the distinction is the
+    # whole reason these carry this much prose. Each title reads "above
+    # engagement point", and all three sit in the patch's **RAL** category
+    # beside `Minimum engagement RPM` (0x7cb12, 2500) and `Maximum engagement
+    # RPM` (0x7cb14, 4500) — so the reference point they are measured from is
+    # the patch's own engagement rpm, not redline. Nothing we have states which
+    # of that pair is the reference, or whether the offsets apply outside RAL,
+    # and this library does not guess: the numbers are read, written, and
+    # described exactly as the XDF describes them.
+    #
+    # What each one *does* is documented, unusually for this patch — the XDF
+    # spells out the cut pattern, and it escalates across the three. That
+    # escalation is the invariant: soft cuts least, hard cuts most, so a trio
+    # ordered any other way asks the ECU to escalate backwards. Hence the
+    # domain owner; a generic grid write to one scalar cannot see the other two.
+    #
+    # As-patched (verified on the R12 bin, 2026-08-20): 0 / 64 / 64 rpm.
+    TableSpec(
+        name="rev_limit_soft", key="0x7cb18",
+        description="Rev soft limit above engagement point — rpm offset at "
+                    "which the engine cuts fuel and spark to 1 cylinder every 4",
+        units="rpm", shape=(1, 1), tags=frozenset({TAG_NO_SYMBOL}),
+        owner=_OWNER_REV_LIMITS,
+    ),
+    TableSpec(
+        name="rev_limit_medium", key="0x7cb1a",
+        description="Rev medium limit above engagement point — rpm offset at "
+                    "which the engine cuts fuel and spark to 1 cylinder every 3",
+        units="rpm", shape=(1, 1), tags=frozenset({TAG_NO_SYMBOL}),
+        owner=_OWNER_REV_LIMITS,
+    ),
+    TableSpec(
+        name="rev_limit_hard", key="0x7cb1c",
+        description="Rev hard limit above engagement point — rpm offset at "
+                    "which the engine cuts fuel and spark to 2 cylinders every 4",
+        units="rpm", shape=(1, 1), tags=frozenset({TAG_NO_SYMBOL}),
+        owner=_OWNER_REV_LIMITS,
+    ),
+
+    # ---- launch control's limiter behaviour ---------------------------------- #
+    # Both are **LC** category, not RAL and not a general rev limiter: they
+    # describe how the launch-control rpm limiter behaves and when it lets go.
+    # Independent scalars with no cross-table invariant, so they stay generically
+    # editable — the coverage brainstorm's rule for patch-space tables (its Key
+    # Decision 3), and the same call the pedal maps get in the base space.
+    TableSpec(
+        name="lc_limiter_timing", key="0x7cb31",
+        description="Timing during RPM limiter and rampout — ignition angle "
+                    "held while launch control sits on its limiter",
+        units="\N{DEGREE SIGN}CRK", shape=(1, 1), tags=frozenset({TAG_NO_SYMBOL}),
+    ),
+    TableSpec(
+        name="lc_release_speed", key="0x7cb3c",
+        description="Release RPM limiter speed — road speed at which launch "
+                    "control releases its rpm limiter",
+        units="km/h", shape=(1, 1), tags=frozenset({TAG_NO_SYMBOL}),
+    ),
 ]
 
 for _slot in SLOTS:
@@ -289,6 +352,14 @@ for _slot in SLOTS:
         ))
 
 
+#: The progressive cylinder-cut trio, in escalation order. The invariant every
+#: writer must hold: ``soft <= medium <= hard``.
+REV_LIMIT_TRIO = ("rev_limit_soft", "rev_limit_medium", "rev_limit_hard")
+
+#: Launch control's limiter behaviour — generically editable, unlike the trio.
+LAUNCH_CONTROL_LIMITER = ("lc_limiter_timing", "lc_release_speed")
+
+
 def slot_names(kind: str) -> tuple[str, ...]:
     """Logical names for one per-slot table ``kind``, slots 1–5 in order.
 
@@ -310,6 +381,8 @@ SWITCH_PATCH_2933 = Profile(
 
 __all__ = [
     "SWITCH_PATCH_2933",
+    "LAUNCH_CONTROL_LIMITER",
+    "REV_LIMIT_TRIO",
     "SLOTS",
     "SLOT_GRID_SHAPE",
     "SLOT_DEFAULT_HPA",

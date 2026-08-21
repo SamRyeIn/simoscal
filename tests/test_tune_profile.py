@@ -11,6 +11,7 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from simoscal import CalFile, parse_xdf
@@ -251,7 +252,8 @@ def test_lineage_helper_tuples_name_real_entries() -> None:
                  *sc_map.LAMBDA_FAMILY, *sc_map.LAMBDA_FLOORS,
                  *sc_map.WASTEGATE_MAPS, *sc_map.TURBO_PROTECTION,
                  *sc_map.SPEED_LIMITER, *sc_map.CHARGE_AIR_DIAG,
-                 *sc_map.CYLINDER_HEAD_TEMP):
+                 *sc_map.CYLINDER_HEAD_TEMP, *sc_map.PEDAL_MAPS,
+                 *sc_map.LAMBDA_FULL_LOAD):
         assert name in SC8S50
 
 
@@ -328,13 +330,65 @@ def test_turbo_protection_pairs_a_limit_with_its_setpoint() -> None:
 
 
 def test_speed_limiter_is_four_scalars_of_one_number() -> None:
-    """All four levels are mapped, so raising the limiter can write all four."""
+    """All four levels are mapped, and all four are owned by one coherent writer.
+
+    Four tables holding one number: a generic write to one alone leaves the car
+    limited by whichever un-written level the ECU selects, so the quartet is
+    domain-owned by ``tune.limits.speed_limiter()`` (2026-08-20 plan U1,
+    resolving the coverage brainstorm's blocking `owner` question).
+    """
     assert len(sc_map.SPEED_LIMITER) == 4
     for name in sc_map.SPEED_LIMITER:
         spec = SC8S50[name]
         assert spec.shape == (1, 1)
         assert spec.units == "km/h"
         assert spec.key.startswith("LMVLim_vMax_vLim_C_VW.")
+        assert spec.domain_owned
+        assert "limits.speed_limiter" in spec.owner
+
+
+def test_pedal_maps_are_the_dct_family_and_stay_dual_path() -> None:
+    """The DSG's driver-interpretation maps are mapped, generically writable.
+
+    Only the DCT family plus drive-off: the MT/AT variants are dead tables for
+    this transmission and offering an editor for them invites editing a map the
+    car never reads. No owner — no unit lies and no cross-table invariant binds
+    them (plan Key Decision 4).
+    """
+    assert len(sc_map.PEDAL_MAPS) == 7
+    for name in sc_map.PEDAL_MAPS:
+        spec = SC8S50[name]
+        assert spec.key.startswith("IP_FAC_TQ_REQ_DRIV_")
+        assert not spec.domain_owned, "pedal maps are dual-path by decision"
+        assert not spec.has(prof.TAG_AXIS)
+        assert spec.units == "-"
+    assert SC8S50["pedal_dct_high"].shape == (12, 12)
+    assert SC8S50["pedal_drive_off"].shape == (8, 8)
+    # No MT/AT variant sneaks in under any logical name.
+    mapped_keys = {spec.key for spec in SC8S50.specs.values()}
+    for dead in ("IP_FAC_TQ_REQ_DRIV_H_VS_MT", "IP_FAC_TQ_REQ_DRIV_H_VS_AT",
+                 "IP_FAC_TQ_REQ_DRIV_SPT_MT", "IP_FAC_TQ_REQ_DRIV_RVG"):
+        assert dead not in mapped_keys
+
+
+def test_lambda_full_load_main_map_is_owned_and_its_context_is_not() -> None:
+    """The FL enrichment map is owned (lean bound ≥ 1.00 refused engine-side);
+    the IAT variant and its threshold/hysteresis stay grid-editable context."""
+    main = SC8S50["lambda_full_load"]
+    assert main.key == "IP_LAMB_FL_SP"
+    assert main.shape == (8, 12)
+    assert main.domain_owned
+    assert "fueling.full_load_enrichment" in main.owner
+
+    iat = SC8S50["lambda_full_load_iat"]
+    assert iat.key == "IP_LAMB_FL_SP_TIA"
+    assert iat.shape == (8, 12)
+    assert not iat.domain_owned
+
+    for name in ("lambda_full_load_iat_threshold", "lambda_full_load_iat_hysteresis"):
+        spec = SC8S50[name]
+        assert spec.shape == (1, 1)
+        assert spec.units == "\N{DEGREE SIGN}C"
         assert not spec.domain_owned
 
 
@@ -394,6 +448,43 @@ def test_sc8s50_profile_resolves_completely_on_the_real_xdf(real_cal: CalFile) -
     assert iat_axis.view.values.ravel() == pytest.approx(
         [-30, -20.25, -9.75, 0, 30, 40.5, 50.25, 60, 70.5, 80.25], abs=1e-6
     )
+
+
+def test_domain_screen_specs_resolve_at_their_declared_shapes(real_cal: CalFile) -> None:
+    """The U1 pedal + lambda-FL + quartet specs against the real XDF.
+
+    Resolution asserts every declared shape (a mismatch is a miss); this adds
+    the facts the screens lean on: the FL map's y axis is time at full load
+    (0–60 s) and its x axis engine speed, the pedal maps are torque-fraction
+    grids over pedal % (y) and rpm (x), and every pedal map writes back from
+    physical units (reversible — the curve editor's precondition).
+    """
+    resolved = resolve(SC8S50, real_cal)
+
+    fl = resolved["lambda_full_load"]
+    assert fl.view.shape == (8, 12)
+    y = np.asarray(fl.view.axis_values("y")).ravel()
+    x = np.asarray(fl.view.axis_values("x")).ravel()
+    assert y[0] == 0.0 and y[-1] == 60.0, "rows are time at full load, seconds"
+    assert x[0] > 400 and x[-1] > 6000, "columns are engine speed"
+    # Stock is flat 1.00 — no FL enrichment; anything below 1.00 is added.
+    assert np.allclose(np.asarray(fl.view.values), 1.0)
+
+    for name in sc_map.PEDAL_MAPS:
+        view = resolved[name].view
+        z = view.table.z
+        assert z.scaling is not None and z.scaling.is_linear, (
+            f"{name} must be writable from physical units"
+        )
+    pedal = resolved["pedal_dct_high"].view
+    py = np.asarray(pedal.axis_values("y")).ravel()
+    assert py[0] == 0.0 and py[-1] > 99.0, "rows are pedal value, percent"
+
+    for name in sc_map.SPEED_LIMITER:
+        view = resolved[name].view
+        assert float(np.asarray(view.values).ravel()[0]) == 200.0, (
+            "stock quartet is 200 km/h in every scalar"
+        )
 
 
 def test_switch_patch_profile_resolves_on_its_real_xdf(
