@@ -1065,7 +1065,11 @@ def _op_limiters(params: dict) -> dict:
     is a degraded screen, not an error: a bin without the patch genuinely has no
     trio.
     """
-    from .tune.profiles.sc8s50 import SPEED_LIMITER
+    from .tune.profiles.sc8s50 import (
+        ENGINE_SPEED_LIMIT,
+        SPEED_LIMITER,
+        STATIC_REV_LIMIT,
+    )
     from .tune.profiles.switchpatch_2933 import (
         LAUNCH_CONTROL_LIMITER,
         REV_LIMIT_TRIO,
@@ -1086,6 +1090,20 @@ def _op_limiters(params: dict) -> dict:
 
     result: dict = {
         "speed_limiter": [scalar(name) for name in SPEED_LIMITER],
+        # The standstill cap, plus the rev limiter it sits under. The limiter
+        # travels with it because the cap is meaningless without it: "3808" says
+        # nothing until you know the engine itself stops at 6816, and a screen
+        # that showed one without the other would invite reading the cap as the
+        # redline.
+        "static_rev_limit": [scalar(name) for name in STATIC_REV_LIMIT],
+        "engine_rev_limit": min(
+            (
+                float(np.min(sess.tune.values(name)))
+                for name in ENGINE_SPEED_LIMIT
+                if name in sess.tune.space("base").tables
+            ),
+            default=None,
+        ),
         "rev_limits": None,
         "launch_control": None,
     }
@@ -1113,10 +1131,12 @@ def _op_limiters_edit(params: dict) -> dict:
     intent = params.get("intent", "")
     rev = params.get("rev_limits")
     speed = params.get("speed_limiter_kmh")
-    if rev is None and speed is None:
+    static_rev = params.get("static_rev_limit_rpm")
+    if rev is None and speed is None and static_rev is None:
         raise BridgeError(
             ErrorCode.BAD_PARAMS,
-            "name at least one of 'rev_limits' or 'speed_limiter_kmh'",
+            "name at least one of 'rev_limits', 'speed_limiter_kmh' or "
+            "'static_rev_limit_rpm'",
         )
 
     entries = []
@@ -1131,6 +1151,8 @@ def _op_limiters_edit(params: dict) -> dict:
             ))
         if speed is not None:
             entries.extend(sess.tune.limits.speed_limiter(speed, intent=intent))
+        if static_rev is not None:
+            entries.extend(sess.tune.limits.static_rev_limit(static_rev, intent=intent))
     except (EditRejected, ValueError) as exc:
         raise BridgeError(ErrorCode.EDIT_REJECTED, str(exc))
     except (TuneError, KeyError, TypeError) as exc:

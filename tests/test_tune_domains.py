@@ -549,3 +549,108 @@ def test_full_load_enrichment_needs_exactly_one_row_selector(tune: Tune) -> None
         tune.fueling.full_load_enrichment(0.85)
     with pytest.raises(ValueError, match="exactly one"):
         tune.fueling.full_load_enrichment(0.85, row=1, seconds=30)
+
+
+# --------------------------------------------------------------------------- #
+# the standstill rev cap
+#
+# Stock holds this engine to 3808 rpm whenever the car is stopped. Raising that
+# toward the engine's own limiter does not raise what the engine will reach — it
+# lets the existing limiter be what catches it in park, as it already does in
+# gear. The tests below pin that framing as much as the write: the guard exists
+# so this call cannot be mistaken for one that raises the redline.
+# --------------------------------------------------------------------------- #
+STOCK_STANDSTILL_RPM = 3808.0
+ENGINE_REV_LIMIT_RPM = 6816.0
+
+
+def test_static_rev_limit_writes_every_transmission_variant(tune: Tune) -> None:
+    from simoscal.tune.profiles.sc8s50 import STATIC_REV_LIMIT
+
+    entries = tune.limits.static_rev_limit(ENGINE_REV_LIMIT_RPM)
+
+    assert len(entries) == len(STATIC_REV_LIMIT) == 4
+    for name in STATIC_REV_LIMIT:
+        assert float(tune.values(name).ravel()[0]) == pytest.approx(ENGINE_REV_LIMIT_RPM)
+
+
+def test_static_rev_limit_names_which_variant_this_car_reads(tune: Tune) -> None:
+    """The three inert ones are written, and the journal says they are inert."""
+    entries = {e.name: e for e in tune.limits.static_rev_limit(6000)}
+
+    assert "actually reads" in entries["static_rev_limit_dct"].detail
+    for name in ("static_rev_limit_at", "static_rev_limit_mt", "static_rev_limit_cvt"):
+        assert "inert for this transmission" in entries[name].detail
+
+
+def test_static_rev_limit_refuses_a_target_above_the_engines_own_limiter(
+    tune: Tune,
+) -> None:
+    """The guard that keeps this from looking like a redline raise.
+
+    A standstill cap above the rev limiter could never be reached, so it would
+    change nothing except what the calibration appears to say.
+    """
+    journal_len = len(tune.journal)
+    with pytest.raises(ValueError, match="above this engine's own rev limiter"):
+        tune.limits.static_rev_limit(7200)
+
+    assert float(tune.values("static_rev_limit_dct").ravel()[0]) == pytest.approx(
+        STOCK_STANDSTILL_RPM
+    ), "a refusal writes nothing"
+    assert len(tune.journal) == journal_len
+
+
+def test_static_rev_limit_accepts_exactly_the_limiter(tune: Tune) -> None:
+    """Matching the limiter is the intended outcome, not an edge case."""
+    tune.limits.static_rev_limit(ENGINE_REV_LIMIT_RPM)
+    assert float(tune.values("static_rev_limit_dct").ravel()[0]) == pytest.approx(
+        ENGINE_REV_LIMIT_RPM
+    )
+
+
+def test_static_rev_limit_does_not_touch_the_rev_limiter_itself(tune: Tune) -> None:
+    """The whole safety argument: the engine's ceiling is unchanged."""
+    before = [tune.values(n).copy() for n in ("engine_speed_limit_vvl0", "engine_speed_limit_vvl1")]
+    tune.limits.static_rev_limit(ENGINE_REV_LIMIT_RPM)
+    after = [tune.values(n) for n in ("engine_speed_limit_vvl0", "engine_speed_limit_vvl1")]
+
+    for b, a in zip(before, after):
+        assert np.array_equal(b, a)
+    # And it is not writable by any other route either.
+    assert SC8S50["engine_speed_limit_vvl0"].domain_owned
+    assert "no write path" in SC8S50["engine_speed_limit_vvl0"].owner
+
+
+def test_static_rev_limit_quantizes_to_the_stores_32_rpm_step(tune: Tune) -> None:
+    """8-bit scaled x32, so a target lands on a 32 rpm step and says where."""
+    (entry, *_rest) = tune.limits.static_rev_limit(6500)
+    encoded = float(tune.values("static_rev_limit_dct").ravel()[0])
+
+    assert encoded % 32 == pytest.approx(0.0)
+    assert abs(encoded - 6500) <= 32
+    assert float(entry.after.ravel()[0]) == pytest.approx(encoded)
+
+
+def test_static_rev_limit_refuses_a_nonsense_target(tune: Tune) -> None:
+    with pytest.raises(ValueError, match="positive engine speed"):
+        tune.limits.static_rev_limit(0)
+    with pytest.raises(ValueError, match="positive engine speed"):
+        tune.limits.static_rev_limit(-1000)
+
+
+def test_the_standstill_caps_are_domain_owned(tune: Tune) -> None:
+    """A grid write to one alone could leave the car capped by a sibling."""
+    from simoscal.tune.profiles.sc8s50 import STATIC_REV_LIMIT
+
+    for name in STATIC_REV_LIMIT:
+        spec = SC8S50[name]
+        assert spec.domain_owned
+        assert "static_rev_limit" in spec.owner
+
+
+def test_the_fuel_cut_offset_stays_ordinary(tune: Tune) -> None:
+    """It is the soft-to-hard distance, not the cap — no owner, no guard."""
+    spec = SC8S50["static_rev_fuel_cut_offset"]
+    assert not spec.domain_owned
+    assert float(tune.values("static_rev_fuel_cut_offset").ravel()[0]) == pytest.approx(100.0)

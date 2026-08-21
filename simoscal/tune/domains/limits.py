@@ -34,11 +34,15 @@ import numpy as np
 
 from ..profile import TAG_KG_PER_STROKE
 from ..journal import EditEntry
-from ..profiles.sc8s50 import SPEED_LIMITER
+from ..profiles.sc8s50 import ENGINE_SPEED_LIMIT, SPEED_LIMITER, STATIC_REV_LIMIT
 from ..profiles.switchpatch_2933 import REV_LIMIT_TRIO
+from ..project import TuneError
 from ._common import Domain, float_bug_write, guarded_ceiling
 
-__all__ = ["Limits", "MG_PER_KG", "REV_LIMIT_TRIO", "SPEED_LIMITER"]
+__all__ = [
+    "ENGINE_SPEED_LIMIT", "Limits", "MG_PER_KG",
+    "REV_LIMIT_TRIO", "SPEED_LIMITER", "STATIC_REV_LIMIT",
+]
 
 #: Milligrams per kilogram — the scale hiding inside the airmass cap's label.
 MG_PER_KG = 1_000_000.0
@@ -206,6 +210,97 @@ class Limits(Domain):
                 ),
             ))
         return tuple(entries)
+
+    def static_rev_limit(
+        self, rpm: float, *, tables: Sequence[str] = STATIC_REV_LIMIT,
+        intent: str = "",
+    ) -> tuple[EditEntry, ...]:
+        """Set how high the engine may rev while the vehicle is stopped, in rpm.
+
+        Stock holds this engine to 3808 rpm at a standstill — the familiar
+        "won't rev past about 3800 in park". That is a *separate, lower* cap than
+        the rev limiter itself, which stops the engine at
+        ``ID_N_MAX_STAT_VVL_L``/``_H`` whether it is moving or not. So raising
+        this toward that limiter does not raise the speed the engine will reach;
+        it lets the existing limiter be what catches you in park, exactly as it
+        already does in gear.
+
+        That is also the guard: a target **above** the engine's own rev limiter
+        is refused. Such a value cannot do anything except mislead — the limiter
+        would catch the engine first — and asking for one is a sign of expecting
+        this call to raise the redline, which it does not do and must not appear
+        to.
+
+        All four transmission variants are written together. Only one applies to
+        a given car, but the ECU picks among them, and a change defeated by a
+        wrong assumption about which one it reads costs a flash cycle to
+        discover. The three inert ones are written alongside and journaled as
+        such.
+
+        The store is 8-bit scaled ×32, so a target quantizes to 32 rpm steps;
+        the entry's before/after carry what was actually encoded.
+        """
+        target = float(rpm)
+        if not np.isfinite(target) or target <= 0:
+            raise ValueError(
+                f"limits.static_rev_limit: {rpm!r} is not a positive engine speed"
+            )
+
+        ceiling = self._engine_rev_limit()
+        if ceiling is not None and target > ceiling + 1e-6:
+            raise ValueError(
+                f"limits.static_rev_limit: {target:g} rpm is above this engine's "
+                f"own rev limiter of {ceiling:g} rpm, which applies whether the "
+                "car is moving or not. A standstill cap above it could never be "
+                "reached, so this would change nothing except what the "
+                "calibration appears to say. Raising the rev limiter itself is a "
+                "separate decision — this call does not do it. Nothing written."
+            )
+
+        names = tuple(tables)
+        for name in names:
+            self._require_within_declared(name, target, "static_rev_limit")
+
+        entries = []
+        for name in names:
+            resolved = self._tune.table(name)
+            applies = name.endswith("_dct")
+            entries.append(self._tune.write(
+                name, [[target]],
+                intent=intent or (
+                    f"let the engine rev to {target:g} rpm while stopped"
+                ),
+                detail=(
+                    (
+                        "the variant this DSG car actually reads"
+                        if applies else
+                        "inert for this transmission — written so the change "
+                        "cannot be defeated by which variant the ECU resolves"
+                    )
+                    + (
+                        f"; the engine's own rev limiter stays at {ceiling:g} rpm "
+                        "and is what will catch the engine"
+                        if ceiling is not None else ""
+                    )
+                ),
+            ))
+        return tuple(entries)
+
+    def _engine_rev_limit(self) -> Optional[float]:
+        """The lowest cell of the engine's own rev limiter, or ``None``.
+
+        Both valve-lift variants are consulted and the *lowest* cell across them
+        wins, because that is the first one the engine will meet. ``None`` when
+        the profile does not map them — the guard then cannot run, which is
+        reported by its absence rather than by inventing a ceiling.
+        """
+        values = []
+        for name in ENGINE_SPEED_LIMIT:
+            try:
+                values.append(float(np.min(self._values(name))))
+            except (KeyError, TuneError):
+                continue
+        return min(values) if values else None
 
     def speed_limiter(
         self, kmh: float, *, tables: Sequence[str] = SPEED_LIMITER,

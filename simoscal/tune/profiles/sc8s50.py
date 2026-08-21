@@ -35,6 +35,19 @@ _OWNER_LAMBDA_FL = (
     "tune.fueling.full_load_enrichment(), which refuses any setpoint at or "
     "above lambda 1.00 (bridge op `lambda_fl_edit`)"
 )
+_OWNER_STATIC_REV = (
+    "tune.limits.static_rev_limit(), which writes all four transmission "
+    "variants as one set and refuses a target above the engine's own rev limit"
+)
+#: The engine's actual rev limiter. Readable — a person and a guard both need to
+#: know where it sits — but with no write path at all: raising the speed at which
+#: this engine stops is a different decision from letting it reach that speed
+#: while stationary, and it should not be reachable by tapping a grid cell on a
+#: tablet. If a revision ever wants it, it gets a considered writer of its own.
+_OWNER_REV_LIMIT = (
+    "no write path — this is the engine's rev limiter itself. Raising it is a "
+    "separate decision from the standstill cap and needs its own writer"
+)
 
 
 _SPECS = [
@@ -372,6 +385,56 @@ _SPECS.extend([
           "\N{DEGREE SIGN}C", (1, 1)),
 ])
 
+# The standstill rev cap, and the rev limiter it sits under.
+#
+# Stock holds this engine to 3808 rpm whenever the vehicle is stopped — the
+# familiar "won't rev past about 3800 in park". It is a separate, lower cap than
+# the rev limiter proper: `ID_N_MAX_STAT_VVL_L`/`_H` stop the engine at 6816 rpm
+# whether moving or not, with the P0219 overspeed diagnosis a further 384 rpm
+# clear at 7200. So raising the standstill cap toward 6816 does not raise the
+# speed this engine will reach; it lets the *existing* limiter be the thing that
+# catches you in park, exactly as it already is in gear.
+#
+# All four transmission variants hold the same 3808 and only one applies to a
+# given car (this one is DCT). They are grouped and owned for the same reason as
+# the road-speed quartet: the ECU selects among them, so writing one alone can
+# leave the car capped by an un-written sibling, which reads as the edit having
+# silently failed — after a flash, which is not a cheap way to find out.
+#
+# All four are 8-bit scaled x32, so they quantize to 32 rpm steps: 3808 is
+# 119 x 32 and 6816 is exactly 213 x 32.
+_SPECS.extend([
+    _spec("static_rev_limit_dct", "C_N_MAX_DCT",
+          "Engine speed threshold for engine speed limitation for stopped DCT "
+          "vehicle (the standstill rev cap — this car's variant)",
+          "rpm", (1, 1), owner=_OWNER_STATIC_REV),
+    _spec("static_rev_limit_at", "C_N_MAX_AT",
+          "Engine speed threshold for engine speed limitation for stopped AT "
+          "vehicle", "rpm", (1, 1), owner=_OWNER_STATIC_REV),
+    _spec("static_rev_limit_mt", "C_N_MAX_MT",
+          "Engine speed threshold for engine speed limitation for stopped MT "
+          "vehicle", "rpm", (1, 1), owner=_OWNER_STATIC_REV),
+    _spec("static_rev_limit_cvt", "C_N_MAX_CVT",
+          "Engine speed threshold for engine speed limitation for stopped CVT "
+          "vehicle", "rpm", (1, 1), owner=_OWNER_STATIC_REV),
+    # How far above the standstill cap fuel is cut to *all* cylinders. Stock 100
+    # rpm, matching `C_N_MAX_FCUT_OFS` for the moving case. Ordinary independent
+    # scalar, so it stays generically editable — it is the soft-to-hard distance,
+    # not the cap itself.
+    _spec("static_rev_fuel_cut_offset", "C_N_MAX_FCUT_OFS_VST",
+          "Engine speed offset for activation fuel cut-off at all cylinders in "
+          "case of stopped vehicle", "rpm", (1, 1)),
+    # The rev limiter proper, per valve-lift mode. Mapped so it is readable — the
+    # standstill guard checks against it, and a person deserves to see what the
+    # real ceiling is — but deliberately given no write path (see the owner).
+    _spec("engine_speed_limit_vvl0", "ID_N_MAX_STAT_VVL_L",
+          "Static engine speed limit for VVL system, low (the engine's rev "
+          "limiter, per gear)", "rpm", (1, 8), owner=_OWNER_REV_LIMIT),
+    _spec("engine_speed_limit_vvl1", "ID_N_MAX_STAT_VVL_H",
+          "Static engine speed limit for VVL system, high (the engine's rev "
+          "limiter, per gear)", "rpm", (1, 8), owner=_OWNER_REV_LIMIT),
+])
+
 #: Every base-timing logical name, in the order the ECU's cam grid runs.
 IGNITION_BASE_VVL0 = tuple(
     f"ignition_base_vvl0_i{i}_e{e}" for i in range(3) for e in range(3)
@@ -413,6 +476,22 @@ SPEED_LIMITER = (
     "speed_limiter_level1", "speed_limiter_level2",
     "speed_limiter_level3", "speed_limiter_inactive",
 )
+
+#: The four standstill rev caps, one per transmission variant.
+#:
+#: Grouped for the same reason as ``SPEED_LIMITER``: four tables holding one
+#: number, of which the ECU reads whichever matches the car. Only the DCT entry
+#: applies here; the other three are inert for this transmission and are written
+#: alongside it so the change cannot be defeated by a wrong assumption about
+#: which one the ECU resolves.
+STATIC_REV_LIMIT = (
+    "static_rev_limit_dct", "static_rev_limit_at",
+    "static_rev_limit_mt", "static_rev_limit_cvt",
+)
+
+#: The engine's own rev limiter, per valve-lift mode — read-only context for the
+#: standstill cap, which must never be set above it.
+ENGINE_SPEED_LIMIT = ("engine_speed_limit_vvl0", "engine_speed_limit_vvl1")
 
 #: The DCT (DSG) driver-interpretation pedal maps, primary pair first, plus the
 #: drive-off factor. The MT/AT families are deliberately unmapped — dead tables
@@ -461,6 +540,8 @@ __all__ = [
     "SC8S50",
     "CHARGE_AIR_DIAG",
     "CYLINDER_HEAD_TEMP",
+    "ENGINE_SPEED_LIMIT",
+    "STATIC_REV_LIMIT",
     "IGNITION_BASE_VVL0",
     "IGNITION_TEMP_CORRECTION",
     "LAMBDA_FAMILY",

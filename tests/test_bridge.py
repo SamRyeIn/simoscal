@@ -1530,3 +1530,59 @@ def test_the_new_ops_did_not_bump_the_bridge_version():
     assert info["bridge_version"] == 1
     for op in ("log_overlay", "limiters", "limiters_edit", "lambda_fl", "lambda_fl_edit"):
         assert op in info["ops"]
+
+
+# --------------------------------------------------------------------------- #
+# the standstill rev cap, over the bridge
+# --------------------------------------------------------------------------- #
+def test_limiters_reports_the_standstill_cap_with_the_limiter_it_sits_under(
+    session: str,
+):
+    """The cap alone is unreadable: 3808 means nothing without the 6816."""
+    result = ok_result(call("limiters", session_id=session))
+
+    assert len(result["static_rev_limit"]) == 4
+    for scalar in result["static_rev_limit"]:
+        assert scalar["value"] == pytest.approx(3808.0)
+        assert scalar["units"] == "rpm"
+        assert "static_rev_limit" in scalar["owner"]
+    assert result["engine_rev_limit"] == pytest.approx(6816.0)
+
+
+def test_limiters_edit_raises_the_standstill_cap_to_the_limiter(session: str):
+    result = ok_result(call(
+        "limiters_edit", session_id=session, static_rev_limit_rpm=6816.0,
+        intent="rev to the limiter while stopped",
+    ))
+
+    assert len(result["entries"]) == 4
+    for scalar in result["limiters"]["static_rev_limit"]:
+        assert scalar["value"] == pytest.approx(6816.0)
+    # The engine's own limiter is untouched — the whole point.
+    assert result["limiters"]["engine_rev_limit"] == pytest.approx(6816.0)
+
+
+def test_a_standstill_cap_above_the_limiter_is_rejected(session: str):
+    env = call("limiters_edit", session_id=session, static_rev_limit_rpm=7200.0)
+    assert err_code(env) == ErrorCode.EDIT_REJECTED.value
+    assert "rev limiter" in env["error"]["message"]
+
+    for scalar in ok_result(call("limiters", session_id=session))["static_rev_limit"]:
+        assert scalar["value"] == pytest.approx(3808.0), "a refusal writes nothing"
+
+
+def test_the_engines_rev_limiter_has_no_write_path_at_all(session: str):
+    """Readable, browsable, and refused by the generic editor."""
+    names = {t["name"] for t in ok_result(call("catalog", session_id=session))["tables"]}
+    assert "engine_speed_limit_vvl0" not in names
+
+    detail = ok_result(call(
+        "table_detail", session_id=session, name="engine_speed_limit_vvl0",
+    ))["table"]
+    assert "no write path" in detail["owner"]
+
+    env = call(
+        "edit", session_id=session, name="engine_speed_limit_vvl0", op="set",
+        selection={"kind": "all"}, value=7200.0,
+    )
+    assert err_code(env) == ErrorCode.EDIT_REJECTED.value
