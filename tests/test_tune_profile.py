@@ -249,7 +249,9 @@ def test_switch_patch_map_binds_every_slot_by_uniqueid() -> None:
 def test_lineage_helper_tuples_name_real_entries() -> None:
     for name in (*sc_map.IGNITION_BASE_VVL0, *sc_map.IGNITION_TEMP_CORRECTION,
                  *sc_map.LAMBDA_FAMILY, *sc_map.LAMBDA_FLOORS,
-                 *sc_map.WASTEGATE_MAPS):
+                 *sc_map.WASTEGATE_MAPS, *sc_map.TURBO_PROTECTION,
+                 *sc_map.SPEED_LIMITER, *sc_map.CHARGE_AIR_DIAG,
+                 *sc_map.CYLINDER_HEAD_TEMP):
         assert name in SC8S50
 
 
@@ -278,6 +280,90 @@ def test_iat_timing_correction_pair_is_mapped_with_its_shared_axes() -> None:
         assert spec.shape == (1, 10)
         assert spec.has(prof.TAG_AXIS)
     assert iat_axis.units == "\N{DEGREE SIGN}C"
+
+
+def test_every_basics_sop_write_target_is_mapped() -> None:
+    """Every table the Tuning Basics recipe *writes* is reachable from the app.
+
+    The recipe resolves ECU symbols directly, so it could always write these;
+    the table browser only offers what this profile declares. That gap is what
+    let a person run the SOP from Python and then find half its targets missing
+    on the tablet, so it is asserted rather than remembered.
+
+    Deliberate skips are excluded: a `skip_stock` entry is a documented decision
+    to leave a table alone, not a table the profile owes an entry.
+    """
+    from simoscal import sop_recipe as sop
+
+    mapped = {SC8S50[name].key for name in SC8S50}
+    unmapped = sorted(
+        symbol
+        for entry in sop.SYMBOL_MAP
+        if sop.is_write_kind(entry.kind)
+        for symbol in (entry.symbols if isinstance(entry.symbols, (list, tuple))
+                       else [entry.symbols])
+        if symbol not in mapped
+    )
+    assert unmapped == [], f"SOP writes tables the browser cannot reach: {unmapped}"
+
+
+def test_turbo_protection_pairs_a_limit_with_its_setpoint() -> None:
+    """Each protection ceiling is a (limit, setpoint) pair, both browsable.
+
+    The setpoint is what the closed loop targets and the limit is where
+    protection acts, so on stock the setpoint sits *below* the limit. Raising one
+    without the other narrows that gap or inverts it.
+    """
+    for limit, setpoint in (
+        ("turbo_speed_max", "turbo_speed_max_setpoint"),
+        ("compressor_air_temp_max", "compressor_air_temp_max_setpoint"),
+    ):
+        for name in (limit, setpoint):
+            spec = SC8S50[name]
+            assert spec.shape == (1, 1)
+            assert not spec.domain_owned, "chosen to stay browsable"
+            assert not spec.has(prof.TAG_AXIS)
+    assert SC8S50["turbo_speed_max"].units == "rpm"
+    assert SC8S50["compressor_air_temp_max"].units == "\N{DEGREE SIGN}C"
+
+
+def test_speed_limiter_is_four_scalars_of_one_number() -> None:
+    """All four levels are mapped, so raising the limiter can write all four."""
+    assert len(sc_map.SPEED_LIMITER) == 4
+    for name in sc_map.SPEED_LIMITER:
+        spec = SC8S50[name]
+        assert spec.shape == (1, 1)
+        assert spec.units == "km/h"
+        assert spec.key.startswith("LMVLim_vMax_vLim_C_VW.")
+        assert not spec.domain_owned
+
+
+def test_the_two_new_grids_carry_their_own_axes() -> None:
+    """Both 6x6 grids are mapped with both axes, and the axes are tagged."""
+    for grid, axes in (
+        ("cylinder_head_temp_setpoint",
+         ("cylinder_head_temp_rpm_axis", "cylinder_head_temp_charge_axis")),
+        ("charge_air_pressure_max_diag",
+         ("charge_air_diag_put_axis", "charge_air_diag_rpm_axis")),
+    ):
+        assert SC8S50[grid].shape == (6, 6)
+        assert not SC8S50[grid].has(prof.TAG_AXIS)
+        for axis in axes:
+            spec = SC8S50[axis]
+            assert spec.shape == (1, 6)
+            assert spec.has(prof.TAG_AXIS), "a breakpoint axis must be tagged"
+
+
+def test_put_setpoint_now_has_both_of_its_axes() -> None:
+    """The y axis the revision lineage's axis-write moves is mapped at last."""
+    y = SC8S50["put_setpoint_map_axis"]
+    assert y.key == "ldp_map_sp_ip_put_sp"
+    assert y.shape == (1, 4)
+    assert y.units == "hPa"
+    assert y.has(prof.TAG_AXIS)
+    # The grid is 4 rows x 6 columns: y indexes the rows, x the columns.
+    assert SC8S50["put_setpoint"].shape == (4, 6)
+    assert SC8S50["put_setpoint_rpm_axis"].shape == (1, 6)
 
 
 # --------------------------------------------------------------------------- #

@@ -54,6 +54,11 @@ AXIS_QUANTITIES: dict[str, str] = {
     "ldpm_n_32_1_lasp": "Engine speed",
     "ldpm_n_ip_iga_bas_igsp": "Engine speed",
     "ldpm_n_32_5_igsp": "Engine speed",
+    # 1504–4992 rpm, the CAP_H overboost-diagnosis y axis.
+    "ldpm_n_ip_put_cap_diag": "Engine speed",
+    # 1000–5520, declared in the XDF as `U/min` — the German spelling of rpm,
+    # not a different quantity. Decoded and checked before being written here.
+    "DATA_ThmMng.CoTE_nEng_A_VW": "Engine speed",
 
     # -- airmass / flow ----------------------------------------------------- #
     # mg/stk ladders (70–1400): airmass per stroke, the load axis the ignition
@@ -67,6 +72,11 @@ AXIS_QUANTITIES: dict[str, str] = {
     # hPa absolute, 590–2500: the requested manifold pressure IP_PUT_SP is
     # scheduled against.
     "ldp_map_sp_ip_put_sp": "Manifold pressure setpoint",
+    # hPa absolute, 1000–2400: the *requested* PUT the CAP_H diagnosis cap is
+    # scheduled against. Distinct from the axis above — same unit, and both are
+    # a requested pressure, but this one indexes the diagnosis rather than the
+    # setpoint grid.
+    "ldpm_put_sp_ip_put_cap_diag": "Pressure up throttle setpoint",
     # °C, -20.25 to 50.25. `tia_cha_up` = intake air temperature upstream of the
     # charger, i.e. what the compressor inlet sees.
     "ldp_tia_cha_up_ip_pq_cha_max": "Compressor-inlet air temperature",
@@ -80,6 +90,12 @@ AXIS_QUANTITIES: dict[str, str] = {
     # x = exhaust, y = intake (knowledge/ecu-tuning-basics.md § Wastegate).
     "ldp_fac_1_ip_fac_bpa_sp": "Exhaust flow factor",
     "ldp_fac_2_ip_fac_bpa_sp": "Intake flow factor",
+
+    # -- charge / load ------------------------------------------------------- #
+    # 10.0–60.0 %, the relative cylinder charge (Füllung) the cylinder-head
+    # temperature setpoint is scheduled against. A percentage of the cylinder's
+    # capacity, not a percentage of anything the driver commands.
+    "DATA_ThmMng.CoTE_rChRel_A_VW": "Relative cylinder charge",
 
     # -- misc --------------------------------------------------------------- #
     # 0–6 integers: gear, indexed from 0 (neutral) as the ECU counts it.

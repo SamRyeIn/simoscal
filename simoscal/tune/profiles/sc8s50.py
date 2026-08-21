@@ -173,6 +173,107 @@ _SPECS.extend([
           "\N{DEGREE SIGN}C", (1, 10), frozenset({TAG_AXIS})),
 ])
 
+# The remaining Tuning Basics SOP write targets, plus the one table the revision
+# lineage has edited that this profile did not map.
+#
+# The recipe in `simoscal.sop_recipe` reaches these by resolving ECU symbols
+# directly, so the Python side has always been able to write them; the app's
+# table browser only ever offers what this profile declares, which is why they
+# were unreachable there. Every entry below was decoded off the stock
+# `5G0906259L__0002` bin before being written down — the standard the existing
+# entries were added under.
+#
+# None of them is domain-owned. These are ordinary calibration values with no
+# unit the display contradicts and no structural invariant a partial write would
+# break, which is what `owner` exists for (see `airmass_setpoint_max` above and
+# the switch patch's slot grids). A limiter being *raised* by the SOP is not a
+# reason to hide it: the guide raises it, a person editing by hand may want to
+# put it back, and a ceiling you cannot see is a ceiling you cannot check.
+_SPECS.extend([
+    # ---- limiters: turbocharger protection --------------------------------- #
+    # Stock 189000 / 179000 rpm. The pair is the hard ceiling and the setpoint
+    # the closed loop targets below it; the basics guide raises both to 220000.
+    # The analysis battery's own turbo watch line (190k) sits between them.
+    _spec("turbo_speed_max", "C_N_TCHA_MAX",
+          "Maximum turbo charger speed", "rpm", (1, 1)),
+    _spec("turbo_speed_max_setpoint", "C_N_TCHA_MAX_SP",
+          "Maximum turbo charger speed setpoint for turbo charger protection",
+          "rpm", (1, 1)),
+    # Stock 185 / 175 degC, compressor-outlet air. Same ceiling/setpoint pairing.
+    _spec("compressor_air_temp_max", "C_TIA_THR_TCHA_MAX",
+          "Constant to define the maximum air temperature",
+          "\N{DEGREE SIGN}C", (1, 1)),
+    _spec("compressor_air_temp_max_setpoint", "C_TIA_THR_TCHA_MAX_SP",
+          "Maximum air temperature setpoint that could be controlled using the "
+          "torque setpoint reduction", "\N{DEGREE SIGN}C", (1, 1)),
+
+    # ---- limiters: overboost diagnosis and road speed ---------------------- #
+    # The CAP_H (charge air pressure too high) diagnosis cap, stock 1600-2650
+    # hPa. Distinct from `overboost_threshold` (P0234): that one is a
+    # pressure *difference* against ambient, this is an absolute cap scheduled
+    # against requested PUT and engine speed.
+    _spec("charge_air_pressure_max_diag", "IP_PUT_MAX_CAP_H_DIAG",
+          "Maximum charge air pressure quotient for charge air pressure too "
+          "high (CAP_H) diagnosis", "hPa", (6, 6)),
+    # Four scalars, all stock 200 km/h: the three speed-limiter levels and the
+    # not-active value. They are separate tables holding the same number, so a
+    # change to one alone is almost certainly a mistake — raising the limiter
+    # means writing all four.
+    _spec("speed_limiter_level1", "LMVLim_vMax_vLim_C_VW.VehSpdl2Lvl1",
+          "Overall maximal velocity, limiter level 1", "km/h", (1, 1)),
+    _spec("speed_limiter_level2", "LMVLim_vMax_vLim_C_VW.VehSpdl2Lvl2",
+          "Overall maximal velocity, limiter level 2", "km/h", (1, 1)),
+    _spec("speed_limiter_level3", "LMVLim_vMax_vLim_C_VW.VehSpdl2Lvl3",
+          "Overall maximal velocity, limiter level 3", "km/h", (1, 1)),
+    _spec("speed_limiter_inactive", "LMVLim_vMax_vLim_C_VW.VehSpdl2NotAcv",
+          "Overall maximal velocity, limiter not active", "km/h", (1, 1)),
+
+    # ---- cooling ----------------------------------------------------------- #
+    # Stock 80.25-107.2 degC against engine speed and relative charge. The guide
+    # lowers the hot end; the SOP treats it as a read-modify-write rule rather
+    # than a literal grid, which is why it needs the real table here.
+    _spec("cylinder_head_temp_setpoint", "CoTE_tHdCtlSp_M_VW",
+          "Cylinder head temperature control setpoint",
+          "\N{DEGREE SIGN}C", (6, 6)),
+
+    # ---- boost ------------------------------------------------------------- #
+    # Selects whether PUT is computed from ambient pressure (AMP) or from
+    # pressure upstream of the charger. Stock 0. A one-cell switch, not a curve.
+    _spec("put_from_ambient_enable", "LC_PUT_SP_TOL_ENA_AMP",
+          "Use AMP for calculation of PUT out of pressure ratio "
+          "(instead of PRS_CHA_UP)", "-", (1, 1)),
+    # The other half of IP_PUT_SP's axis pair. `put_setpoint_rpm_axis` (x) was
+    # already mapped; this is the y axis the revision lineage's axis-write
+    # actually moves, and it was the one table the lineage has edited that this
+    # profile could not show. Used by IP_PUT_SP and nothing else, so a
+    # re-breakpoint here moves no table the profile hides.
+    _spec("put_setpoint_map_axis", "ldp_map_sp_ip_put_sp",
+          "Pressure up throttle setpoint : y axis (manifold pressure setpoint)",
+          "hPa", (1, 4), frozenset({TAG_AXIS})),
+
+    # ---- axes for the two grids above -------------------------------------- #
+    # Both CoTE axes are used by CoTE_tHdCtlSp_M_VW alone, so re-breakpointing
+    # either moves nothing else.
+    _spec("cylinder_head_temp_rpm_axis", "DATA_ThmMng.CoTE_nEng_A_VW",
+          "Cylinder head temperature control setpoint : x axis (engine speed)",
+          "rpm", (1, 6), frozenset({TAG_AXIS})),
+    _spec("cylinder_head_temp_charge_axis", "DATA_ThmMng.CoTE_rChRel_A_VW",
+          "Cylinder head temperature control setpoint : y axis "
+          "(relative cylinder charge)", "%", (1, 6), frozenset({TAG_AXIS})),
+    # The CAP diagnosis axes are shared with IP_PUT_MIN_CAP_L_DIAG — the
+    # pressure-too-*low* counterpart, which this profile does not map. A
+    # re-breakpoint therefore moves one table the browser cannot show, which is
+    # a decision for a revision to make deliberately rather than a side effect.
+    _spec("charge_air_diag_put_axis", "ldpm_put_sp_ip_put_cap_diag",
+          "Maximum charge air pressure for CAP_H diagnosis : x axis "
+          "(pressure up throttle setpoint), shared with IP_PUT_MIN_CAP_L_DIAG",
+          "hPa", (1, 6), frozenset({TAG_AXIS})),
+    _spec("charge_air_diag_rpm_axis", "ldpm_n_ip_put_cap_diag",
+          "Maximum charge air pressure for CAP_H diagnosis : y axis "
+          "(engine speed), shared with IP_PUT_MIN_CAP_L_DIAG",
+          "rpm", (1, 6), frozenset({TAG_AXIS})),
+])
+
 #: Every base-timing logical name, in the order the ECU's cam grid runs.
 IGNITION_BASE_VVL0 = tuple(
     f"ignition_base_vvl0_i{i}_e{e}" for i in range(3) for e in range(3)
@@ -196,6 +297,42 @@ WASTEGATE_MAPS = ("wastegate_feedforward_vvl0", "wastegate_feedforward_vvl1")
 #: The three lambda minimum-value floors the basics guide sets to 0.80.
 LAMBDA_FLOORS = ("lambda_setpoint_min", "lambda_catalyst_min", "lambda_turbo_min")
 
+#: The turbocharger protection ceilings, each as a (hard limit, setpoint) pair.
+#: The setpoint is what the closed loop targets; the limit is where protection
+#: acts. Raising one without the other narrows or inverts the gap between them.
+TURBO_PROTECTION = (
+    "turbo_speed_max", "turbo_speed_max_setpoint",
+    "compressor_air_temp_max", "compressor_air_temp_max_setpoint",
+)
+
+#: The four road-speed limiter scalars, all stock 200 km/h.
+#:
+#: Grouped because they are four tables holding one number: the three levels and
+#: the not-active value. Writing one alone leaves the car limited by whichever of
+#: the others the ECU happens to select, which looks like the edit silently
+#: failing.
+SPEED_LIMITER = (
+    "speed_limiter_level1", "speed_limiter_level2",
+    "speed_limiter_level3", "speed_limiter_inactive",
+)
+
+#: The CAP_H overboost-diagnosis cap and the two axes it is scheduled on. Both
+#: axes are shared with ``IP_PUT_MIN_CAP_L_DIAG``, which this profile does not
+#: map — see the specs.
+CHARGE_AIR_DIAG = (
+    "charge_air_pressure_max_diag",
+    "charge_air_diag_put_axis",
+    "charge_air_diag_rpm_axis",
+)
+
+#: The cylinder-head temperature setpoint and its two axes, which nothing else
+#: uses.
+CYLINDER_HEAD_TEMP = (
+    "cylinder_head_temp_setpoint",
+    "cylinder_head_temp_rpm_axis",
+    "cylinder_head_temp_charge_axis",
+)
+
 
 SC8S50 = Profile(
     name="SC8S50",
@@ -205,9 +342,13 @@ SC8S50 = Profile(
 
 __all__ = [
     "SC8S50",
+    "CHARGE_AIR_DIAG",
+    "CYLINDER_HEAD_TEMP",
     "IGNITION_BASE_VVL0",
     "IGNITION_TEMP_CORRECTION",
     "LAMBDA_FAMILY",
     "LAMBDA_FLOORS",
+    "SPEED_LIMITER",
+    "TURBO_PROTECTION",
     "WASTEGATE_MAPS",
 ]
