@@ -145,6 +145,13 @@ CHANNEL_SPECS: tuple[ChannelSpec, ...] = (
           "Turbo compressor outlet air temperature"),
     _spec("ambient_temp", "Ambient Temp", "degc", {"°c": 1.0, "degc": 1.0}, "Ambient air temperature"),
     _spec("ambient_press", "Ambient Press", "kpa", {"kpa": 1.0}, "Ambient (barometric) pressure"),
+    # Chassis accelerometers, read out of ECU RAM (the ESP sensor-cluster values)
+    # — NOT computed by the app. The PID list scales them as `(x-127)/10` and
+    # `(x-512)/32`, and the logged floats are the app's EMA filter converging on
+    # those raw steps. Being real sensors, they carry gravity: the longitudinal
+    # channel reads `dv/dt + g*sin(road grade) + g*sin(body pitch)`.
+    _spec("accel_lat", "Accel. Lat", "m/s2", {"m/s2": 1.0}, "Lateral acceleration"),
+    _spec("accel_long", "Accel. Long", "m/s2", {"m/s2": 1.0}, "Longitudinal acceleration"),
     # Turbo / wastegate.
     _spec("turbo_speed", "Turbo Speed", "rpm", {"rpm": 1.0}, "Turbocharger shaft speed"),
     _spec("intake_flow_fact", "Intake Flow Fact", "-", _UNITLESS, "Intake flow factor"),
