@@ -553,7 +553,15 @@ def test_the_catalog_does_not_offer_domain_owned_tables(boost_session: str):
     tables = ok_result(call("catalog", session_id=boost_session))["tables"]
     assert tables, "the base space still lists its tables"
     assert all(t["owner"] == "" for t in tables)
-    assert not [t for t in tables if t["space"] == "patch"]
+
+    # The patch space *may* contribute — its non-slot scalars are ordinary
+    # independent values and are deliberately generically editable. What it must
+    # never contribute is anything per-slot or the shared axis: those carry the
+    # cross-slot coherence a grid edit silently breaks (CR-20260813-01).
+    patch = [t for t in tables if t["space"] == "patch"]
+    assert all(
+        not t["name"].startswith("slot") for t in patch
+    ), f"a slot-owned table reached the generic catalog: {[t['name'] for t in patch]}"
 
 
 def test_a_domain_owned_table_is_still_readable(boost_session: str):
@@ -1214,3 +1222,311 @@ def test_analyze_logs_is_deterministic(log_params: dict):
         {"bridge_version": BRIDGE_VERSION, "op": "analyze_logs", "params": log_params}
     ))
     assert first == second
+
+
+# --------------------------------------------------------------------------- #
+# log_overlay — read-only, sessionless, and provably inert (U3 / AE1-AE3)
+# --------------------------------------------------------------------------- #
+def test_log_overlay_returns_pulls_with_both_boost_traces(log_params: dict):
+    result = ok_result(call("log_overlay", **log_params))
+
+    assert result["available"] is True
+    assert result["pulls"], "the synthetic logs contain pulls"
+    drawn = [p for p in result["pulls"] if p["drawn"]]
+    assert drawn, "at least one pull should draw"
+
+    sources = {s["source"] for s in drawn[0]["series"]}
+    assert sources == {"boost", "boost_sp"}, "actual and setpoint, both"
+    for series in drawn[0]["series"]:
+        assert series["segments"]
+        for seg in series["segments"]:
+            assert len(seg["x"]) == len(seg["y"])
+            assert all(isinstance(v, float) for v in seg["y"])
+
+
+def test_log_overlay_carries_the_pull_chooser_fields(log_params: dict):
+    """Gear, rpm span and duration — what the pull list shows, engine-formatted."""
+    result = ok_result(call("log_overlay", **log_params))
+
+    pull = result["pulls"][0]
+    assert pull["gear"] == 3 and pull["gear_resolved"] is True
+    assert pull["rpm_min"] < pull["rpm_max"]
+    assert pull["duration_s"] > 0
+    assert pull["file"]
+
+
+def test_log_overlay_needs_no_session(log_params: dict):
+    """Reading a datalog has nothing to do with holding an open edit session."""
+    bridge.reset()   # no sessions exist at all
+    assert ok_result(call("log_overlay", **log_params))["pulls"]
+
+    env = call("log_overlay", logs=[])
+    assert err_code(env) == ErrorCode.BAD_PARAMS.value
+
+
+def test_log_overlay_attributes_the_same_gear_under_both_headers(tmp_path):
+    """AE2: `Gear ()` and `Gear (gear)` logs of one pull overlay identically.
+
+    The two header forms differ by a fixed offset, and the offset is the log
+    layer's job — so the same physical pull logged either way must attribute the
+    same gear *and* survive the gear trim to the same samples. If the offset ever
+    leaked into the overlay path, this is where it would show.
+    """
+    from tests.faultinject import PullSpec, build_folder
+
+    def overlay_for(folder, header, logged_gear):
+        build_folder(
+            folder, [PullSpec(gear=logged_gear)],
+            gear_header=header, wastegate=True, ign_table=True,
+        )
+        csvs = sorted(folder.glob("simostools-*.csv"))
+        return ok_result(call("log_overlay", logs=[
+            {"log_path": str(c), "log_sha256": _sha256(c)} for c in csvs
+        ]))
+
+    actual = overlay_for(tmp_path / "actual", "Gear (gear)", 3.0)
+    zero_indexed = overlay_for(tmp_path / "zero", "Gear ()", 2.0)
+
+    for result in (actual, zero_indexed):
+        assert result["pulls"][0]["gear"] == 3, "both resolve to real 3rd gear"
+
+    def traces(result):
+        return {
+            s["source"]: [seg["y"] for seg in s["segments"]]
+            for s in result["pulls"][0]["series"]
+        }
+
+    assert traces(actual) == traces(zero_indexed)
+
+
+def test_log_overlay_trims_samples_from_a_different_gear(tmp_path):
+    """The gear trim drops the samples the DSG's early flip mislabels."""
+    from tests.faultinject import PullSpec, build_folder
+
+    folder = tmp_path / "flip"
+    build_folder(folder, [PullSpec(gear=3.0)], wastegate=True, ign_table=True)
+    csv_path = sorted(folder.glob("simostools-*.csv"))[0]
+
+    rows = csv_path.read_text().splitlines()
+    header = rows[0].split(",")
+    gear_col = header.index("Gear (gear)")
+    # Flip the last quarter of the file to 4th, as the gear channel does before
+    # the shift actually lands.
+    flipped = rows[: 1 + int(len(rows[1:]) * 0.75)]
+    for row in rows[1 + int(len(rows[1:]) * 0.75):]:
+        cells = row.split(",")
+        cells[gear_col] = "4"
+        flipped.append(",".join(cells))
+    csv_path.write_text("\n".join(flipped) + "\n")
+
+    result = ok_result(call("log_overlay", logs=[
+        {"log_path": str(csv_path), "log_sha256": _sha256(csv_path)}
+    ]))
+    drawn = [p for p in result["pulls"] if p["drawn"]]
+    assert drawn, "the 3rd-gear part of the pull still draws"
+    for pull in drawn:
+        assert pull["gear"] == 3
+        samples = sum(len(seg["x"]) for s in pull["series"] for seg in s["segments"])
+        assert samples < pull["n_samples"] * len(pull["series"]), (
+            "the 4th-gear tail must not reach the overlay"
+        )
+
+
+def test_log_overlay_unreadable_csv_is_an_analysis_error(tmp_path):
+    """A CSV the log layer cannot parse fails loud, with a stable code."""
+    empty = tmp_path / "simostools-empty.csv"
+    empty.write_text("")
+    env = call("log_overlay", logs=[
+        {"log_path": str(empty), "log_sha256": _sha256(empty)}
+    ])
+    assert err_code(env) == ErrorCode.ANALYSIS_ERROR.value
+
+
+def test_log_overlay_says_why_a_readable_log_cannot_draw(tmp_path):
+    """A parseable log missing the boost channels reports *which* are missing.
+
+    Not an error: the file was read fine, it simply has nothing to draw with.
+    Without ambient pressure there is no honest baseline to zero gauge boost
+    against, and the app needs to say that rather than show an empty canvas.
+    """
+    thin = tmp_path / "simostools-thin.csv"
+    thin.write_text("Time,Engine Speed (rpm)\n0,1000\n0.05,1100\n")
+    result = ok_result(call("log_overlay", logs=[
+        {"log_path": str(thin), "log_sha256": _sha256(thin)}
+    ]))
+
+    assert result["available"] is False
+    assert set(result["missing_channels"]) == {"put", "put_sp", "ambient_press"}
+    assert result["pulls"] == []
+
+
+def test_log_overlay_rejects_a_changed_file(log_params: dict):
+    target = Path(log_params["logs"][0]["log_path"])
+    target.write_text(target.read_text() + "0,0,0\n")
+    assert err_code(call("log_overlay", **log_params)) == ErrorCode.HASH_MISMATCH.value
+
+
+# --------------------------------------------------------------------------- #
+# limiters / lambda_fl — the domain-screen read+edit pairs (U3)
+# --------------------------------------------------------------------------- #
+def test_limiters_reads_the_speed_quartet_on_a_base_session(session: str):
+    result = ok_result(call("limiters", session_id=session))
+
+    assert len(result["speed_limiter"]) == 4
+    for scalar in result["speed_limiter"]:
+        assert scalar["value"] == pytest.approx(200.0)
+        assert scalar["units"] == "km/h"
+        assert scalar["owner"], "the quartet is domain-owned"
+    # No switch patch on a base-only session, so no trio to show.
+    assert result["rev_limits"] is None
+    assert result["launch_control"] is None
+
+
+def test_limiters_edit_writes_the_whole_quartet(session: str):
+    result = ok_result(call(
+        "limiters_edit", session_id=session, speed_limiter_kmh=250.0,
+        intent="raise the road-speed limiter",
+    ))
+
+    assert len(result["entries"]) == 4
+    for scalar in result["limiters"]["speed_limiter"]:
+        assert scalar["value"] == pytest.approx(250.0)
+    assert result["can_undo"] is True
+
+
+def test_limiters_edit_undo_restores_every_quartet_scalar(session: str):
+    ok_result(call("limiters_edit", session_id=session, speed_limiter_kmh=250.0))
+    ok_result(call("undo", session_id=session))
+
+    for scalar in ok_result(call("limiters", session_id=session))["speed_limiter"]:
+        assert scalar["value"] == pytest.approx(200.0)
+
+
+def test_limiters_edit_refuses_an_unencodable_speed(session: str):
+    env = call("limiters_edit", session_id=session, speed_limiter_kmh=600.0)
+    assert err_code(env) == ErrorCode.EDIT_REJECTED.value
+
+    for scalar in ok_result(call("limiters", session_id=session))["speed_limiter"]:
+        assert scalar["value"] == pytest.approx(200.0), "a refusal writes nothing"
+
+
+def test_limiters_edit_needs_something_to_change(session: str):
+    assert err_code(call("limiters_edit", session_id=session)) == ErrorCode.BAD_PARAMS.value
+
+
+def test_rev_limits_need_the_patch_space(session: str):
+    env = call("limiters_edit", session_id=session, rev_limits={"soft": 100})
+    assert err_code(env) == ErrorCode.TUNE_ERROR.value
+
+
+def test_limiters_reads_and_writes_the_trio_on_a_patched_session(boost_session: str):
+    before = ok_result(call("limiters", session_id=boost_session))
+    assert [s["name"] for s in before["rev_limits"]] == [
+        "rev_limit_soft", "rev_limit_medium", "rev_limit_hard",
+    ]
+    assert [s["name"] for s in before["launch_control"]] == [
+        "lc_limiter_timing", "lc_release_speed",
+    ]
+
+    result = ok_result(call(
+        "limiters_edit", session_id=boost_session,
+        rev_limits={"soft": 100, "medium": 200, "hard": 300},
+    ))
+    assert len(result["entries"]) == 3
+    assert [s["value"] for s in result["limiters"]["rev_limits"]] == [100.0, 200.0, 300.0]
+
+
+def test_a_backwards_trio_is_rejected_and_writes_nothing(boost_session: str):
+    ok_result(call(
+        "limiters_edit", session_id=boost_session,
+        rev_limits={"soft": 100, "medium": 200, "hard": 300},
+    ))
+
+    env = call("limiters_edit", session_id=boost_session, rev_limits={"soft": 250})
+    assert err_code(env) == ErrorCode.EDIT_REJECTED.value
+    assert "escalate" in env["error"]["message"]
+
+    after = ok_result(call("limiters", session_id=boost_session))
+    assert [s["value"] for s in after["rev_limits"]] == [100.0, 200.0, 300.0]
+
+
+def test_lambda_fl_reads_the_map_with_the_engine_s_own_bound(session: str):
+    result = ok_result(call("lambda_fl", session_id=session))
+
+    table = result["table"]
+    assert table["shape"] == [8, 12]
+    assert table["y_axis"]["values"][0] == 0.0, "rows are time at full load"
+    assert table["x_axis"]["units"] == "rpm"
+    # The band the screen draws must be the bound the engine refuses on.
+    assert result["lean_max"] == 1.0
+    assert result["rich_min"] == 0.5
+
+
+def test_lambda_fl_edit_writes_one_row_and_reports_encoding(session: str):
+    result = ok_result(call(
+        "lambda_fl_edit", session_id=session, values=0.85, row=4,
+        intent="add full-load enrichment 30 s in",
+    ))
+
+    assert len(result["encoded"]) == 12
+    assert all(abs(v - 0.85) < 1e-3 for v in result["encoded"])
+    assert result["requested"] == [0.85] * 12
+    assert result["entry"]["cells_changed"] == 12
+
+    grid = ok_result(call("lambda_fl", session_id=session))["table"]["values"]
+    assert all(abs(v - 0.85) < 1e-3 for v in grid[4])
+    assert all(v == 1.0 for row in grid[:4] + grid[5:] for v in row)
+
+
+def test_lambda_fl_edit_selects_a_row_by_seconds(session: str):
+    ok_result(call("lambda_fl_edit", session_id=session, values=0.82, seconds=30))
+
+    detail = ok_result(call("lambda_fl", session_id=session))["table"]
+    row = detail["y_axis"]["values"].index(30.0)
+    assert all(abs(v - 0.82) < 1e-3 for v in detail["values"][row])
+
+
+def test_lambda_fl_edit_refuses_a_lean_setpoint(session: str):
+    """AE7 at the boundary: 1.00 is refused end to end, and nothing is written."""
+    env = call("lambda_fl_edit", session_id=session, values=1.0, row=4)
+    assert err_code(env) == ErrorCode.EDIT_REJECTED.value
+    assert "at or above lambda" in env["error"]["message"]
+
+    grid = ok_result(call("lambda_fl", session_id=session))["table"]["values"]
+    assert all(v == 1.0 for row in grid for v in row), "the map is untouched"
+    assert ok_result(call("journal", session_id=session))["entries"] == []
+
+
+def test_lambda_fl_edit_refusal_leaves_no_undo_point(session: str):
+    call("lambda_fl_edit", session_id=session, values=1.2, row=0)
+    assert ok_result(call("undo", session_id=session))["done"] is False
+
+
+def test_the_owned_tables_are_not_offered_by_the_generic_catalog(session: str):
+    """The generic grid must not offer what only a domain call may write."""
+    names = {t["name"] for t in ok_result(call("catalog", session_id=session))["tables"]}
+
+    assert "lambda_full_load" not in names
+    assert not {
+        "speed_limiter_level1", "speed_limiter_level2",
+        "speed_limiter_level3", "speed_limiter_inactive",
+    } & names
+    # The dual-path pedal maps and the FL context tables stay browsable.
+    assert "pedal_dct_high" in names
+    assert "lambda_full_load_iat" in names
+
+
+def test_a_generic_edit_to_an_owned_table_is_refused(session: str):
+    env = call(
+        "edit", session_id=session, name="lambda_full_load", op="set",
+        selection={"kind": "row", "args": [4]}, value=0.85,
+    )
+    assert err_code(env) == ErrorCode.EDIT_REJECTED.value
+
+
+def test_the_new_ops_did_not_bump_the_bridge_version():
+    """Additive ops keep the version: an older app simply never names them."""
+    info = ok_result(call("bridge_info"))
+    assert info["bridge_version"] == 1
+    for op in ("log_overlay", "limiters", "limiters_edit", "lambda_fl", "lambda_fl_edit"):
+        assert op in info["ops"]

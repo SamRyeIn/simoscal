@@ -56,6 +56,12 @@ AXIS_QUANTITIES: dict[str, str] = {
     "ldpm_n_32_5_igsp": "Engine speed",
     # 1504–4992 rpm, the CAP_H overboost-diagnosis y axis.
     "ldpm_n_ip_put_cap_diag": "Engine speed",
+    # 512–6496 rpm, the columns of the lambda full-load enrichment maps.
+    "ldpm_n_32_ip_lamb_fl": "Engine speed",
+    # 700–7000 rpm, shared by the DCT driver-interpretation (pedal) maps.
+    "ldpm_n_fac_tq_req_pv_dct": "Engine speed",
+    # 700–5000 rpm, the drive-off torque-request map's own rpm axis.
+    "ldp_n_fac_tq_driv_drof": "Engine speed",
     # 1000–5520, declared in the XDF as `U/min` — the German spelling of rpm,
     # not a different quantity. Decoded and checked before being written here.
     "DATA_ThmMng.CoTE_nEng_A_VW": "Engine speed",
@@ -97,9 +103,21 @@ AXIS_QUANTITIES: dict[str, str] = {
     # capacity, not a percentage of anything the driver commands.
     "DATA_ThmMng.CoTE_rChRel_A_VW": "Relative cylinder charge",
 
+    # -- pedal --------------------------------------------------------------- #
+    # 0–99.9 %, the accelerator-pedal position the driver-interpretation maps
+    # are indexed on. `pv_av` = pedal value, actual. Not throttle plate angle:
+    # this is what the driver's foot asks for, which is the whole point of these
+    # maps — they are where pedal travel becomes a torque request.
+    "ldpm_pv_av_h_fac_tq_req_pv_dct": "Pedal value",
+    "ldp_pv_av_fac_tq_req_driv_drof": "Pedal value",
+
     # -- misc --------------------------------------------------------------- #
     # 0–6 integers: gear, indexed from 0 (neutral) as the ECU counts it.
     "ldp_gear_pv_av_fl": "Gear",
+    # 0–60 s: time spent at full load. The lambda full-load enrichment maps walk
+    # down this axis as a pull holds wide-open throttle, so each row is "how
+    # rich, this many seconds in". Seconds of *sustained load*, not clock time.
+    "ldpm_t_2_tqdr": "Time at full load",
     # 0.4–1.0: the efficiency of the actual ignition angle against optimum.
     "ldp_eff_iga_av_ip_lamb_cop_min": "Ignition-angle efficiency",
 }

@@ -35,6 +35,14 @@ contract is deliberately narrow and deliberately dumb at the edges:
   ``BUSY`` rather than mutating a session mid-op. Kotlin also serializes calls on
   a single dispatcher; this guard is the last line, not the only one.
 
+Why some screens get their own ops and others do not: an op exists here when the
+write it performs carries an invariant no single-table grid edit can see. The
+per-slot boost curves, the road-speed quartet, the cylinder-cut trio and the
+lambda lean bound each qualify, so each has a domain-routed op. The pedal maps
+do not — they are ordinary independent grids — so the Pedal screen is drawn over
+``catalog``/``table_detail``/``edit`` and gets no op of its own. A screen is not
+a reason for an op; an invariant is.
+
 Why *report* is not its own op: a report is only ever the atomic product of the
 ``build`` op's gate run. Re-deriving a report from the live journal after the
 gates ran is exactly the drift CR-20260724-02 closed, so the bridge never offers
@@ -1008,6 +1016,208 @@ def _op_analyze_logs(params: dict) -> dict:
     return _jsonify(document)
 
 
+def _op_log_overlay(params: dict) -> dict:
+    """Detected pulls plus their boost traces, for the boost editor's overlay.
+
+    Sessionless and read-only, like ``analyze_logs`` — and deliberately *not*
+    ``analyze_logs``. The overlay needs pulls and two series; the battery is
+    seconds of work it does not need, and routing the overlay through the
+    analyze flow would make one screen's lifecycle a dependency of another's.
+
+    It carries no findings, no verdicts, and no calibration: the overlay draws
+    data behind the curves and every judgement stays with the person editing.
+    That is also why it takes no ``session_id`` — reading a datalog has nothing
+    to do with holding an open edit session, and this op could not touch one if
+    it wanted to.
+    """
+    from .analysis import (
+        AnalysisError,
+        CheckContext,
+        detect_pulls,
+        load_logset_files,
+        overlay_payload,
+    )
+
+    paths, names = _verified_logs(params)
+    try:
+        logset = load_logset_files(paths, names=names)
+        pulls = detect_pulls(logset)
+        payload = overlay_payload(CheckContext(logset=logset, pulls=pulls, cal=None))
+    except AnalysisError as exc:
+        raise BridgeError(
+            ErrorCode.ANALYSIS_ERROR,
+            "that datalog could not be read",
+            advanced=str(exc),
+        ) from exc
+    return _jsonify(payload)
+
+
+def _op_limiters(params: dict) -> dict:
+    """Every limiter the Limiters screen shows, read in one call.
+
+    One read rather than one per scalar, for the same reason ``slot_settings``
+    is one call: the question is comparative — the cut trio only means anything
+    read together — and answering it a table at a time is how one value goes
+    unchecked.
+
+    The rev trio lives in the switch patch, so a base-only session reports
+    ``rev_limits: null`` and the screen shows the road-speed limiter alone. That
+    is a degraded screen, not an error: a bin without the patch genuinely has no
+    trio.
+    """
+    from .tune.profiles.sc8s50 import SPEED_LIMITER
+    from .tune.profiles.switchpatch_2933 import (
+        LAUNCH_CONTROL_LIMITER,
+        REV_LIMIT_TRIO,
+    )
+
+    sess = _session(params)
+
+    def scalar(name: str, space: str = "base") -> dict:
+        resolved = sess.tune.table(name, space=space)
+        return {
+            "name": name,
+            "label": resolved.label,
+            "description": resolved.spec.description,
+            "units": resolved.units,
+            "value": float(sess.tune.values(name, space=space).ravel()[0]),
+            "owner": resolved.owner,
+        }
+
+    result: dict = {
+        "speed_limiter": [scalar(name) for name in SPEED_LIMITER],
+        "rev_limits": None,
+        "launch_control": None,
+    }
+    if PATCH_SPACE in sess.tune.spaces:
+        result["rev_limits"] = [
+            scalar(name, PATCH_SPACE) for name in REV_LIMIT_TRIO
+        ]
+        result["launch_control"] = [
+            scalar(name, PATCH_SPACE) for name in LAUNCH_CONTROL_LIMITER
+        ]
+    return result
+
+
+def _op_limiters_edit(params: dict) -> dict:
+    """Apply a limiters change — the rev trio, the speed limiter, or both.
+
+    Routed to the domain ops rather than the generic ``edit`` op because both
+    writes are multi-table and neither invariant is visible from a single
+    table: a grid write to one quartet scalar leaves the car limited by an
+    un-written level, and one to a cut-trio scalar cannot see the other two.
+    A refusal is ``EDIT_REJECTED`` with the engine's own reason, and leaves
+    every table untouched.
+    """
+    sess = _session(params)
+    intent = params.get("intent", "")
+    rev = params.get("rev_limits")
+    speed = params.get("speed_limiter_kmh")
+    if rev is None and speed is None:
+        raise BridgeError(
+            ErrorCode.BAD_PARAMS,
+            "name at least one of 'rev_limits' or 'speed_limiter_kmh'",
+        )
+
+    entries = []
+    try:
+        if rev is not None:
+            if not isinstance(rev, dict):
+                raise BridgeError(ErrorCode.BAD_PARAMS, "'rev_limits' must be an object")
+            _require_patch_space(sess)
+            entries.extend(sess.tune.limits.rev_limits(
+                soft=rev.get("soft"), medium=rev.get("medium"),
+                hard=rev.get("hard"), intent=intent,
+            ))
+        if speed is not None:
+            entries.extend(sess.tune.limits.speed_limiter(speed, intent=intent))
+    except (EditRejected, ValueError) as exc:
+        raise BridgeError(ErrorCode.EDIT_REJECTED, str(exc))
+    except (TuneError, KeyError, TypeError) as exc:
+        raise BridgeError(
+            ErrorCode.TUNE_ERROR,
+            "the limiter change could not be applied",
+            advanced=str(exc),
+        )
+
+    sess.history.commit()
+    return {
+        "limiters": _op_limiters({"session_id": sess.id}),
+        "entries": [_entry_summary(e) for e in entries],
+        **_history_state(sess),
+    }
+
+
+def _op_lambda_fl(params: dict) -> dict:
+    """The full-load enrichment map as the lambda screen draws it. Read-only.
+
+    Rows are time at full load and columns engine speed, so the screen shows one
+    time-row as the editable curve with the others ghosted. Both axes are sent
+    decoded, and the lean bound comes from the engine rather than a UI constant —
+    the number the screen draws its danger band against must be the number the
+    engine refuses on.
+    """
+    from .tune.domains.fueling import LAMBDA_FL_LEAN_MAX, LAMBDA_FL_RICH_MIN
+
+    sess = _session(params)
+    try:
+        info = table_detail(sess.tune, "lambda_full_load")
+    except (TuneError, KeyError) as exc:
+        raise BridgeError(
+            ErrorCode.TUNE_ERROR,
+            "this session has no full-load enrichment map",
+            advanced=str(exc),
+        )
+    return {
+        "table": _jsonify(info),
+        "lean_max": LAMBDA_FL_LEAN_MAX,
+        "rich_min": LAMBDA_FL_RICH_MIN,
+    }
+
+
+def _op_lambda_fl_edit(params: dict) -> dict:
+    """Write one time-row of the full-load enrichment map.
+
+    ``row`` is an index or ``seconds`` picks the row by its own breakpoint;
+    ``values`` is one lambda per rpm breakpoint or a scalar for a flat row. A
+    value at or above the lean bound is ``EDIT_REJECTED`` carrying the engine's
+    reason — never clamped, so a lean setpoint cannot be quietly corrected into
+    one nobody asked for.
+    """
+    sess = _session(params)
+    values = _require(params, "values")
+    intent = params.get("intent", "")
+    row = params.get("row")
+    seconds = params.get("seconds")
+
+    try:
+        entry = sess.tune.fueling.full_load_enrichment(
+            values, row=row, seconds=seconds, intent=intent,
+        )
+    except (EditRejected, ValueError) as exc:
+        raise BridgeError(ErrorCode.EDIT_REJECTED, str(exc))
+    except (TuneError, KeyError, TypeError) as exc:
+        raise BridgeError(
+            ErrorCode.TUNE_ERROR,
+            "the enrichment row could not be written",
+            advanced=str(exc),
+        )
+
+    sess.history.commit()
+    requested = np.atleast_1d(np.asarray(values, dtype=np.float64)).ravel()
+    encoded = np.asarray(
+        sess.tune.values("lambda_full_load"), dtype=np.float64
+    )[entry.rows_changed[0] if entry.rows_changed else 0]
+    if requested.size == 1:
+        requested = np.full(encoded.size, float(requested[0]))
+    return {
+        "requested": _jsonify(requested),
+        "encoded": _jsonify(encoded),
+        "entry": _entry_summary(entry),
+        **_history_state(sess),
+    }
+
+
 #: The closed op table. If an op is not here, it is not something the phone can do.
 OPS: dict[str, Callable[[dict], dict]] = {
     "bridge_info": _op_bridge_info,
@@ -1040,6 +1250,19 @@ OPS: dict[str, Callable[[dict], dict]] = {
     # left it alone — an older app never names it, and a newer app against an
     # older engine gets a clean UNKNOWN_OP.
     "analyze_logs": _op_analyze_logs,
+    # The domain-screen ops. Additive on the same reasoning again.
+    #
+    # `log_overlay` is read-only and sessionless like `analyze_logs`; the other
+    # four are the read/edit pairs behind the Limiters and Lambda screens, each
+    # routed to a domain call because its invariant spans more than one table
+    # (the quartet, the cut trio) or has a direction the grid cannot express
+    # (the lambda lean bound). The Pedal screen deliberately has no op here: its
+    # tables are dual-path, so it rides on `catalog`/`table_detail`/`edit`.
+    "log_overlay": _op_log_overlay,
+    "limiters": _op_limiters,
+    "limiters_edit": _op_limiters_edit,
+    "lambda_fl": _op_lambda_fl,
+    "lambda_fl_edit": _op_lambda_fl_edit,
 }
 
 

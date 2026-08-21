@@ -67,8 +67,12 @@ __all__ = [
     "PlotSpec",
     "PLOT_SPECS",
     "SPEC_BY_ID",
+    "OVERLAY_PANEL_INDEX",
+    "OVERLAY_PLOT_ID",
     "Segment",
     "SeriesData",
+    "gear_trim_mask",
+    "overlay_payload",
     "series_segments",
     "panel_available",
     "plot_payload",
@@ -550,7 +554,38 @@ def contiguous_runs(mask: np.ndarray) -> list[tuple[int, int]]:
     return runs
 
 
-def series_segments(ctx: CheckContext, spec: SeriesSpec) -> list[SeriesData]:
+def gear_trim_mask(ctx: CheckContext, pull) -> np.ndarray:
+    """Samples whose logged gear is the pull's attributed gear.
+
+    The DSG's gear channel flips to the next ratio several samples *before* the
+    shift actually pulls the engine down, so the tail of a pull that ends in an
+    upshift carries samples the ECU was already treating as the next gear. For
+    anything gear-weighted those samples are simply wrong (the ~50 hp step at
+    the top of every ``Calc HP`` trace), and for an overlay drawn against a
+    calibration curve they are samples from a pull the curve does not describe.
+
+    All-True when gear is unresolved or unlogged: this narrows a trace to what
+    was asked for, and a gear it cannot establish is not grounds for dropping
+    every sample. The gear compared against is
+    :attr:`~simoscal.analysis.pulls.Pull.gear`, which the log layer has already
+    resolved to an *actual* gear via the channel-header rule — so no consumer
+    of this mask does gear arithmetic of its own.
+    """
+    n = pull.n_samples
+    if not pull.gear_resolved or pull.gear is None:
+        return np.ones(n, dtype=bool)
+    gear = _col(ctx, pull, "gear")
+    if gear is None:
+        return np.ones(n, dtype=bool)
+    return np.isfinite(gear) & (np.round(gear).astype(int) == int(pull.gear))
+
+
+def series_segments(
+    ctx: CheckContext,
+    spec: SeriesSpec,
+    *,
+    extra_mask: Optional[Callable[[CheckContext, Any], np.ndarray]] = None,
+) -> list[SeriesData]:
     """Extract one series' samples, per pull, as x-sorted contiguous segments.
 
     This is the function that makes the desktop PNG and the on-device canvas the
@@ -561,6 +596,12 @@ def series_segments(ctx: CheckContext, spec: SeriesSpec) -> list[SeriesData]:
     Scatter roles (:data:`Role.TRANSIENT`) are returned as a single unsorted
     segment — sorting a cloud of points by x would imply an ordering the samples
     do not have.
+
+    ``extra_mask`` narrows the selection further, per pull. It exists for the
+    log overlay's gear trim (:func:`gear_trim_mask`) and is deliberately a
+    parameter rather than a change to the standing masks: the evidence plots and
+    every finding drawn from them are computed with the masks they have always
+    used, and a new caller must not quietly restate them.
     """
     out: list[SeriesData] = []
     for pull in ctx.pulls:
@@ -569,6 +610,8 @@ def series_segments(ctx: CheckContext, spec: SeriesSpec) -> list[SeriesData]:
         if x is None or y is None:
             continue
         sel = _mask_for(ctx, pull, spec.mask, spec.role) & np.isfinite(x) & np.isfinite(y)
+        if extra_mask is not None:
+            sel = sel & extra_mask(ctx, pull)
         if not np.any(sel):
             continue
         if spec.role == Role.TRANSIENT:
@@ -623,6 +666,83 @@ def _series_payload(data: SeriesData, ordinals: dict[int, int]) -> dict:
             for seg in data.segments
             if seg.x.size
         ],
+    }
+
+
+#: The plot and panel the boost-screen overlay draws: gauge boost actual vs
+#: setpoint, in psi against engine speed. Named here rather than in the bridge so
+#: the overlay and the evidence plot cannot drift into being two definitions of
+#: "the boost trace".
+OVERLAY_PLOT_ID = "boost"
+OVERLAY_PANEL_INDEX = 0
+
+
+def overlay_payload(ctx: CheckContext) -> dict:
+    """The log overlay's model: the detected pulls, each with its boost traces.
+
+    Read-only, and the counterpart of :func:`plot_payload` for the *editing*
+    surface rather than the analysis one. The editor draws one chosen pull
+    behind the slot curves it is editing, so the payload is organised by pull,
+    each carrying the series in the same shape :func:`plot_payload` uses.
+
+    Three things are deliberately the engine's job here, not the app's:
+
+    * **Which samples belong on the trace.** The same
+      :func:`series_segments` the desktop PNGs use, plus
+      :func:`gear_trim_mask`.
+    * **What "boost" means.** The gauge reframe (PUT minus ambient, in psi)
+      comes from the ``boost`` :class:`PlotSpec`, so the overlay and the
+      evidence plot are the same quantity computed once.
+    * **Which gear a pull was in.** Already resolved to an actual gear by the
+      log layer's channel-header rule; the app formats it and does no gear
+      arithmetic.
+
+    ``available`` is false when the panel's required channels are missing (no
+    ambient pressure means no honest baseline to zero gauge boost against), so
+    the app can say *why* nothing drew rather than showing an empty canvas.
+    """
+    spec = SPEC_BY_ID[OVERLAY_PLOT_ID]
+    panel = spec.panels[OVERLAY_PANEL_INDEX]
+    available = panel_available(ctx, panel)
+    ordinals = pull_ordinals(ctx)
+
+    by_pull: dict[int, list[dict]] = {pull.index: [] for pull in ctx.pulls}
+    if available:
+        for series_spec in panel.series:
+            for data in series_segments(ctx, series_spec, extra_mask=gear_trim_mask):
+                if data.has_data and data.pull_index in by_pull:
+                    by_pull[data.pull_index].append(_series_payload(data, ordinals))
+
+    pulls = []
+    for pull in ctx.pulls:
+        series = by_pull.get(pull.index, [])
+        pulls.append(
+            {
+                "index": pull.index,
+                "file": pull.file,
+                # Already an actual gear, or null when the log's gear channel
+                # could not be resolved — never a guessed offset.
+                "gear": pull.gear,
+                "gear_resolved": bool(pull.gear_resolved),
+                "rpm_min": float(pull.rpm_min),
+                "rpm_max": float(pull.rpm_max),
+                "duration_s": pull.duration_s,
+                "n_samples": int(pull.n_samples),
+                "series": series,
+                "drawn": any(s["segments"] for s in series),
+            }
+        )
+
+    return {
+        "plot_id": spec.id,
+        "title": panel.title,
+        "x_label": panel.x_label,
+        "y_label": panel.y_label,
+        "available": available,
+        "missing_channels": [
+            channel for channel in panel.requires if not ctx.logset.has(channel)
+        ],
+        "pulls": pulls,
     }
 
 

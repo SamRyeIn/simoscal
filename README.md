@@ -244,6 +244,30 @@ the client draws them from `PLOT_SPECS`' own declarations rather than deciding
 for itself what belongs on a panel. `analyze_logs` is additive and does not bump
 `BRIDGE_VERSION`, for the same reason the V8 ops did not.
 
+The read-only `log_overlay` op is the editing surface's counterpart: the detected
+pulls and, per pull, the gauge-boost actual and setpoint traces, so a client can
+draw a real pull *behind* the boost curves being edited. It is sessionless and
+runs no battery — it needs pulls and two series, and coupling it to `analyze_logs`
+would make one screen's lifecycle a dependency of another's. Three things stay
+the engine's job: which samples belong on the trace (`series_segments` plus
+`gear_trim_mask`, so the DSG's early gear flip cannot reach the canvas), what
+"boost" means (the `boost` `PlotSpec`'s own reframe, computed once), and which
+gear a pull was in (already resolved to an *actual* gear by the channel-header
+rule, so no client does gear arithmetic). A log that parses but lacks the boost
+channels returns `available: false` with the missing channel names rather than an
+error — the file was read fine, it simply has nothing to draw with.
+
+The `limiters` / `limiters_edit` and `lambda_fl` / `lambda_fl_edit` pairs back the
+Limiters and Lambda screens. Both edit ops route to domain calls rather than the
+generic `edit` op, because each write carries an invariant no single-table grid
+edit can see: the road-speed quartet is four tables holding one number, the
+cylinder-cut trio must escalate, and the full-load enrichment map has a lean
+*direction*. `lambda_fl` sends the engine's own `lean_max`, so the danger band a
+client draws is the bound the engine refuses on rather than a UI constant that
+can drift from it. The Pedal screen deliberately gets no op: its maps are
+ordinary independent grids, so it rides on `catalog`/`table_detail`/`edit`. A
+screen is not a reason for an op; an invariant is.
+
 ## API surface
 
 ### `CalFile`
@@ -476,6 +500,8 @@ python -m simoscal.analysis --print-battery          # enumerate the battery, ru
 | `load_logset(folder)` → `LogSet` | Parse `simostools-*.csv` into canonical, unit-normalized channels (airmass→mg/stk, rail→bar) with header-rule gear resolution and a non-mutating quality preflight; dedups trimmed re-exports of one capture. |
 | `load_logset_files(paths, *, folder=None, dedup=True, names=None)` → `LogSet` | The explicit-path form `load_logset` delegates to, for a caller with no folder to glob — the Android app, whose copy of each CSV is content-addressed. `names` carries the display name the picker showed, since the filename on disk is a hash. |
 | `plot_payload(ctx)` → `list[dict]` | Every evidence plot in `PLOT_SPECS` as JSON-safe series — the same masked, segmented, rpm-sorted samples the PNGs are drawn from. What the bridge's `analyze_logs` op sends a client that cannot render matplotlib. |
+| `overlay_payload(ctx)` → `dict` | The detected pulls, each with its gauge-boost actual and setpoint traces, for drawing a logged pull behind the boost curves being edited. Organised by pull rather than by panel, and gear-trimmed. What the bridge's `log_overlay` op sends. |
+| `gear_trim_mask(ctx, pull)` → `ndarray` | Samples whose logged gear is the pull's attributed gear — drops the tail the DSG's gear channel mislabels before a shift lands. All-True when gear is unresolved. |
 | `detect_pulls(logset)` → `list[Pull]` | Segment WOT pulls + per-pull summary with environment context. |
 | `default_battery()` → `list[Check]` · `run_battery(checks, ctx)` → `BatteryResult` | The v1 battery (knock, boost, wastegate, lambda, rail, timing, turbo/heat, torque limiter, data quality, + a `needs_cal` boost-ceiling check) and its runner. |
 | `compute_coverage(ctx)` → `(results, skipped)` | Per-cell hit-count maps (whole-log + WOT-only) for the primary tuning tables via ECU-lookup simulation. |

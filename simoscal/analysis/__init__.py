@@ -83,6 +83,8 @@ from .series import (
     SeriesSpec,
     ThresholdSpec,
     Tone,
+    gear_trim_mask,
+    overlay_payload,
     plot_payload,
     series_segments,
 )
@@ -134,6 +136,8 @@ __all__ = [
     "SeriesSpec",
     "ThresholdSpec",
     "Tone",
+    "gear_trim_mask",
+    "overlay_payload",
     "plot_payload",
     "series_segments",
 ]
