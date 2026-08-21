@@ -326,6 +326,88 @@ def test_rejected_edit_leaves_no_undo_point(session: str):
 
 
 # --------------------------------------------------------------------------- #
+# journal — the read-only running list the changes screen renders
+# --------------------------------------------------------------------------- #
+def test_journal_is_empty_before_any_edit(session: str):
+    res = ok_result(call("journal", session_id=session))
+    assert res["entries"] == []
+    assert res["counts"] == {}
+    assert res["can_undo"] is False and res["can_redo"] is False
+
+
+def test_journal_records_an_edit_with_its_intent_and_values(session: str):
+    call("edit", session_id=session, name="pressure_quotient_max", op="set",
+         selection={"kind": "cells", "args": [[0, 0]]}, value=1.7,
+         intent="lower the 1000 rpm pressure-quotient cap")
+
+    res = ok_result(call("journal", session_id=session))
+    assert len(res["entries"]) == 1
+    entry = res["entries"][0]
+    assert entry["intent"] == "lower the 1000 rpm pressure-quotient cap"
+    assert entry["verdict"] == "applied"
+    assert entry["touched"] is True
+    assert entry["cells_changed"] == 1
+    # The label is the project's `ID` — Description form, and before/after are
+    # text: no numpy array ever crosses this boundary.
+    assert "PQ" in entry["label"] or "—" in entry["label"]
+    assert isinstance(entry["before"], str) and entry["before"]
+    assert isinstance(entry["after"], str) and entry["after"]
+    assert res["counts"] == {"applied": 1}
+
+
+def test_journal_follows_undo_and_redo(session: str):
+    """The engine's journal is the only thing that knows what a session holds.
+
+    An app-side tally accumulated from edit replies would still show the edit
+    after an undo; the journal does not, because undo restores the entry list
+    from its snapshot. This is the property the changes screen depends on.
+    """
+    call("edit", session_id=session, name="pressure_quotient_max", op="set",
+         selection={"kind": "cells", "args": [[0, 0]]}, value=1.7)
+    assert len(ok_result(call("journal", session_id=session))["entries"]) == 1
+
+    ok_result(call("undo", session_id=session))
+    assert ok_result(call("journal", session_id=session))["entries"] == []
+
+    ok_result(call("redo", session_id=session))
+    assert len(ok_result(call("journal", session_id=session))["entries"]) == 1
+
+
+def test_journal_carries_no_gate_verdict(session: str):
+    """It is a running list, never a report (CR-20260724-02).
+
+    Nothing here may look like a build verdict: no verified flag, no share path,
+    no checksum state. Only ``build`` gets to say a bin is verified.
+    """
+    res = ok_result(call("journal", session_id=session))
+    for forbidden in ("verified", "shareable", "share_path", "checksum_state", "ok", "gates"):
+        assert forbidden not in res
+
+
+def test_journal_survives_serialize_and_recover(files: dict, session: str):
+    """A recovered session's changes screen shows the same list it showed before."""
+    call("edit", session_id=session, name="pressure_quotient_max", op="set",
+         selection={"kind": "cells", "args": [[0, 0]]}, value=1.7,
+         intent="survive a process kill")
+    before = ok_result(call("journal", session_id=session))["entries"]
+
+    record = ok_result(call("session_serialize", session_id=session))["record"]
+    ok_result(call("session_close", session_id=session))
+
+    recovered = ok_result(call(
+        "session_recover",
+        record=record,
+        source_bin_path=files["bin_path"], source_bin_sha256=files["bin_sha256"],
+        xdf_paths={"base": {"path": files["xdf_path"], "sha256": files["xdf_sha256"]}},
+    ))["session_id"]
+    assert ok_result(call("journal", session_id=recovered))["entries"] == before
+
+
+def test_journal_of_an_unknown_session_is_rejected():
+    assert err_code(call("journal", session_id="not-a-session")) == ErrorCode.UNKNOWN_SESSION.value
+
+
+# --------------------------------------------------------------------------- #
 # domain-owned tables are unreachable from the generic edit path (CR-20260813-01)
 # --------------------------------------------------------------------------- #
 def test_generic_edit_of_a_slot_grid_is_refused(boost_session: str):

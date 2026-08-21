@@ -79,6 +79,7 @@ from .tune import (
     table_detail,
 )
 from .tune.domains.switchpatch import PATCH_SPACE
+from .tune.journal import VERDICT_SUPERSEDED
 from .tune.profiles import PROFILES, SWITCH_PATCH_2933
 from .tune.recovery import RecoveryError
 
@@ -270,16 +271,33 @@ def _history_state(sess: _Session) -> dict:
 
 
 def _entry_summary(entry) -> dict:
-    """A journal entry as flat UI text — never the numpy before/after arrays."""
+    """A journal entry as flat UI text — never the numpy before/after arrays.
+
+    ``before``/``after`` are :meth:`~simoscal.tune.journal.EditEntry.before_text`
+    and ``after_text``, which narrow to the rows that actually moved: a whole-grid
+    ``min..max`` hides a one-row edit completely, and one row is exactly what the
+    boost editor writes. ``scope`` is ``scope_text()`` for the same reason — the
+    kind alone does not say *which* rows.
+
+    ``touched`` reports whether bytes measurably moved, so the app can tell an
+    edit that changed the buffer from one that met its target already. It is the
+    entry's own measurement, never inferred from the verdict.
+    """
     return {
+        "space": entry.space,
         "label": entry.label,
         "name": entry.name,
         "kind": entry.kind,
+        "scope": entry.scope_text(),
         "verdict": entry.verdict,
         "units": getattr(entry, "units", "") or "",
         "intent": entry.intent,
         "detail": entry.detail or "",
         "warning": entry.warning or "",
+        "before": entry.before_text(),
+        "after": entry.after_text(),
+        "cells_changed": entry.cells_changed,
+        "touched": entry.touched_bytes,
     }
 
 
@@ -743,6 +761,50 @@ def _require_patch_space(sess: _Session) -> None:
         )
 
 
+def _op_journal(params: dict) -> dict:
+    """The session's whole edit journal, in the order the calls were made.
+
+    Read-only, and deliberately **not** a report. It carries no gate verdict, no
+    checksum state, no ``verified`` flag and no share path — only what the live
+    session has recorded so far. That separation is the point: a *report* is the
+    atomic product of the ``build`` op's gate run and re-deriving one from the
+    live journal is exactly the drift CR-20260724-02 closed. This op re-derives
+    nothing; it hands over the journal as the unverified running list it is, and
+    the app is responsible for never painting it as a flash gate.
+
+    Re-reading it is how the changes screen stays current. Undo and redo restore
+    the journal wholesale (:meth:`~simoscal.tune.recovery.History._restore`
+    replaces the entry list from the snapshot), so the engine's copy is the only
+    one that can be right — an app-side tally accumulated from edit replies would
+    drift the first time someone stepped back.
+
+    ``superseded_by`` marks a bulk-recipe skip that a later applied write in this
+    same session covers, so a ``skipped`` row and an ``applied`` row for the one
+    table cannot read as a contradiction (the same substitution ``report.md``
+    and the HTML report make).
+    """
+    sess = _session(params)
+    journal = sess.tune.journal
+    superseded = journal.superseded()
+
+    entries = []
+    for index, entry in enumerate(journal):
+        summary = _entry_summary(entry)
+        writers = superseded.get(index)
+        if writers:
+            summary["verdict"] = VERDICT_SUPERSEDED
+            summary["superseded_by"] = ", ".join(dict.fromkeys(w.name for w in writers))
+        entries.append(summary)
+
+    return {
+        "entries": entries,
+        # `summary_counts` rather than `counts`: a skip a later write superseded
+        # was not held back, and must not be tallied among the ones that were.
+        "counts": journal.summary_counts(),
+        **_history_state(sess),
+    }
+
+
 def _op_undo(params: dict) -> dict:
     """Step back one committed edit. ``done`` is false when there is nothing to undo."""
     sess = _session(params)
@@ -856,6 +918,9 @@ OPS: dict[str, Callable[[dict], dict]] = {
     # The per-slot switchboard. Same versioning reasoning as the ops above.
     "slot_settings": _op_slot_settings,
     "slot_flag": _op_slot_flag,
+    # Read-only, and not a report — see `_op_journal`. Same additive versioning
+    # as the ops above: an older app never names it.
+    "journal": _op_journal,
     "undo": _op_undo,
     "redo": _op_redo,
     "build": _op_build,
