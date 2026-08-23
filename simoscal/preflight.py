@@ -37,7 +37,7 @@ from typing import Optional, Union
 from xml.etree.ElementTree import ParseError as XmlParseError
 
 from . import checksum
-from .calfile import CalFile
+from .calfile import CalFile, structure_of
 from .model import RegionBoundsError, SimosCalError
 from .xdf import XdfParseError, parse_xdf
 
@@ -186,15 +186,19 @@ def _checksum_states(data: bytes) -> tuple[ChecksumState, ...]:
     Correctability is derived by asking the checksum module for a corrected copy
     and re-verifying it — so "correctable" is a proven fact, not an assumption.
     """
-    reports = {r.name: r for r in checksum.verify(data)}
+    # Preflight is the one caller that does not know the car yet — that is what
+    # it is for — so it discovers the layout from the bin rather than being told,
+    # and degrades to cannot-verify when it cannot.
+    reports = {r.name: r for r in checksum.verify_discovered(data)}
     states: list[ChecksumState] = []
 
     corrected_clean: set[str] = set()
     if any(r.can_verify and r.is_stale for r in reports.values()):
         try:
-            fixed, _pre = checksum.correct(data)
+            spec = checksum.discover_structure(data)
+            fixed, _pre = checksum.correct(data, spec)
             corrected_clean = {
-                r.name for r in checksum.verify(bytes(fixed))
+                r.name for r in checksum.verify(bytes(fixed), spec)
                 if r.can_verify and not r.is_stale
             }
         except Exception:  # noqa: BLE001 - correction is best-effort evidence only
@@ -231,7 +235,9 @@ def _detect_switch_patch(
     from .tune.profiles.switchpatch_2933 import SWITCH_PATCH_2933, slot_names
 
     try:
-        patch_cal = CalFile.open(str(switch_patch_xdf), str(bin_path))
+        patch_cal = CalFile.open(
+            str(switch_patch_xdf), str(bin_path), structure=structure_of(bin_path)
+        )
     except Exception as exc:  # noqa: BLE001
         return None, {"switch_patch_error": f"could not open patch XDF: {exc}"}
 
@@ -337,7 +343,7 @@ def preflight(
 
     # -- load (region-checked) ---------------------------------------------- #
     try:
-        cal = CalFile.open(str(xdf_path), str(bin_path))
+        cal = CalFile.open(str(xdf_path), str(bin_path), structure=structure_of(bin_path))
     except (RegionBoundsError, SimosCalError) as exc:
         return _blocked(
             bin_path=bin_path, xdf_path=xdf_path,

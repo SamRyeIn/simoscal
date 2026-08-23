@@ -103,11 +103,15 @@ def apply_basics_sop(
     # table's real before/after values rather than the recipe's report-only
     # scalars — which for a multi-cell guarded ceiling are a min and a target,
     # not a table, and would fail the readback gate if taken as one.
-    prior = CalFile(cal.model, BinImage(
-        before.tobytes(),
-        region_start=cal.binimage.region_start,
-        region_size=cal.binimage.region_size,
-    ))
+    prior = CalFile(
+        cal.model,
+        BinImage(
+            before.tobytes(),
+            region_start=cal.binimage.region_start,
+            region_size=cal.binimage.region_size,
+        ),
+        structure=cal.structure,
+    )
 
     entries: list[EditEntry] = []
     for outcome in report.outcomes:

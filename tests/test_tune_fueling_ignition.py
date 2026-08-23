@@ -18,6 +18,7 @@ from simoscal.sop_recipe import OUTCOME_APPLIED, RecipeReport, TableOutcome
 from simoscal.tune import SC8S50, BuildFailed, Tune, build
 from simoscal.tune.journal import KIND_AXIS, KIND_SOP, VERDICT_BLOCKED
 from simoscal.tune.sop_bridge import SopBridgeError
+from simoscal.checksum import SC8S50_STRUCTURE
 
 # The R00/R03 lambda declaration, verbatim from TUNE_Basics_Guide_R03.py.
 LAMBDA_X = (1504, 2016, 2496, 3008, 3488, 4000, 4512, 4992, 5504, 5984, 6496, 7008)
@@ -332,8 +333,8 @@ def test_new_api_reproduces_the_whole_r03_calibration(
     result = build(tune, "R03", out_root=tmp_path, plots=False)
 
     assert result.ok
-    built = CalFile.open(str(real_xdf), str(result.bin_path))
-    frozen = CalFile.open(str(real_xdf), str(reference))
+    built = CalFile.open(str(real_xdf), str(result.bin_path), structure=SC8S50_STRUCTURE)
+    frozen = CalFile.open(str(real_xdf), str(reference), structure=SC8S50_STRUCTURE)
     for symbol in R03_TABLES:
         assert np.allclose(
             built.get(symbol).values, frozen.get(symbol).values, rtol=0, atol=1e-9

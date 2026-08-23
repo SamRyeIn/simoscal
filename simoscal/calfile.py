@@ -23,7 +23,7 @@ import numpy as np
 
 from . import checksum, safety, writer
 from .binimage import BinImage
-from .checksum import ChecksumReport, StaleChecksumWarning
+from .checksum import ChecksumReport, StaleChecksumWarning, StructureSpec
 from .codec import CodecError, decode_physical, decode_raw
 from .model import Axis, Table
 from .xdf import XdfModel, parse_xdf
@@ -196,12 +196,32 @@ class TableView:
         )
 
 
+def structure_of(bin_path: Union[str, Path]) -> StructureSpec:
+    """The CAL structure of the bin at ``bin_path``, discovered from its bytes.
+
+    A convenience for callers that hold a path and no profile. It is discovery,
+    not assumption: :func:`~simoscal.checksum.discover_structure` accepts a
+    layout only when that bin's stored ECM3 value recomputes exactly, and raises
+    :class:`~simoscal.checksum.StructureNotFound` otherwise.
+    """
+    return checksum.discover_structure(Path(bin_path).read_bytes())
+
+
 class CalFile:
     """A parsed XDF bound to a bin: query tables, read them in physical units."""
 
-    def __init__(self, model: XdfModel, binimage: BinImage) -> None:
+    def __init__(
+        self,
+        model: XdfModel,
+        binimage: BinImage,
+        *,
+        structure: StructureSpec,
+    ) -> None:
         self.model = model
         self.binimage = binimage
+        #: Where this car's CAL block sits and how it is addressed. Every
+        #: checksum call this object makes passes it explicitly.
+        self.structure = structure
         # One cached view per uniqueid so repeated get() calls share the decode.
         self._views: dict[int, TableView] = {}
         # (offset, length) byte ranges staged by edits this session — consumed by
@@ -213,11 +233,19 @@ class CalFile:
         cls,
         xdf_path: Union[str, Path],
         bin_path: Union[str, Path],
+        *,
+        structure: StructureSpec,
     ) -> "CalFile":
         """Parse ``xdf_path`` and load ``bin_path``, wiring the region from the XDF.
 
         The bin's addressable region (start + size) is taken from the XDF
         ``REGION`` header so out-of-region reads fail loud.
+
+        ``structure`` says where this car's CAL block sits and how it is
+        addressed; it carries no default because "the SC8S50 one" silently
+        standing in for another car is exactly the failure this argument exists
+        to prevent. Obtain one from a profile, or from
+        :func:`~simoscal.checksum.discover_structure` on the bin's bytes.
         """
         model = parse_xdf(str(xdf_path))
         binimage = BinImage.from_path(
@@ -225,7 +253,7 @@ class CalFile:
             region_start=model.region_start,
             region_size=model.region_size,
         )
-        return cls(model, binimage)
+        return cls(model, binimage, structure=structure)
 
     # -- internal decode helpers (used by TableView) ------------------------- #
     def _decode_physical(self, axis: Axis) -> np.ndarray:
@@ -272,7 +300,7 @@ class CalFile:
         image that cannot be checked (e.g. CAL-only, no ASW1) yields reports with
         ``can_verify=False`` rather than raising.
         """
-        return checksum.verify(self.binimage.to_bytes())
+        return checksum.verify(self.binimage.to_bytes(), self.structure)
 
     def save(
         self,
@@ -299,11 +327,13 @@ class CalFile:
         """
         if correct_checksums:
             # Apply only the stored-checksum bytes so the buffer stays minimal-diff.
-            for off, patch in checksum.correction_patches(self.binimage.to_bytes()):
+            for off, patch in checksum.correction_patches(
+                self.binimage.to_bytes(), self.structure
+            ):
                 self.binimage.write(off, patch)
 
         self.binimage.save(path)
-        reports = checksum.verify(self.binimage.to_bytes())
+        reports = checksum.verify(self.binimage.to_bytes(), self.structure)
 
         if warn_stale and not correct_checksums:
             for report in reports:

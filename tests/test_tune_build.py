@@ -37,6 +37,7 @@ from simoscal.tune.journal import (
     Journal,
     summarize,
 )
+from simoscal.checksum import SC8S50_STRUCTURE
 
 
 @pytest.fixture
@@ -382,7 +383,7 @@ def test_restoring_a_table_to_stock_passes_the_audit(
     assert result.diff is not None and result.diff.clean
     assert "declared restore to stock" in result.diff.attributed
     # The restored table was read back off the saved bin, pinning its contents.
-    reopened = CalFile.open(str(tune.space("base").xdf), str(result.bin_path))
+    reopened = CalFile.open(str(tune.space("base").xdf), str(result.bin_path), structure=SC8S50_STRUCTURE)
     assert np.allclose(reopened.get("IP_PQ_CHA_MAX").values, stock, atol=1e-3)
 
 
@@ -428,7 +429,7 @@ def test_readback_catches_a_value_that_did_not_survive_the_save(
 
     def save_then_corrupt(self, path, **kwargs):
         reports = real_save(self, path, **kwargs)
-        cal = CalFile.open(str(self.space("base").xdf), str(path))
+        cal = CalFile.open(str(self.space("base").xdf), str(path), structure=SC8S50_STRUCTURE)
         view = cal.get("IP_PQ_CHA_MAX")
         values = np.array(view.values)
         values[0, 0] = 9.0

@@ -96,7 +96,8 @@ def checksum_storage_allowance(candidate: Union[str, Path, bytes]) -> Allowance:
     """
     data = candidate if isinstance(candidate, bytes) else Path(candidate).read_bytes()
     offsets: set[int] = set()
-    for _name, offset, length in checksum.stored_checksum_ranges(data):
+    spec = checksum.discover_structure(data)
+    for _name, offset, length in checksum.stored_checksum_ranges(data, spec):
         offsets.update(range(offset, offset + length))
     return Allowance("stored checksums (CAL_CRC, ECM3)", frozenset(offsets))
 

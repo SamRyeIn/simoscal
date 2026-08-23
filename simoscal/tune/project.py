@@ -30,7 +30,7 @@ from typing import Callable, Iterable, Mapping, Optional, Sequence, Union
 import numpy as np
 
 from .. import btp
-from ..calfile import CalFile
+from ..calfile import CalFile, structure_of
 from ..model import FloatBugGuardError, RawRangeError, SimosCalError
 from ..safety import EditRangeWarning
 from ..xdf import parse_xdf
@@ -165,7 +165,9 @@ class Tune:
         working_bin, results = _apply_patches(source_bin, patch_specs)
 
         try:
-            base_cal = CalFile.open(str(xdf), str(working_bin))
+            base_cal = CalFile.open(
+                str(xdf), str(working_bin), structure=structure_of(working_bin)
+            )
             base_tables = resolve_profile(
                 profile, base_cal, xdf_label=str(xdf)
             )
@@ -460,7 +462,7 @@ def _open_shared_space(
             f"cannot share one bin between the base XDF and {xdf.name}: "
             f"they disagree on {'; '.join(mismatch)}"
         )
-    cal = CalFile(model, base_cal.binimage)
+    cal = CalFile(model, base_cal.binimage, structure=base_cal.structure)
     return TableSpace(
         name=name, profile=profile, xdf=xdf, cal=cal,
         tables=resolve_profile(profile, cal, xdf_label=str(xdf)),

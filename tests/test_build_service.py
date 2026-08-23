@@ -36,6 +36,7 @@ from simoscal.tune import (
     run_gates,
 )
 from simoscal.tune.audit import RawDiffAudit
+from simoscal.checksum import SC8S50_STRUCTURE
 
 
 @pytest.fixture
@@ -131,7 +132,7 @@ def test_a_readback_fault_is_not_shareable(
 
     def save_then_corrupt(self, path, **kwargs):
         reports = real_save(self, path, **kwargs)
-        cal = CalFile.open(str(self.space("base").xdf), str(path))
+        cal = CalFile.open(str(self.space("base").xdf), str(path), structure=SC8S50_STRUCTURE)
         view = cal.get("IP_PQ_CHA_MAX")
         values = np.array(view.values)
         values[0, 0] = 9.0

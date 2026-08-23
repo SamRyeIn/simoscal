@@ -990,9 +990,11 @@ def _op_analyze_logs(params: dict) -> dict:
     cal_note = ""
     if bin_path is not None and xdf_path is not None:
         try:
-            from .calfile import CalFile
+            from .calfile import CalFile, structure_of
 
-            cal = CalFile.open(str(xdf_path), str(bin_path))
+            cal = CalFile.open(
+                str(xdf_path), str(bin_path), structure=structure_of(bin_path)
+            )
         except Exception as exc:
             # A calibration that will not open must not sink the whole analysis:
             # every channel-based finding is still valid without it. It is

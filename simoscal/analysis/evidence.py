@@ -149,9 +149,9 @@ def _open_cal(xdf: Optional[Path], binp: Optional[Path]) -> tuple[Optional[objec
     if xdf is None or binp is None:
         return None, []
     try:
-        from ..calfile import CalFile
+        from ..calfile import CalFile, structure_of
 
-        return CalFile.open(str(xdf), str(binp)), []
+        return CalFile.open(str(xdf), str(binp), structure=structure_of(binp)), []
     except Exception as exc:  # a broken bin should not crash analysis, but must be reported
         return None, [f"could not open calibration ({binp.name} / {xdf.name}): {exc}"]
 

@@ -49,7 +49,18 @@ Each bin contains exactly two occurrences — one in the CAL block, one in the A
 block — and the ASW one is rejected because there is no sane CAL CRC header
 `0x100` bytes before it.
 
-`probe_foreign.py` implements this as `discover_structure()`.
+This is `simoscal.checksum.discover_structure()`. It returns a `StructureSpec`
+or raises `StructureNotFound` — it never returns a guess:
+
+```python
+from simoscal.checksum import discover_structure, verify
+
+spec = discover_structure(open("some.bin", "rb").read())
+for report in verify(data, spec):
+    print(report.message())
+```
+
+`probe_foreign.py` calls the same function rather than keeping its own copy.
 
 ## 3. Why a candidate is only accepted if it verifies
 
@@ -150,9 +161,25 @@ offset discovered from the file.
 3. Confirm the XDF's `BASEOFFSET` equals the discovered CAL file offset. If it
    does not, the XDF is wrong; check a known breakpoint axis both ways as in
    section 7 before deciding which to trust.
-4. Only then write the profile's `StructureSpec`.
+4. Only then write the profile's `StructureSpec`. A declared spec is worth
+   having even though discovery works: it lets a bin that does not match the
+   profile the user selected be caught, instead of being silently accepted
+   because it happens to be a valid bin of some other car.
 
-## 9. Still open
+## 9. What the library does with this
+
+`StructureSpec` carries the eight per-car numbers and is passed explicitly to
+every checksum call — `verify`, `correct`, `verify_cal_crc`, `verify_ecm3`,
+`stored_checksum_ranges`, `correction_patches` — and to `CalFile.open`. There is
+no default and no module-level "current structure": SC8S50 is
+`SC8S50_STRUCTURE`, one declared instance among several.
+
+`correct()` raises `ChecksumNotLocatable` when either checksum cannot be located
+under the spec it was given. It used to return the data unchanged and raise
+nothing, which meant the caller held an uncorrected bin with no sign of it — on
+the one operation whose entire job is making a bin flash-ready.
+
+## 10. Still open
 
 - **Declared `CAL_BLOCK_LENGTH`.** The probe reports how far the CAL CRC
   covers, which is not the same number. SC8S50 declares `0x7FC00` where its CRC

@@ -41,6 +41,7 @@ from simoscal import (
 )
 from simoscal.safety import EditRangeWarning
 from simoscal.sop_recipe import (
+from simoscal.checksum import SC8S50_STRUCTURE
     KIND_AXIS_WRITE,
     OUTCOME_APPLIED,
     OUTCOME_APPLIED_BUILDOUT,
@@ -107,7 +108,7 @@ def main() -> None:
     out_dir = OUT_ROOT / f"R0_{stamp}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cal = CalFile.open(XDF_PATH, BIN_PATH)
+    cal = CalFile.open(XDF_PATH, BIN_PATH, structure=SC8S50_STRUCTURE)
     snaps = _snapshot_write_targets(cal)
 
     # Apply the recipe (stages edits in memory) — squelch the expected

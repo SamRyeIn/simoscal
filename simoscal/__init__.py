@@ -35,7 +35,7 @@ from .codec import (
     file_offset_for,
     numpy_dtype_for,
 )
-from .calfile import CalFile, TableView
+from .calfile import CalFile, TableView, structure_of
 from .render import RenderedTable, render_table
 from .preflight import ChecksumState, Verdict, preflight
 from .sop_recipe import (
@@ -47,11 +47,17 @@ from .sop_recipe import (
     resolve_symbol_map,
 )
 from .checksum import (
+    ChecksumNotLocatable,
     ChecksumReport,
+    SC8S50_STRUCTURE,
     StaleChecksumWarning,
+    StructureNotFound,
+    StructureSpec,
     correct as correct_checksums,
     correction_patches,
     crc32_simos,
+    discover_structure,
+    verify_discovered,
     verify as verify_checksums,
     verify_cal_crc,
     verify_ecm3,
@@ -145,6 +151,13 @@ __all__ = [
     "numpy_dtype_for",
     "CalFile",
     "TableView",
+    "structure_of",
+    "StructureSpec",
+    "SC8S50_STRUCTURE",
+    "discover_structure",
+    "verify_discovered",
+    "StructureNotFound",
+    "ChecksumNotLocatable",
     "RenderedTable",
     "render_table",
     "ChecksumState",

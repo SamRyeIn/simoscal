@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from simoscal import CalFile, export_tables
+from simoscal.checksum import SC8S50_STRUCTURE
 
 CODE_ROOT = Path(__file__).resolve().parents[1]
 XDF_PATH = CODE_ROOT / "xdf" / "SC8S50.V1.0.xdf"
@@ -24,7 +25,7 @@ CSV_PATH = DEMOS_DIR / "cal_export.csv"
 
 
 def main() -> None:
-    cal = CalFile.open(XDF_PATH, BIN_PATH)
+    cal = CalFile.open(XDF_PATH, BIN_PATH, structure=SC8S50_STRUCTURE)
     table_count = len(cal.unique_tables())
 
     export_tables(cal, XLSX_PATH, all_tables=True)

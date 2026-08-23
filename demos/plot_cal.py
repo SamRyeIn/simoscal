@@ -21,6 +21,7 @@ from pathlib import Path
 
 from simoscal import CalFile, compare_tables, plot_table, render_table
 from simoscal.safety import EditRangeWarning
+from simoscal.checksum import SC8S50_STRUCTURE
 
 CODE_ROOT = Path(__file__).resolve().parents[1]
 XDF_PATH = CODE_ROOT / "xdf" / "SC8S50.V1.0.xdf"
@@ -48,7 +49,7 @@ def _pick_tables(cal: CalFile) -> tuple[list, object]:
 
 
 def main() -> None:
-    cal = CalFile.open(XDF_PATH, BIN_PATH)
+    cal = CalFile.open(XDF_PATH, BIN_PATH, structure=SC8S50_STRUCTURE)
     two_d, one_d = _pick_tables(cal)
 
     gallery = PLOTS_DIR / "gallery"

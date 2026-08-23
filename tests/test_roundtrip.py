@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from simoscal import CalFile, FloatBugGuardError
+from simoscal.checksum import SC8S50_STRUCTURE
 
 REAL_XDF = Path(__file__).parents[1] / "xdf" / "SC8S50.V1.0.xdf"
 REAL_BIN = Path(__file__).parents[1] / "bin" / "5G0906259L__0002.bin"
@@ -26,7 +27,7 @@ requires_real = pytest.mark.skipif(
 @requires_real
 def test_ae2_save_unchanged_is_byte_identical(tmp_path):
     """AE2: open → save with no edits → output byte-identical to input."""
-    cal = CalFile.open(str(REAL_XDF), str(REAL_BIN))
+    cal = CalFile.open(str(REAL_XDF), str(REAL_BIN), structure=SC8S50_STRUCTURE)
     out = tmp_path / "unchanged.bin"
     cal.save(out)
     assert out.read_bytes() == REAL_BIN.read_bytes()
@@ -35,7 +36,7 @@ def test_ae2_save_unchanged_is_byte_identical(tmp_path):
 @requires_real
 def test_ae3_single_cell_edit_is_minimal_diff(tmp_path):
     """AE3: a one-cell edit changes exactly one byte, at that cell's offset."""
-    cal = CalFile.open(str(REAL_XDF), str(REAL_BIN))
+    cal = CalFile.open(str(REAL_XDF), str(REAL_BIN), structure=SC8S50_STRUCTURE)
     v = cal.get(0x11F9C)  # ID_PORT_SP, 10x10 int8
     emb = v.table.embedded
     original = np.array(v.raw)
@@ -59,7 +60,7 @@ def test_ae3_single_cell_edit_is_minimal_diff(tmp_path):
     assert diff == [cell_offset], f"expected 1 changed byte at {cell_offset:#x}, got {diff}"
 
     # Re-open and confirm the value round-trips within one LSB.
-    reread = CalFile.open(str(REAL_XDF), str(out))
+    reread = CalFile.open(str(REAL_XDF), str(out), structure=SC8S50_STRUCTURE)
     assert abs(float(reread.get(0x11F9C).values[0, 0]) - new_phys) <= abs(
         float(v.table.scaling.m)
     ) + 1e-9
@@ -68,7 +69,7 @@ def test_ae3_single_cell_edit_is_minimal_diff(tmp_path):
 @requires_real
 def test_ae3_setting_same_values_yields_no_diff(tmp_path):
     """Writing a table's current values back produces no byte change."""
-    cal = CalFile.open(str(REAL_XDF), str(REAL_BIN))
+    cal = CalFile.open(str(REAL_XDF), str(REAL_BIN), structure=SC8S50_STRUCTURE)
     v = cal.get(0x11F9C)
     v.set(v.values)  # write current physical values back
     out = tmp_path / "noop.bin"
@@ -79,7 +80,7 @@ def test_ae3_setting_same_values_yields_no_diff(tmp_path):
 @requires_real
 def test_ae3_multi_row_edit_bounded_to_table_range(tmp_path):
     """Editing a whole table changes only bytes inside that table's extent."""
-    cal = CalFile.open(str(REAL_XDF), str(REAL_BIN))
+    cal = CalFile.open(str(REAL_XDF), str(REAL_BIN), structure=SC8S50_STRUCTURE)
     v = cal.get(0x11F9C)  # 10x10 int8 = 100 bytes
     emb = v.table.embedded
     start = emb.address + cal.model.base_offset
@@ -100,7 +101,7 @@ def test_ae3_multi_row_edit_bounded_to_table_range(tmp_path):
 @requires_real
 def test_real_float_bug_guard_on_actual_table():
     """The real C_PRS_IM_SP_MAX (float, flagged) rejects an over-limit write."""
-    cal = CalFile.open(str(REAL_XDF), str(REAL_BIN))
+    cal = CalFile.open(str(REAL_XDF), str(REAL_BIN), structure=SC8S50_STRUCTURE)
     v = cal.get("C_PRS_IM_SP_MAX")
     with pytest.raises(FloatBugGuardError):
         v.set_cell(0, 0, 99999, override=True)

@@ -22,6 +22,7 @@ from matplotlib.figure import Figure
 
 from simoscal import BinImage, CalFile, parse_xdf, render_table
 from simoscal import plot
+from simoscal.checksum import SC8S50_STRUCTURE
 
 FIXTURES = Path(__file__).parent / "fixtures"
 MINI_XDF = FIXTURES / "mini.xdf"
@@ -43,7 +44,7 @@ def mini_cal() -> CalFile:
     zoff = model.base_offset + 0x5010
     buf[zoff : zoff + 10] = struct.pack("<5H", 10, 20, 30, 40, 50)
     img = BinImage(buf, region_start=model.region_start, region_size=len(buf))
-    return CalFile(model, img)
+    return CalFile(model, img, structure=SC8S50_STRUCTURE)
 
 
 def _savefig_bytes(fig: Figure) -> bytes:
@@ -524,7 +525,7 @@ def _build_multicat_cal(fill_10=0) -> CalFile:
     off2 = model.base_offset + 0x2000
     buf[off2 : off2 + 4] = bytes([9, 8, 7, 6])
     img = BinImage(buf, region_start=model.region_start, region_size=len(buf))
-    return CalFile(model, img)
+    return CalFile(model, img, structure=SC8S50_STRUCTURE)
 
 
 def test_plot_tables_category_batch(mini_cal: CalFile, tmp_path):
@@ -582,7 +583,7 @@ def test_compare_bins_missing_uniqueid_fails_loud(tmp_path):
         region_start=model.region_start,
         region_size=model.base_offset + 0x6000,
     )
-    cal_b = CalFile(model, img)
+    cal_b = CalFile(model, img, structure=SC8S50_STRUCTURE)
     with pytest.raises(KeyError):
         plot.compare_bins(cal_a, cal_b, tmp_path, symbols=["MULTI2X2"])
 

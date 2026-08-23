@@ -31,6 +31,7 @@ from simoscal import (
     NonLinearEquationError,
     parse_xdf,
 )
+from simoscal.checksum import SC8S50_STRUCTURE
 
 # A table known to exist in SC8S50.V1.0: ID_PORT_SP, 10x10 int8. Used by the
 # real-file edit tests. Chosen because it is small, signed, and non-uniform.
@@ -127,7 +128,7 @@ def test_ae3_single_cell_edit_is_minimal_diff(
         f"AE3: expected exactly one changed byte at {cell_offset:#x}, got {diff}"
     )
 
-    reopened = CalFile.open(str(real_xdf), str(out))
+    reopened = CalFile.open(str(real_xdf), str(out), structure=SC8S50_STRUCTURE)
     lsb = abs(float(view.table.scaling.m))
     assert abs(float(reopened.get(ORACLE_ID).values[0, 0]) - new_phys) <= lsb + 1e-9
 
@@ -203,7 +204,7 @@ _NONLINEAR_XDF = """<XDFFORMAT version="1.60">
 def nonlinear_cal() -> CalFile:
     model = parse_xdf(io.StringIO(_NONLINEAR_XDF))
     img = BinImage(bytearray(0x100), region_start=0, region_size=0x100)
-    return CalFile(model, img)
+    return CalFile(model, img, structure=SC8S50_STRUCTURE)
 
 
 def test_ae5_nonlinear_rejects_physical_set(nonlinear_cal: CalFile):

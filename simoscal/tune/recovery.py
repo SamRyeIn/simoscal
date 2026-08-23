@@ -191,7 +191,8 @@ def _byte_diff(tune: Tune) -> dict[str, int]:
 def _checksum_offsets(data: bytes) -> frozenset[int]:
     """Every byte offset holding a stored checksum value, for ``data``'s layout."""
     offsets: set[int] = set()
-    for _name, start, length in checksum.stored_checksum_ranges(data):
+    spec = checksum.discover_structure(data)
+    for _name, start, length in checksum.stored_checksum_ranges(data, spec):
         offsets.update(range(start, start + length))
     return frozenset(offsets)
 
@@ -209,7 +210,8 @@ def _equal_but_for_checksums(candidate: bytes, target: bytes) -> bool:
     if len(candidate) != len(target):
         return False
     patched = bytearray(candidate)
-    for _name, start, length in checksum.stored_checksum_ranges(target):
+    spec = checksum.discover_structure(target)
+    for _name, start, length in checksum.stored_checksum_ranges(target, spec):
         patched[start:start + length] = target[start:start + length]
     return bytes(patched) == target
 

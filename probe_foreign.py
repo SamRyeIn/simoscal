@@ -49,145 +49,11 @@ def xdf_header(path: Path) -> dict:
     }
 
 
-# ---- ECM3 / CAL structure discovery ------------------------------------------- #
-# The ECM3 monitor seeds its 64-bit accumulator from a fixed constant stored at
-# header+8/+12. That makes the constant a searchable signature: every occurrence
-# is a candidate header. A candidate is only *accepted* when the ECM3 value
-# stored at it equals the value recomputed over the areas it points at, so the
-# search cannot succeed by finding a plausible-looking byte pattern.
-
-ECM3_HEADER_REL = 0x400  # ECM3 header, CAL-relative — the one constant assumed
-ECM3_SEED_HI = 0x01234567
-ECM3_SEED_LO = 0x89ABCDEF
-ECM3_SEED = struct.pack("<II", ECM3_SEED_HI, ECM3_SEED_LO)
-MAX_SANE_AREAS = 16
-CACHED_ALIAS = 0x20000000
-
-
-def _u32(buf, off: int) -> int:
-    return struct.unpack_from("<I", buf, off)[0]
-
-
-def _seed_candidates(data: bytes) -> list[int]:
-    """Header offsets implied by every occurrence of the ECM3 seed."""
-    out, i = [], data.find(ECM3_SEED)
-    while i != -1:
-        out.append(i - 8)
-        i = data.find(ECM3_SEED, i + 1)
-    return out
-
-
-def _cal_crc_layout(data: bytes, cal_off: int):
-    """Derive ``(base_address, areas)`` from the CAL CRC header at CAL-rel 0x300.
-
-    Area 0 always starts at CAL offset 0, so its stored address *is* the CAL base
-    address — the base is read off the file rather than assumed.
-    """
-    hdr = cal_off + 0x300
-    if hdr + 12 > len(data):
-        return None
-    count = _u32(data, hdr + 8)
-    if not 1 <= count <= MAX_SANE_AREAS:
-        return None
-    addrs = [_u32(data, hdr + 12 + k * 4) for k in range(2 * count)]
-    base = addrs[0]
-    areas = []
-    for i in range(count):
-        start, end = addrs[2 * i] - base, addrs[2 * i + 1] - base
-        if not 0 <= start <= end:
-            return None
-        areas.append((start, end))
-    return base, areas
-
-
-def _resolve_pairs(src, loc: int, count: int, base: int, cal_len: int):
-    """ECM3 area address pairs at ``loc``, as CAL-relative offsets, or None."""
-    out = []
-    for i in range(count):
-        pair = []
-        for k in range(2):
-            a = _u32(src, loc + (2 * i + k) * 4)
-            off = a - base
-            if off < 0:
-                off = a + CACHED_ALIAS - base
-            if not 0 <= off <= cal_len:
-                return None
-            pair.append(off)
-        if pair[0] > pair[1]:
-            return None
-        out.append((pair[0], pair[1]))
-    return out
-
-
-def _ecm3_sum(data: bytes, cal_off: int, areas) -> int:
-    acc = (ECM3_SEED_HI << 32) + ECM3_SEED_LO
-    for start, end in areas:
-        for j in range(cal_off + start, cal_off + end, 4):
-            acc += _u32(data, j)
-    return acc & 0xFFFFFFFFFFFFFFFF
-
-
-def discover_structure(data: bytes) -> list[dict]:
-    """Locate the CAL block and ECM3 header in a full bin. Verification-gated.
-
-    Run this on a *known* bin as a negative control: on the SC8S50 stock bin it
-    must rediscover CAL 0x200000 / ECM3 0x200400 and accept nothing else.
-    """
-    accepted: list[dict] = []
-    for hdr in _seed_candidates(data):
-        cal_off = hdr - ECM3_HEADER_REL
-        if cal_off < 0:
-            print(f"    0x{hdr:06X}  rejected — implies a negative CAL offset")
-            continue
-        layout = _cal_crc_layout(data, cal_off)
-        if layout is None:
-            print(f"    0x{hdr:06X}  rejected — no sane CAL CRC header at "
-                  f"0x{cal_off + 0x300:06X}, so this is not a CAL block start")
-            continue
-        base, crc_areas = layout
-        cal_len = crc_areas[-1][1] + 1
-        count = _u32(data, hdr + 16)
-        if not 1 <= count <= MAX_SANE_AREAS:
-            print(f"    0x{hdr:06X}  rejected — ECM3 area count {count} out of range")
-            continue
-        print(f"    0x{hdr:06X}  CAL block 0x{cal_off:06X}, base 0x{base:08X}, "
-              f"CRC covers to 0x{cal_len:X}, ECM3 areas {count}")
-
-        # Area addresses live inline in CAL, or in the ASW block near its own
-        # ECM3 header. Every location is tried; arithmetic decides the winner.
-        sources = []
-        if _u32(data, hdr + 24) > 0:
-            sources.append(("inline in CAL", hdr + 24))
-        for other in _seed_candidates(data):
-            if other != hdr:
-                sources.extend(
-                    (f"ASW block, 0x{d:X} below its header 0x{other:06X}", other - d)
-                    for d in (0x20, 0x40) if other - d >= 0
-                )
-
-        stored_rel = ECM3_HEADER_REL + 56 if data[cal_off + ECM3_HEADER_REL + 56] else ECM3_HEADER_REL
-        sloc = cal_off + stored_rel
-        stored = (_u32(data, sloc) << 32) + _u32(data, sloc + 4)
-        for note, loc in sources:
-            areas = _resolve_pairs(data, loc, count, base, cal_len)
-            if areas is None:
-                continue
-            computed = _ecm3_sum(data, cal_off, areas)
-            verdict = "VERIFIES" if computed == stored else "mismatch"
-            print(f"        addresses {note}")
-            print(f"          areas    {[(hex(s), hex(e)) for s, e in areas]}")
-            print(f"          stored   0x{stored:016X} (CAL-rel 0x{stored_rel:X})")
-            print(f"          computed 0x{computed:016X}   -> {verdict}")
-            if computed == stored:
-                accepted.append({
-                    "ecm3_header_file": hdr, "cal_file_offset": cal_off,
-                    "cal_base_address": base, "cal_crc_last_covered": cal_len,
-                    "ecm3_addr_file": loc, "areas": areas,
-                })
-                break
-    return accepted
-
-
+# ---- structure discovery ------------------------------------------------------ #
+# This lived here first, as the U1 spike. It now lives in ``simoscal.checksum``
+# as :func:`discover_structure`, because the library needs it to open a bin it
+# was not written against. The probe calls it rather than keeping a second copy —
+# a characterisation tool that disagrees with the library is worse than useless.
 
 def main(argv: list[str]) -> int:
     if not 2 <= len(argv) <= 3:
@@ -256,20 +122,23 @@ def main(argv: list[str]) -> int:
     print("  accepted when its stored ECM3 value recomputes exactly. Run this on a")
     print("  known bin as a negative control.")
     print()
-    found = discover_structure(data)
-    print()
-    if not found:
-        print("  ACCEPTED: none — the ECM3 header could not be located in this bin.")
+    from simoscal.checksum import StructureNotFound, discover_structure, verify
+    try:
+        spec = discover_structure(data)
+    except StructureNotFound as exc:
+        print(f"  NOT FOUND — {exc}")
     else:
-        print(f"  ACCEPTED: {len(found)}")
-        for f in found:
-            print(f"    CAL_FILE_OFFSET   0x{f['cal_file_offset']:06X}")
-            print(f"    CAL_BASE_ADDRESS  0x{f['cal_base_address']:08X}")
-            print(f"    CAL CRC covers to 0x{f['cal_crc_last_covered']:X} "
-                  f"(declared CAL_BLOCK_LENGTH is larger — 0x200 more on SC8S50)")
-            print(f"    ECM3 header       file 0x{f['ecm3_header_file']:06X} "
-                  f"(CAL-rel 0x{f['ecm3_header_file'] - f['cal_file_offset']:X})")
-            print(f"    ECM3 addresses    file 0x{f['ecm3_addr_file']:06X}")
+        print(f"    cal_file_offset    0x{spec.cal_file_offset:06X}")
+        print(f"    cal_base_address   0x{spec.cal_base_address:08X}")
+        print(f"    cal crc covers to  0x{spec.cal_block_length:X} "
+              f"(a declared block length is larger — 0x200 more on SC8S50)")
+        print(f"    ecm3 header        file 0x{spec.ecm3_file_offset:06X} "
+              f"(CAL-rel 0x{spec.ecm3_header:X})")
+        print(f"    ecm3 addresses     file "
+              f"0x{spec.asw_file_offset + spec.ecm3_addr_locs[0]:06X}")
+        print()
+        for r in verify(data, spec):
+            print(f"    {r.message()}")
 
     print()
     print("=" * 72)

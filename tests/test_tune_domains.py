@@ -32,6 +32,7 @@ from simoscal.tune.journal import (
     VERDICT_GUARDED_SKIP,
 )
 from simoscal.tune.units import HPA_PER_PSI, hpa_from_psi, psi_from_hpa
+from simoscal.checksum import SC8S50_STRUCTURE
 
 # The delta maps the frozen revisions applied, copied verbatim from
 # TUNE_Basics_Guide_R08.py — the point of the equivalence tests is that the new
@@ -56,7 +57,7 @@ def _open(bin_path: Path, real_xdf: Path) -> Tune:
 
 def _table(bin_path: Path, xdf: Path, symbol: str) -> np.ndarray:
     return np.asarray(
-        CalFile.open(str(xdf), str(bin_path)).get(symbol).values, dtype=np.float64
+        CalFile.open(str(xdf), str(bin_path), structure=SC8S50_STRUCTURE).get(symbol).values, dtype=np.float64
     )
 
 

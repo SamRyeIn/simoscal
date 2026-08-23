@@ -44,6 +44,7 @@ from simoscal.tune.profile import ProfileResolutionError, resolve
 from simoscal.tune.profiles import SC8S50
 from simoscal.tune.profiles.switchpatch_2933 import SWITCH_PATCH_2933
 from simoscal.xdf import XdfParseError, parse_xdf
+from simoscal.checksum import SC8S50_STRUCTURE
 
 CODE_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = CODE_ROOT.parent
@@ -69,9 +70,19 @@ S50_PATCH_BINTOOLZ = (
     REPO_ROOT / "BinToolz-main" / "definitions" / "S50 Switch Patch.29.33.V2.xdf"
 )
 
-#: The CAL base address this bin uses. SC8S50 uses 0xA0800000; discovering that
-#: this is the *only* difference in the CAL CRC layer is F5's whole point.
-A05_CAL_BASE_ADDRESS = 0x80800000
+#: A05's real CAL layout, located by the U1 spike. The whole CAL block sits
+#: 0x20000 further into the file than SC8S50's and is mapped 0x20000 higher in
+#: the address space; the shape *inside* the block is identical.
+A05_CAL_FILE_OFFSET = 0x220000
+A05_CAL_BASE_ADDRESS = 0xA0820000
+
+#: There is a second, unrelated CRC-headered block at SC8S50's CAL offset on the
+#: A05 bin, under base 0x80800000, whose CRC also verifies clean. It is not the
+#: block the XDF addresses. It is named here because an earlier characterisation
+#: pass found it, concluded "A05's CAL CRC is one constant away", and was wrong —
+#: a true statement about the wrong region. See docs/porting-to-another-xdf.md.
+A05_DECOY_CAL_FILE_OFFSET = 0x200000
+A05_DECOY_CAL_BASE_ADDRESS = 0x80800000
 
 #: The nine ignition tables that exist under the SC8S50 symbol name but with a
 #: different grid. Named explicitly because "it failed" is not the claim — the
@@ -102,7 +113,7 @@ def _require(*paths: Path) -> None:
 def a05_cal() -> CalFile:
     """The A05 bin opened against its own base XDF. Read-only; never edited."""
     _require(A05_BIN, A05_XDF)
-    return CalFile.open(str(A05_XDF), str(A05_BIN))
+    return CalFile.open(str(A05_XDF), str(A05_BIN), structure=SC8S50_STRUCTURE)
 
 
 # --------------------------------------------------------------------------- #
@@ -248,7 +259,7 @@ def test_f4a_simoscal_style_patch_xdf_fails_to_parse() -> None:
     """
     _require(A05_PATCH_SIMOSCAL, A05_BIN)
     with pytest.raises(XdfParseError) as excinfo:
-        CalFile.open(str(A05_PATCH_SIMOSCAL), str(A05_BIN))
+        CalFile.open(str(A05_PATCH_SIMOSCAL), str(A05_BIN), structure=SC8S50_STRUCTURE)
     assert "uniqueid" in str(excinfo.value)
 
 
@@ -261,7 +272,7 @@ def test_f4b_bintoolz_patch_parses_but_resolves_nothing() -> None:
     being matched by luck, which is far worse than failing.
     """
     _require(A05_PATCH_BINTOOLZ, A05_BIN)
-    patch_cal = CalFile.open(str(A05_PATCH_BINTOOLZ), str(A05_BIN))
+    patch_cal = CalFile.open(str(A05_PATCH_BINTOOLZ), str(A05_BIN), structure=SC8S50_STRUCTURE)
     with pytest.raises(ProfileResolutionError) as excinfo:
         resolve(SWITCH_PATCH_2933, patch_cal, xdf_label=str(A05_PATCH_BINTOOLZ))
     assert len(excinfo.value.misses) == len(SWITCH_PATCH_2933.names())
@@ -322,9 +333,15 @@ def test_f4e_a_readable_patch_xdf_reports_a_slot_range_and_no_error() -> None:
 # --------------------------------------------------------------------------- #
 # F5 — the checksum layer cannot locate either checksum, for two different reasons
 # --------------------------------------------------------------------------- #
-def test_f5_neither_checksum_can_be_verified_on_a05() -> None:
+def test_f5_neither_checksum_verifies_under_the_sc8s50_structure() -> None:
+    """Read with the wrong car's layout, an A05 bin reports cannot-verify.
+
+    Not "A05 has no checksums" — it has both, and they are clean (see below).
+    This pins that a structure mismatch degrades to an honest refusal rather
+    than to a confident wrong answer.
+    """
     _require(A05_BIN)
-    reports = {r.name: r for r in ck.verify(A05_BIN.read_bytes())}
+    reports = {r.name: r for r in ck.verify(A05_BIN.read_bytes(), ck.SC8S50_STRUCTURE)}
     assert set(reports) == {"CAL_CRC", "ECM3"}
     for report in reports.values():
         assert report.can_verify is False
@@ -332,57 +349,122 @@ def test_f5_neither_checksum_can_be_verified_on_a05() -> None:
         assert report.detail, "a cannot-verify report must say why"
 
 
-def test_f5_cal_crc_is_one_address_constant_away(monkeypatch) -> None:
-    """The CAL CRC layer is portable; only ``CAL_BASE_ADDRESS`` is S50-specific.
+def test_f5_a05_checksums_verify_clean_under_its_own_structure() -> None:
+    """Both A05 checksums verify once the layout is right — three constants, not one.
 
-    A05's CAL CRC header is structurally identical to S50's — same location,
-    same two-area count, same field layout. Only the CAL base address in the
-    address space differs. With that one constant corrected the CRC verifies
-    **clean**, which is simultaneously:
-
-    * evidence this fixture bin is stock and self-consistent, and
-    * the measurement that says porting this layer is a profile field, not a
-      rewrite.
-
-    This test does **not** endorse patching the global — it documents the value
-    so a future port has a target, and so a regression in the area walk or in
-    ``crc32_simos`` fails here.
+    The CAL block sits at 0x220000 rather than 0x200000 and is mapped at
+    0xA0820000 rather than 0xA0800000. Nothing inside the block moved. That this
+    verifies clean is simultaneously evidence the fixture bin is stock, and the
+    measurement saying this layer ports as profile data rather than a rewrite.
     """
     _require(A05_BIN)
     data = A05_BIN.read_bytes()
-    monkeypatch.setattr(ck, "CAL_BASE_ADDRESS", A05_CAL_BASE_ADDRESS)
-    report, returned = ck.verify_cal_crc(data)
-    assert report.can_verify is True
-    assert report.is_stale is False, "the A05 fixture bin must be self-consistent"
-    assert report.stored == report.computed
-    assert returned is data, "a non-correcting verify must not copy or alter the bin"
+    spec = ck.StructureSpec(
+        name="SCGA05",
+        cal_file_offset=A05_CAL_FILE_OFFSET,
+        cal_base_address=A05_CAL_BASE_ADDRESS,
+        cal_block_length=0x9FC00,
+        asw_file_offset=0x20000,
+    )
+    reports = {r.name: r for r in ck.verify(data, spec)}
+    assert set(reports) == {"CAL_CRC", "ECM3"}
+    for report in reports.values():
+        assert report.can_verify is True, report.detail
+        assert report.is_stale is False, "the A05 fixture bin must be self-consistent"
+        assert report.stored == report.computed
 
 
-def test_f5_ecm3_is_a_real_structural_difference() -> None:
-    """ECM3 is *not* one constant away — its header is somewhere else entirely.
+def test_f5_discovery_finds_that_structure_without_being_told() -> None:
+    """``discover_structure`` recovers A05's layout from the bin alone."""
+    _require(A05_BIN)
+    spec = ck.discover_structure(A05_BIN.read_bytes(), name="SCGA05")
+    assert spec.cal_file_offset == A05_CAL_FILE_OFFSET
+    assert spec.cal_base_address == A05_CAL_BASE_ADDRESS
+    assert all(not r.is_stale and r.can_verify
+               for r in ck.verify(A05_BIN.read_bytes(), spec))
 
-    At the SC8S50 ECM3 header offset, A05 holds an ASCII part-number string
-    rather than a header, so the area count reads as garbage. Pinned so nobody
-    concludes from F5's CAL_CRC result that the whole checksum layer ports by
-    adjusting constants.
+
+def test_f5_discovery_rediscovers_sc8s50_and_nothing_else() -> None:
+    """The negative control: the search must not be fitting noise.
+
+    If this search can find *anything* plausible in *any* bin, its A05 result
+    means nothing. Run against the bin whose layout is already known and
+    declared, it must reproduce that declaration exactly.
+    """
+    _require(S50_BIN)
+    spec = ck.discover_structure(S50_BIN.read_bytes())
+    assert spec.cal_file_offset == ck.SC8S50_STRUCTURE.cal_file_offset
+    assert spec.cal_base_address == ck.SC8S50_STRUCTURE.cal_base_address
+    assert spec.ecm3_header == ck.SC8S50_STRUCTURE.ecm3_header
+    # The declared spec locates ECM3's addresses at ASW1 + 0x520; discovery,
+    # which cannot know the ASW block's base, must land on the same file offset.
+    declared = (ck.SC8S50_STRUCTURE.asw_file_offset
+                + ck.SC8S50_STRUCTURE.ecm3_addr_locs[0])
+    assert spec.asw_file_offset + spec.ecm3_addr_locs[0] == declared
+
+
+def test_f5_the_decoy_block_verifies_too_and_is_not_the_cal_block() -> None:
+    """Why "one constant away" was the wrong conclusion, pinned so it stays wrong.
+
+    A second CRC-headered block really does verify clean at SC8S50's CAL offset
+    under base 0x80800000. Both facts must hold at once: it verifies, *and* it is
+    not where the calibration lives — its CRC covers only to 0x1FBDF, which the
+    XDF's own table addresses run well past.
     """
     _require(A05_BIN)
     data = A05_BIN.read_bytes()
-    header = ck.CAL_FILE_OFFSET + ck.ECM3_HEADER
+    decoy = ck.StructureSpec(
+        name="A05-decoy",
+        cal_file_offset=A05_DECOY_CAL_FILE_OFFSET,
+        cal_base_address=A05_DECOY_CAL_BASE_ADDRESS,
+        cal_block_length=0x1FC00,
+        asw_file_offset=0x20000,
+    )
+    crc, _ = ck.verify_cal_crc(data, decoy)
+    assert crc.can_verify and not crc.is_stale, "the decoy really does verify"
+    # ...but ECM3 is not there, which is the tell.
+    ecm3, _ = ck.verify_ecm3(data, decoy)
+    assert not ecm3.can_verify
+    # ...and the block is far too short to hold the tables the XDF declares.
+    assert decoy.cal_block_length < 0x8F8C3, (
+        "the A05 base XDF addresses tables past the decoy block's end"
+    )
+
+
+def test_f5_ascii_at_the_s50_ecm3_offset_is_a_moved_block_not_a_moved_header() -> None:
+    """The observation that misled the earlier pass, with its real cause pinned.
+
+    There genuinely is printable ASCII where SC8S50 keeps its ECM3 header. The
+    inference "ECM3 relocated" does not follow: nothing moved *within* the CAL
+    block. Reading at 0x200400 reads 0x20000 before A05's CAL block starts.
+    ECM3 is at CAL-relative 0x400 on both cars.
+    """
+    _require(A05_BIN)
+    data = A05_BIN.read_bytes()
+    header = ck.SC8S50_STRUCTURE.ecm3_file_offset
     probe = data[header : header + 16]
     assert probe.isascii() and probe.decode("ascii").isprintable(), (
         "expected printable ASCII at the S50 ECM3 header offset on A05; "
         f"got {probe.hex(' ')}"
     )
-    areas, note = ck._ecm3_areas(data)
-    assert areas is None
-    assert "out of range" in note
+    # The same CAL-relative offset, in A05's own block, is a real ECM3 header.
+    spec = ck.discover_structure(data)
+    assert spec.ecm3_header == ck.SC8S50_STRUCTURE.ecm3_header == 0x400
+    assert spec.cal_file_offset - ck.SC8S50_STRUCTURE.cal_file_offset == 0x20000
+
+
+def test_f5_correct_refuses_rather_than_silently_changing_nothing() -> None:
+    """AE7. The old behaviour returned unchanged bytes and raised nothing."""
+    _require(A05_BIN)
+    with pytest.raises(ck.ChecksumNotLocatable) as excinfo:
+        ck.correct(A05_BIN.read_bytes(), ck.SC8S50_STRUCTURE)
+    assert "SC8S50" in str(excinfo.value)
 
 
 def test_f5_s50_still_verifies_clean_side_by_side() -> None:
     """The contrast, and a guard: none of the above may weaken the primary path."""
     _require(S50_BIN)
-    reports = {r.name: r for r in ck.verify(S50_BIN.read_bytes())}
+    reports = {r.name: r for r in ck.verify(S50_BIN.read_bytes(), ck.SC8S50_STRUCTURE)}
     for report in reports.values():
         assert report.can_verify is True
         assert report.is_stale is False

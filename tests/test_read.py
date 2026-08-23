@@ -41,6 +41,7 @@ from simoscal import (
     numpy_dtype_for,
     parse_xdf,
 )
+from simoscal.checksum import SC8S50_STRUCTURE
 
 FIXTURES = Path(__file__).parent / "fixtures"
 MINI_XDF = FIXTURES / "mini.xdf"
@@ -237,7 +238,7 @@ def mini_cal() -> CalFile:
     foff = model.base_offset + 0x4000
     buf[foff : foff + 4] = struct.pack("<f", 12.5)
     img = BinImage(buf, region_start=model.region_start, region_size=len(buf))
-    return CalFile(model, img)
+    return CalFile(model, img, structure=SC8S50_STRUCTURE)
 
 
 def test_calfile_get_returns_bound_view(mini_cal: CalFile):
@@ -300,7 +301,7 @@ requires_real = pytest.mark.skipif(
 def real_cal() -> CalFile:
     if not (REAL_XDF.exists() and REAL_BIN.exists()):
         pytest.skip("real XDF/BIN not present")
-    return CalFile.open(str(REAL_XDF), str(REAL_BIN))
+    return CalFile.open(str(REAL_XDF), str(REAL_BIN), structure=SC8S50_STRUCTURE)
 
 
 def _struct_decode(emb: EmbeddedData, buf: bytes, base_offset: int) -> np.ndarray:

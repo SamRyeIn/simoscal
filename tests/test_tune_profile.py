@@ -26,6 +26,7 @@ from simoscal.tune.profile import (
 from simoscal.tune.profiles import PROFILES, SC8S50, SWITCH_PATCH_2933
 from simoscal.tune.profiles import sc8s50 as sc_map
 from simoscal.tune.profiles import switchpatch_2933 as sp_map
+from simoscal.checksum import SC8S50_STRUCTURE
 
 FIXTURES = Path(__file__).parent / "fixtures"
 MINI_XDF = FIXTURES / "mini.xdf"
@@ -45,7 +46,7 @@ def mini_cal() -> CalFile:
     image = BinImage(
         bytes(buf), region_start=model.region_start, region_size=model.region_size
     )
-    return CalFile(model, image)
+    return CalFile(model, image, structure=SC8S50_STRUCTURE)
 
 
 def _mini_profile(**specs: TableSpec) -> Profile:
@@ -490,7 +491,7 @@ def test_domain_screen_specs_resolve_at_their_declared_shapes(real_cal: CalFile)
 def test_switch_patch_profile_resolves_on_its_real_xdf(
     switch_patch_xdf: Path, real_bin: Path
 ) -> None:
-    cal = CalFile.open(str(switch_patch_xdf), str(real_bin))
+    cal = CalFile.open(str(switch_patch_xdf), str(real_bin), structure=SC8S50_STRUCTURE)
     resolved = resolve(SWITCH_PATCH_2933, cal)
 
     assert len(resolved) == len(SWITCH_PATCH_2933)
@@ -503,7 +504,7 @@ def test_wrong_xdf_fails_loud_before_any_edit(
     switch_patch_xdf: Path, real_bin: Path
 ) -> None:
     """AE3: point a base-calibration profile at the switch-patch XDF."""
-    cal = CalFile.open(str(switch_patch_xdf), str(real_bin))
+    cal = CalFile.open(str(switch_patch_xdf), str(real_bin), structure=SC8S50_STRUCTURE)
     with pytest.raises(ProfileResolutionError) as excinfo:
         resolve(SC8S50, cal)
 

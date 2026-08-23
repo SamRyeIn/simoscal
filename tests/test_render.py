@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from simoscal import BinImage, CalFile, RenderedTable, parse_xdf, render_table
+from simoscal.checksum import SC8S50_STRUCTURE
 
 FIXTURES = Path(__file__).parent / "fixtures"
 MINI_XDF = FIXTURES / "mini.xdf"
@@ -33,7 +34,7 @@ def mini_cal() -> CalFile:
     zoff = model.base_offset + 0x5010
     buf[zoff : zoff + 10] = struct.pack("<5H", 10, 20, 30, 40, 50)
     img = BinImage(buf, region_start=model.region_start, region_size=len(buf))
-    return CalFile(model, img)
+    return CalFile(model, img, structure=SC8S50_STRUCTURE)
 
 
 # --------------------------------------------------------------------------- #

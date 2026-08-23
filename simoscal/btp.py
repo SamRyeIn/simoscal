@@ -509,7 +509,7 @@ def _change(
     changed_in_cal = sum(1 for i in changed if cal_start <= i < cal_end)
 
     # Checksum report over the RESULT (AE5) — verify + report, never assume.
-    reports = tuple(_checksum.verify(out_bytes))
+    reports = tuple(_checksum.verify_discovered(out_bytes))
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -584,16 +584,18 @@ def switch_patch_sanity(
     """
     import numpy as np
 
-    from .calfile import CalFile
+    from .calfile import CalFile, structure_of
 
     bin_path = Path(bin_path)
     xdf = Path(xdf_path) if xdf_path is not None else default_switch_patch_xdf(bintoolz_root)
     if not xdf.is_file():
         raise BtpError(f"switch-patch XDF not found: {xdf}")
 
-    cal = CalFile.open(str(xdf), str(bin_path))
+    cal = CalFile.open(str(xdf), str(bin_path), structure=structure_of(bin_path))
     stock_cal = (
-        CalFile.open(str(xdf), str(stock_bin_path)) if stock_bin_path is not None else None
+        CalFile.open(str(xdf), str(stock_bin_path), structure=structure_of(stock_bin_path))
+        if stock_bin_path is not None
+        else None
     )
     want = set(categories)
 

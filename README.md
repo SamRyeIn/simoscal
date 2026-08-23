@@ -45,9 +45,10 @@ your ECU actually has, and keep that stock read untouched as your recovery image
 ## Quick start
 
 ```python
-from simoscal import CalFile
+from simoscal import CalFile, SC8S50_STRUCTURE
 
-cal = CalFile.open("xdf/SC8S50.V1.0.xdf", "bin/5G0906259L__0002.bin")
+cal = CalFile.open("xdf/SC8S50.V1.0.xdf", "bin/5G0906259L__0002.bin",
+                   structure=SC8S50_STRUCTURE)
 
 # Look up a table by A2L symbol (or by title, or by uniqueid int).
 port = cal.get("ID_PORT_SP")
@@ -66,7 +67,8 @@ for r in reports:
 ## The workflow: load → edit → save → verify → **flash externally**
 
 ```
-  CalFile.open(xdf, bin)          parse XDF + load 4 MB bin (region-checked)
+  CalFile.open(xdf, bin,          parse XDF + load 4 MB bin (region-checked)
+              structure=...)      which car's CAL layout — no default
         │
         ▼
   table = cal.get(symbol)         look up by symbol / title / uniqueid
@@ -273,7 +275,7 @@ screen is not a reason for an op; an invariant is.
 ### `CalFile`
 | Member | Description |
 |--------|-------------|
-| `CalFile.open(xdf_path, bin_path)` | Parse the XDF and load the bin; region taken from the XDF `REGION` header. |
+| `CalFile.open(xdf_path, bin_path, *, structure)` | Parse the XDF and load the bin; region taken from the XDF `REGION` header. `structure` is a `StructureSpec` saying where this car's CAL block sits and how it is addressed — it has no default, because one car's layout standing in for another's is the failure it exists to prevent. Use `SC8S50_STRUCTURE`, or `structure_of(bin_path)` to discover it. |
 | `.get(key)` | Fetch the single `TableView` by symbol, title, or `uniqueid` int. Raises `AmbiguousTableError` if a name maps to genuinely distinct tables. |
 | `.search(substring)` | List `TableView`s whose symbol/title contains `substring`. |
 | `.unique_tables()` | Dedup-by-`uniqueid` view (3,814 tables) for sweeps. |
@@ -300,9 +302,10 @@ across, Y down, Z fills the matrix); 1D tables and scalars degrade naturally.
 One-way (no import back into a `.bin`) and library-only (no CLI).
 
 ```python
-from simoscal import CalFile, export_tables
+from simoscal import CalFile, SC8S50_STRUCTURE, export_tables
 
-cal = CalFile.open("xdf/SC8S50.V1.0.xdf", "bin/5G0906259L__0002.bin")
+cal = CalFile.open("xdf/SC8S50.V1.0.xdf", "bin/5G0906259L__0002.bin",
+                   structure=SC8S50_STRUCTURE)
 export_tables(cal, "boost.csv", category="Boost Control")
 export_tables(cal, "full_dump.xlsx", all_tables=True)  # one sheet per category
 ```
@@ -333,14 +336,16 @@ has no window/backend side effects.
   `TableMismatchError` naming both tables — never a misleading plot.
 
 ```python
-from simoscal import CalFile, plot_tables, compare_bins, compare_tables, render_table
+from simoscal import (CalFile, SC8S50_STRUCTURE, plot_tables, compare_bins,
+                      compare_tables, render_table)
 
-cal = CalFile.open("xdf/SC8S50.V1.0.xdf", "bin/5G0906259L__0002.bin")
+cal = CalFile.open("xdf/SC8S50.V1.0.xdf", "bin/5G0906259L__0002.bin",
+                   structure=SC8S50_STRUCTURE)
 plot_tables(cal, "plots/", category="Boost Control")   # PNGs under plots/Boost Control/
 
 # Compare the same tables across two bins (stock vs tuned):
-stock = CalFile.open("xdf/SC8S50.V1.0.xdf", "bin/stock.bin")
-tuned = CalFile.open("xdf/SC8S50.V1.0.xdf", "bin/tuned.bin")
+stock = CalFile.open("xdf/SC8S50.V1.0.xdf", "bin/stock.bin", structure=SC8S50_STRUCTURE)
+tuned = CalFile.open("xdf/SC8S50.V1.0.xdf", "bin/tuned.bin", structure=SC8S50_STRUCTURE)
 compare_bins(stock, tuned, "diffs/", category="Boost Control")
 
 # Before/after one in-session edit — no second bin (render_table snapshots):
@@ -383,9 +388,10 @@ returns a `RecipeReport` — it **stages edits in memory and does not touch disk
 `demos/apply_sop_recipe.py`).
 
 ```python
-from simoscal import CalFile, apply_basics_sop, format_report
+from simoscal import CalFile, SC8S50_STRUCTURE, apply_basics_sop, format_report
 
-cal = CalFile.open("xdf/SC8S50.V1.0.xdf", "bin/5G0906259L__0002.bin")
+cal = CalFile.open("xdf/SC8S50.V1.0.xdf", "bin/5G0906259L__0002.bin",
+                   structure=SC8S50_STRUCTURE)
 report = apply_basics_sop(cal)                 # stages edits, returns the report
 print(format_report(report))                   # DO NOT FLASH banner first, if any
 cal.save("tuned.bin", correct_checksums=True)  # then verify + review before flashing

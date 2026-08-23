@@ -200,7 +200,9 @@ def _source_values(tune: Tune, space: str, name: str) -> Optional[tuple]:
             region_start=model.region_start,
             region_size=model.region_size,
         )
-        view = CalFile(model, image).get(table_space.tables[name].spec.key)
+        view = CalFile(
+            model, image, structure=table_space.cal.structure
+        ).get(table_space.tables[name].spec.key)
         return _nested(view.values)
     except Exception:  # noqa: BLE001 - a missing ghost must never break the read
         return None

@@ -14,6 +14,7 @@ from simoscal.analysis import (
     detect_pulls,
     load_logset,
 )
+from simoscal.checksum import SC8S50_STRUCTURE
 
 from tests.faultinject import PullSpec, build_folder
 from tests.synthlog import const, ramp, write_log
@@ -154,7 +155,7 @@ def test_default_specs_resolve_against_real_bin(tmp_path, real_xdf, real_bin):
         "Intake Flow Fact ()": ramp(0.1, 1.1, n),
         "Exh Flow Factor ()": ramp(0.7, 1.3, n),
     }
-    cal = CalFile.open(str(real_xdf), str(real_bin))
+    cal = CalFile.open(str(real_xdf), str(real_bin), structure=SC8S50_STRUCTURE)
     ctx = _ctx(tmp_path, cols, cal=cal)
     res, skip = compute_coverage(ctx)
     resolved = {r.symbol for r in res}

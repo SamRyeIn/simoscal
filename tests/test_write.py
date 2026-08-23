@@ -22,6 +22,7 @@ from simoscal import (
     RawRangeError,
     parse_xdf,
 )
+from simoscal.checksum import SC8S50_STRUCTURE
 
 # Inline XDF: base offset 0 so mmedaddress == file offset (tiny buffer).
 WRITE_XDF = """<XDFFORMAT version="1.60">
@@ -87,7 +88,7 @@ WRITE_XDF = """<XDFFORMAT version="1.60">
 def cal() -> CalFile:
     model = parse_xdf(io.StringIO(WRITE_XDF))
     img = BinImage(bytearray(0x1000), region_start=0, region_size=0x1000)
-    return CalFile(model, img)
+    return CalFile(model, img, structure=SC8S50_STRUCTURE)
 
 
 # --------------------------------------------------------------------------- #

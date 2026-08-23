@@ -20,6 +20,7 @@ absent — the default state on the Mac dev box.
 """
 
 from __future__ import annotations
+from simoscal.checksum import SC8S50_STRUCTURE
 
 import json
 from pathlib import Path
@@ -188,7 +189,7 @@ def real_cal(real_xdf: Path, real_bin: Path):
     """
     from simoscal import CalFile
 
-    return CalFile.open(str(real_xdf), str(real_bin))
+    return CalFile.open(str(real_xdf), str(real_bin), structure=SC8S50_STRUCTURE)
 
 
 @pytest.fixture(scope="session")

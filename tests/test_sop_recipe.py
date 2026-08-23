@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 
 from simoscal import BinImage, CalFile, parse_xdf
+from simoscal.checksum import SC8S50_STRUCTURE
 from simoscal.sop_recipe import (
     SKIP_KINDS,
     SYMBOL_MAP,
@@ -54,7 +55,7 @@ def mini_cal() -> CalFile:
     zoff = model.base_offset + 0x5010
     buf[zoff : zoff + 10] = struct.pack("<5H", 10, 20, 30, 40, 50)
     img = BinImage(buf, region_start=model.region_start, region_size=len(buf))
-    return CalFile(model, img)
+    return CalFile(model, img, structure=SC8S50_STRUCTURE)
 
 
 # --------------------------------------------------------------------------- #
