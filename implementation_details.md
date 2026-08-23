@@ -80,10 +80,10 @@ can pass while a published wheel omits a subpackage.
 ### Compatibility preflight — `simoscal/preflight.py`
 
 `preflight()` is read-only and returns a structured verdict. It checks file
-existence, hashes, XDF parsing, region bounds, exact SC8S50 profile resolution,
-checksum state, and optional switch-patch presence. A valid but non-SC8S50
-layout is inspect-only; truncated, malformed, or otherwise unusable input is
-blocked. There is no continue-anyway path.
+existence, hashes, XDF parsing, region bounds, exact profile resolution against
+the registry, checksum state, and optional switch-patch presence. A valid layout
+no registered profile recognises is inspect-only; truncated, malformed, or
+otherwise unusable input is blocked. There is no continue-anyway path.
 
 The bridge repeats this decision in `session_create()` and `session_recover()`.
 This is intentional defense in depth: a UI sequence that forgot to call preflight
@@ -91,9 +91,21 @@ cannot create an editable session over invalid bytes. Supplying a switch-patch
 XDF for an unpatched bin produces `PREFLIGHT_BLOCKED`; it cannot expose patch
 addresses as if they were present.
 
-Preflight hardcodes SC8S50 as the only writable profile. Widening that to a
-registry — so a contributed profile is readable on arrival but writable only once
-marked validated — is planned beta-program work and is **not** implemented here.
+Which profiles preflight tries is `tune.profiles.BASE_PROFILES` — every shipped
+profile that declares a `structure`, so registration is derived rather than
+hand-listed. `Verdict.profile_name` names whichever matched and
+`Verdict.writable` follows from that match. Every profile is attempted, not just
+until the first success: two matches raise `AmbiguousProfileError` rather than
+returning a verdict, because no file the user picks can fix a registry that
+ships two maps for one calibration, and a first-match win would mean editing
+under one car's safety rules on a file that might be another's. When none match,
+the refusal quotes the XDF's `deftitle` so it names what the file *is* — the
+title is evidence for the reader and never an input to matching.
+
+What is **not** implemented is the *graduated trust model* on top of this: every
+registered profile is equally writable once it matches, so there is no
+"contributed, readable on arrival, writable only once validated" tier. That
+remains beta-program work.
 
 ### Renderer-independent build service — `simoscal/tune/build_service.py`
 
@@ -204,10 +216,13 @@ No ECU was flashed. No bin was edited in place.
 The following are not complete and must not be described as complete by a future
 agent:
 
-- **A profile registry with a graduated trust model.** `preflight` still
-  hardcodes SC8S50 as the only writable profile, so a second box code cannot be
-  supported end-to-end without either weakening that gate or building the
-  registry. This is the load-bearing piece of beta-program work.
+- **A graduated trust model over the profile registry.** The registry itself is
+  built — `preflight` resolves against `BASE_PROFILES` and writability follows
+  from the match, not from a hardcoded name — but every registered profile is
+  equally trusted. A contributed profile that is readable on arrival and
+  writable only once marked validated is still beta-program work. Note also
+  that only SC8S50 is registered today, so a second box code needs its map file
+  (U5) before any of this is exercised end-to-end.
 - ~~**Per-car safety knowledge is not yet consolidated onto the profile.**~~
   Done. `Profile` now carries the car's `StructureSpec`, derives
   `float_bug_symbols` from the specs tagged `TAG_FLOAT_BUG`, and supplies the

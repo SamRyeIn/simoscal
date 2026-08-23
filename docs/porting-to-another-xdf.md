@@ -170,6 +170,14 @@ offset discovered from the file.
    `TAG_FLOAT_BUG`, and which — if any — stock values the SOP guidance may
    quote. Declaring none of the latter is the correct answer until someone has
    actually read them off this car's bin.
+6. Add the profile to `PROFILES` in `simoscal/tune/profiles/__init__.py`. That
+   is the whole registration: `BASE_PROFILES` — what preflight tries — is
+   derived from it by "has a `structure`", so step 5 is what makes the new car
+   recognisable and there is no second list to forget. Check the port with
+   `preflight(new_bin, new_xdf)`: it should now name the profile and report
+   `writable=True`, and `preflight(sc8s50_bin, sc8s50_xdf)` must still say
+   `SC8S50` — two profiles both resolving against one file raises
+   `AmbiguousProfileError` rather than picking one.
 
 ## 9. What the library does with this
 
@@ -178,6 +186,22 @@ every checksum call — `verify`, `correct`, `verify_cal_crc`, `verify_ecm3`,
 `stored_checksum_ranges`, `correction_patches` — and to `CalFile.open`. There is
 no default and no module-level "current structure": SC8S50 is
 `SC8S50_STRUCTURE`, one declared instance among several.
+
+The structure also decides whether a profile can *identify* a bin.
+`BASE_PROFILES` is every profile that declares one, and `preflight` tries each
+in turn: `Verdict.profile_name` is whichever matched and `Verdict.writable`
+follows from that match, where it used to be a hardcoded SC8S50 resolve. A
+profile with `structure=None` — the switch patch — only adds tables to another
+profile's space, so it is excluded by the rule rather than by a hand-kept list.
+
+The loop tries every profile rather than stopping at the first success, because
+two matches must be distinguishable from one. When two do match, preflight
+raises `AmbiguousProfileError` instead of returning a verdict: no choice of file
+fixes a registry shipping two maps for one calibration, and taking the first
+would mean editing under one car's safety rules on a file that might be
+another's. A file no profile matches is `INSPECT_ONLY`, and the refusal quotes
+the XDF's `deftitle` (`SCGA0531_C_OEM.a2l` for A05) so it says what the file is,
+not only what it is not — evidence for the reader, never an input to matching.
 
 The structure is one of three per-car facts a `Profile` now carries; the other
 two used to be globals, and porting had no way to override either:

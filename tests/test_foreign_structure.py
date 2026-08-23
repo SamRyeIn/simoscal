@@ -169,6 +169,25 @@ def test_f2_preflight_reports_the_profile_misses_that_caused_the_refusal() -> No
     assert any("IP_IGA_BAS_IVVT_VVL_PORT_L" in m for m in misses)
 
 
+def test_f2_refusal_names_the_software_the_file_declares_itself_to_be() -> None:
+    """A refusal has to say what the file *is*, not only what it is not.
+
+    The deftitle is the XDF's own claim and is never what recognition turns on —
+    resolution by symbol and shape is — but quoting it back turns "not ours" into
+    a fact the reader can act on: this is `SCGA0531_C_OEM.a2l`, which we do not
+    map, rather than an unnamed file that failed for unstated reasons.
+    """
+    _require(A05_BIN, A05_XDF)
+    v = preflight(A05_BIN, A05_XDF)
+    assert v.status == INSPECT_ONLY
+    assert "SCGA0531_C_OEM.a2l" in v.summary
+    assert v.advanced["deftitle"] == "SCGA0531_C_OEM.a2l"
+    # And it names what was tried, so "unrecognised" is a checkable claim about a
+    # known registry rather than an opaque verdict.
+    assert v.advanced["profiles_tried"] == ["SC8S50"]
+    assert v.advanced["closest_profile"] == "SC8S50"
+
+
 def test_f2_preflight_does_not_modify_the_foreign_files() -> None:
     _require(A05_BIN, A05_XDF)
     before = (_sha(A05_BIN), _sha(A05_XDF))

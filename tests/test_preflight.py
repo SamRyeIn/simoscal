@@ -23,8 +23,10 @@ from simoscal.preflight import (
     INSPECT_ONLY,
     READY,
     READY_STALE_CHECKSUM,
+    AmbiguousProfileError,
     preflight,
 )
+from simoscal.tune.profiles import BASE_PROFILES, PROFILES, SC8S50
 
 CODE_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = CODE_ROOT.parent
@@ -153,3 +155,118 @@ def test_no_state_carries_between_calls(tmp_path) -> None:
 @requires_real
 def test_verdict_bool_is_ok_to_edit() -> None:
     assert bool(preflight(STOCK_BIN, XDF)) is True
+
+
+# --------------------------------------------------------------------------- #
+# U4 — the profile registry replaces the hardcoded SC8S50 check
+# --------------------------------------------------------------------------- #
+def test_base_profiles_are_the_ones_that_declare_a_structure() -> None:
+    """Registry membership is derived, so a shipped profile cannot go unregistered.
+
+    A profile with no ``structure`` only adds tables to another profile's space
+    and could never identify a bin on its own, so the switch patch is excluded —
+    by the rule, not by being left off a hand-written list.
+    """
+    assert SC8S50 in BASE_PROFILES
+    assert [p.name for p in BASE_PROFILES] == [
+        p.name for p in PROFILES.values() if p.structure is not None
+    ]
+    unregistered = [p.name for p in PROFILES.values() if p not in BASE_PROFILES]
+    assert unregistered == ["SwitchPatch2933"]
+    assert all(p.structure is None for p in PROFILES.values()
+               if p.name in unregistered)
+
+
+@requires_real
+def test_matching_profile_is_named_and_is_what_makes_it_writable() -> None:
+    """`writable` follows from a profile matching, not from a hardcoded name."""
+    v = preflight(STOCK_BIN, XDF)
+    assert v.profile_name == "SC8S50"
+    assert v.profile_matched is True and v.writable is True
+    assert v.advanced["profile"] == "SC8S50"
+    # The XDF's self-declared title is carried as evidence, never as the basis
+    # for the match — it is reported on a success too, not only on a refusal.
+    assert v.advanced["deftitle"] == "SC8S50.a2l"
+
+
+@requires_real
+def test_resolution_order_does_not_change_the_outcome(monkeypatch) -> None:
+    """Exactly one match means order is irrelevant — both orders, same verdict.
+
+    The decoy is a real profile whose declared shapes cannot resolve here, so the
+    loop genuinely has two candidates to distinguish rather than one.
+    """
+    from dataclasses import replace
+
+    decoy = replace(SC8S50, name="Decoy", specs={
+        n: replace(spec, shape=(spec.shape[0] + 1, spec.shape[1] + 1))
+        for n, spec in list(SC8S50.specs.items())[:3]
+    })
+
+    verdicts = []
+    for order in ((SC8S50, decoy), (decoy, SC8S50)):
+        monkeypatch.setattr("simoscal.tune.profiles.BASE_PROFILES", order)
+        verdicts.append(preflight(STOCK_BIN, XDF))
+
+    assert [v.status for v in verdicts] == [READY, READY]
+    assert {v.profile_name for v in verdicts} == {"SC8S50"}
+    assert all(v.writable for v in verdicts)
+
+
+@requires_real
+def test_two_matching_profiles_is_a_loud_failure_not_a_first_match_win(
+    monkeypatch,
+) -> None:
+    """Ambiguity raises rather than silently picking one car's safety rules.
+
+    Editing under the wrong car's rules is the substitution preflight exists to
+    prevent, and no choice of file would fix a registry that ships two maps for
+    one calibration — so this is an error, not a verdict.
+    """
+    from dataclasses import replace
+
+    twin = replace(SC8S50, name="SC8S50Twin")
+    monkeypatch.setattr("simoscal.tune.profiles.BASE_PROFILES", (SC8S50, twin))
+
+    with pytest.raises(AmbiguousProfileError) as excinfo:
+        preflight(STOCK_BIN, XDF)
+    message = str(excinfo.value)
+    assert "SC8S50" in message and "SC8S50Twin" in message
+
+
+@pytest.mark.skipif(not SWITCH_XDF.is_file() or not _have_real,
+                    reason="switch-patch XDF or real bin absent")
+def test_refusal_reads_cleanly_when_the_xdf_declares_no_title(tmp_path) -> None:
+    """A missing deftitle changes the sentence, never leaves a hole in it.
+
+    The title is the file's own claim and may simply be absent; the refusal has
+    to stay a readable sentence rather than quoting an empty string or a
+    parenthetical placeholder at the user.
+    """
+    import re
+
+    stripped = tmp_path / "no_title.xdf"
+    stripped.write_text(
+        re.sub(r"<deftitle>.*?</deftitle>", "", SWITCH_XDF.read_text(), count=1)
+    )
+
+    v = preflight(STOCK_BIN, stripped)
+    assert v.status == INSPECT_ONLY
+    assert v.advanced["deftitle"] == ""
+    assert "declares no title" in v.summary
+    assert "identifies itself as" not in v.summary
+
+
+@requires_real
+def test_no_registered_profile_at_all_is_inspect_only(monkeypatch) -> None:
+    """An empty registry recognises nothing — and says so without crashing."""
+    monkeypatch.setattr("simoscal.tune.profiles.BASE_PROFILES", ())
+    v = preflight(STOCK_BIN, XDF)
+    assert v.status == INSPECT_ONLY
+    assert v.ok_to_edit is False and v.writable is False
+    assert v.profile_name is None
+    assert v.advanced["profiles_tried"] == []
+    # Nothing was tried, so there is no near miss to report — and the verdict
+    # says that by omission rather than by inventing an empty miss list.
+    assert "profile_misses" not in v.advanced
+    assert "SC8S50.a2l" in v.summary

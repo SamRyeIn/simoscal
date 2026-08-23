@@ -153,7 +153,13 @@ class XdfModel:
         defaults: Defaults,
         categories: dict[int, Category],
         tables: list[Table],
+        deftitle: str = "",
     ) -> None:
+        #: The XDF header's ``<deftitle>`` — what the file says it *is*, verbatim
+        #: and untrusted. Never used to recognise a calibration (that is
+        #: resolution's job, by symbol and shape); used only so a refusal can name
+        #: the software in front of the user instead of only what it is not.
+        self.deftitle = deftitle
         self.base_offset = base_offset
         self.base_subtract = base_subtract
         self.region_start = region_start
@@ -446,8 +452,9 @@ def _parse_table(
 
 def _parse_header(
     elem: ET.Element,
-) -> tuple[int, bool, int, int, Defaults, dict[int, Category]]:
-    """Extract BASEOFFSET, REGION, DEFAULTS, and CATEGORY names from XDFHEADER."""
+) -> tuple[str, int, bool, int, int, Defaults, dict[int, Category]]:
+    """Extract deftitle, BASEOFFSET, REGION, DEFAULTS, and CATEGORYs from XDFHEADER."""
+    deftitle = (elem.findtext("deftitle") or "").strip()
     base_offset = 0
     base_subtract = False
     region_start = 0
@@ -482,7 +489,10 @@ def _parse_header(
         if idx is not None and name is not None:
             categories[idx] = Category(name=name, index=idx)
 
-    return base_offset, base_subtract, region_start, region_size, defaults, categories
+    return (
+        deftitle, base_offset, base_subtract, region_start, region_size,
+        defaults, categories,
+    )
 
 
 def parse_xdf(source) -> XdfModel:
@@ -493,6 +503,7 @@ def parse_xdf(source) -> XdfModel:
     keep memory flat across thousands of tables.
     """
     header_parsed = False
+    deftitle = ""
     base_offset = 0
     base_subtract = False
     region_start = 0
@@ -505,6 +516,7 @@ def parse_xdf(source) -> XdfModel:
         tag = elem.tag
         if tag == "XDFHEADER":
             (
+                deftitle,
                 base_offset,
                 base_subtract,
                 region_start,
@@ -522,6 +534,7 @@ def parse_xdf(source) -> XdfModel:
             elem.clear()
 
     return XdfModel(
+        deftitle=deftitle,
         base_offset=base_offset,
         base_subtract=base_subtract,
         region_start=region_start,

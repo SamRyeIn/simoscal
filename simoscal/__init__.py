@@ -38,7 +38,7 @@ from .codec import (
 )
 from .calfile import CalFile, TableView, structure_of
 from .render import RenderedTable, render_table
-from .preflight import ChecksumState, Verdict, preflight
+from .preflight import AmbiguousProfileError, ChecksumState, Verdict, preflight
 from .sop_recipe import (
     RecipeReport,
     SYMBOL_MAP,
@@ -164,6 +164,7 @@ __all__ = [
     "ChecksumState",
     "Verdict",
     "preflight",
+    "AmbiguousProfileError",
     "select_tables",
     "write_csv",
     "write_xlsx",

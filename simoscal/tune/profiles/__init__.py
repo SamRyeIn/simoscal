@@ -21,4 +21,19 @@ PROFILES: dict[str, Profile] = {
     SWITCH_PATCH_2933.name: SWITCH_PATCH_2933,
 }
 
-__all__ = ["PROFILES", "SC8S50", "SWITCH_PATCH_2933"]
+#: The profiles :func:`~simoscal.preflight.preflight` tries when it is handed a
+#: bin it cannot yet name — the registry that replaced a hardcoded SC8S50 check.
+#:
+#: Membership is *derived* from whether a profile declares a
+#: :attr:`~simoscal.tune.profile.Profile.structure`, rather than listed by hand,
+#: so a profile cannot be added to the package and silently left unregistered.
+#: The rule is not a convenience: a structure is the statement "I describe a
+#: whole calibration and I know where its CAL block sits". A profile without one
+#: only *adds* tables to another profile's space — the switch patch is the
+#: example — and could never identify a bin on its own, because resolving it
+#: says nothing about the base calibration underneath.
+BASE_PROFILES: tuple[Profile, ...] = tuple(
+    p for p in PROFILES.values() if p.structure is not None
+)
+
+__all__ = ["PROFILES", "BASE_PROFILES", "SC8S50", "SWITCH_PATCH_2933"]

@@ -46,6 +46,27 @@ def test_header_base_offset_and_region(mini: XdfModel):
     assert mini.region_size == 0x400000
 
 
+def test_header_deftitle(mini: XdfModel):
+    """The file's own claim about what it is — carried, never trusted.
+
+    Preflight quotes it so a refusal can name the software in front of the user;
+    recognition itself is still by symbol and shape, so a wrong or missing
+    deftitle can neither cause nor prevent a match.
+    """
+    assert mini.deftitle == "mini.a2l"
+
+
+def test_header_deftitle_absent_is_empty_not_none(tmp_path):
+    """A headerless XDF parses to "" — a falsy string a message can format."""
+    src = tmp_path / "no_title.xdf"
+    src.write_text(
+        '<XDFFORMAT version="1.60"><XDFHEADER>'
+        '<BASEOFFSET offset="0x0" subtract="0" />'
+        '</XDFHEADER></XDFFORMAT>'
+    )
+    assert parse_xdf(str(src)).deftitle == ""
+
+
 def test_header_defaults(mini: XdfModel):
     assert mini.defaults.datasizeinbits == 8
     assert mini.defaults.lsbfirst is True

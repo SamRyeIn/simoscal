@@ -323,7 +323,11 @@ def _op_bridge_info(params: dict) -> dict:
 
 
 def _op_preflight(params: dict) -> dict:
-    """Decide whether a bin + XDF is a safely-editable SC8S50 bin. Read-only."""
+    """Decide whether a bin + XDF is a safely-editable bin. Read-only.
+
+    Which calibrations qualify is the library's profile registry, not a name
+    fixed here; the verdict's ``profile_name`` says which one matched.
+    """
     bin_path = _verified_path(params, "bin")
     xdf_path = _verified_path(params, "xdf")
     patch_xdf = _verified_path(params, "switch_patch_xdf", required=False)

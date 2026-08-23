@@ -12,10 +12,13 @@ Three things make this trustworthy:
 * **It never modifies the source.** Every check reads; nothing is written, and
   the file the user picked is untouched no matter the verdict.
 * **Recognition is by explicit profile identity, never by filename or a fuzzy
-  title match.** A bin is "SC8S50" only if the whole SC8S50 profile resolves
-  against the XDF *by symbol and by exact table geometry* — a same-named table
-  with a different shape is a different table and fails recognition. So a random
-  Simos 18 XDF cannot masquerade as this car's calibration.
+  title match.** A bin is "SC8S50", say, only if the whole SC8S50 profile
+  resolves against the XDF *by symbol and by exact table geometry* — a
+  same-named table with a different shape is a different table and fails
+  recognition. So a random Simos 18 XDF cannot masquerade as a mapped
+  calibration. Which profiles are tried comes from the registry
+  (:data:`~simoscal.tune.profiles.BASE_PROFILES`), so adding a car is adding a
+  map file; the bar each one has to clear is unchanged.
 * **There is no "continue anyway".** The verdict's :attr:`Verdict.ok_to_edit`
   is the whole decision; a blocked input offers *choose another file*, not a
   bypass. And the function keeps no state between calls, so re-running on a
@@ -33,7 +36,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Union
+from typing import TYPE_CHECKING, Optional, Union
 from xml.etree.ElementTree import ParseError as XmlParseError
 
 from . import checksum
@@ -41,7 +44,11 @@ from .calfile import CalFile, structure_of
 from .model import RegionBoundsError, SimosCalError
 from .xdf import XdfParseError, parse_xdf
 
+if TYPE_CHECKING:  # pragma: no cover - import cycle: tune imports this module
+    from .tune.profile import Profile
+
 __all__ = [
+    "AmbiguousProfileError",
     "ChecksumState",
     "Verdict",
     "preflight",
@@ -51,18 +58,33 @@ __all__ = [
     "BLOCKED",
 ]
 
-#: A full Simos18 SC8S50 image is 4 MiB. Anything smaller is a CAL-only slice or
-#: a truncated file — neither is a flashable image this tool will edit.
+
+class AmbiguousProfileError(SimosCalError):
+    """Raised when more than one registered profile fully resolves against a file.
+
+    Not a verdict, because no choice of file can fix it: two shipped maps both
+    claiming the same calibration is a defect in the registry, and the user
+    picking a different bin would only move it. Taking the first match would mean
+    editing under one car's safety rules while the file might be another's —
+    exactly the substitution this module exists to prevent — so the failure is
+    loud and names both profiles.
+    """
+
+
+#: A full Simos 18 image is 4 MiB (both SC8S50 and SCGA05 read this size).
+#: Anything smaller is a CAL-only slice or a truncated file — neither is a
+#: flashable image this tool will edit.
 FULL_BIN_SIZE = 0x400000
 
 # -- verdict statuses -------------------------------------------------------- #
-#: Recognised SC8S50 full bin, checksums verify clean — safe to open for editing.
+#: Recognised full bin (some registered profile matched), checksums verify clean
+#: — safe to open for editing.
 READY = "READY"
 #: As READY, but a checksum is stale and *correctable*; the build step will fix
 #: it. Still safe to edit — this is the normal state of an already-edited bin.
 READY_STALE_CHECKSUM = "READY_STALE_CHECKSUM"
-#: The XDF + bin parse and load, but this is not the SC8S50 calibration, so the
-#: SC8S50 safety knowledge does not apply. Readable, never writable.
+#: The XDF + bin parse and load, but no registered profile recognises them, so
+#: no car's safety knowledge applies. Readable, never writable.
 INSPECT_ONLY = "INSPECT_ONLY"
 #: Unusable: truncated, unparseable, out-of-region, CAL-only, or unrecognised.
 BLOCKED = "BLOCKED"
@@ -221,6 +243,44 @@ def _checksum_states(data: bytes) -> tuple[ChecksumState, ...]:
     return tuple(states)
 
 
+def _identify(
+    cal: CalFile, xdf_label: str
+) -> tuple[Optional["Profile"], dict[str, list[str]]]:
+    """Try every registered base profile; return the one that matched, and the misses.
+
+    Every profile is attempted — the loop does not stop at the first success —
+    because "exactly one profile matched" is the fact that makes the verdict
+    mean anything, and a first-match return could not tell that apart from
+    "two matched and I stopped early". Order is therefore irrelevant to the
+    outcome by construction rather than by convention.
+
+    Returns ``(profile_or_None, misses_by_profile_name)``. Raises
+    :class:`AmbiguousProfileError` when more than one matched.
+    """
+    from .tune.profile import resolve, ProfileResolutionError
+    from .tune.profiles import BASE_PROFILES
+
+    matched: list["Profile"] = []
+    misses: dict[str, list[str]] = {}
+    for profile in BASE_PROFILES:
+        try:
+            resolve(profile, cal, xdf_label=xdf_label)
+        except ProfileResolutionError as exc:
+            misses[profile.name] = [m.format() for m in exc.misses]
+        else:
+            matched.append(profile)
+
+    if len(matched) > 1:
+        names = ", ".join(p.name for p in matched)
+        raise AmbiguousProfileError(
+            f"{len(matched)} registered profiles all fully resolve against "
+            f"{xdf_label}: {names}. Preflight cannot say which car's safety rules "
+            "apply, and will not guess — one of these maps is wrong, or two cars "
+            "genuinely share a layout and need a discriminator beyond resolution."
+        )
+    return (matched[0] if matched else None), misses
+
+
 def _detect_switch_patch(
     bin_path: Path, switch_patch_xdf: Path
 ) -> tuple[Optional[bool], dict]:
@@ -278,7 +338,12 @@ def preflight(
     *,
     switch_patch_xdf: Optional[Union[str, Path]] = None,
 ) -> Verdict:
-    """Decide whether ``bin_path`` + ``xdf_path`` is a safely-editable SC8S50 bin.
+    """Decide whether ``bin_path`` + ``xdf_path`` is a safely-editable bin.
+
+    "Safely editable" means exactly one profile in
+    :data:`~simoscal.tune.profiles.BASE_PROFILES` fully resolves against the XDF;
+    :attr:`Verdict.profile_name` says which, and :attr:`Verdict.writable` follows
+    from that match rather than from any hardcoded car.
 
     Reads only; the source files are never modified. Returns a :class:`Verdict`
     whose :attr:`Verdict.ok_to_edit` is the decision. The function holds no state
@@ -354,24 +419,51 @@ def preflight(
         )
 
     # -- profile identity (exact, by symbol AND shape) ---------------------- #
-    from .tune.profile import resolve, ProfileResolutionError
-    from .tune.profiles import SC8S50
+    from .tune.profiles import BASE_PROFILES
 
-    try:
-        resolve(SC8S50, cal, xdf_label=str(xdf_path))
-        profile_matched = True
-    except ProfileResolutionError as exc:
-        # Parsed and loaded, but not our calibration. Readable, not writable.
+    profile, misses = _identify(cal, str(xdf_path))
+    if profile is None:
+        # Parsed and loaded, but no registered profile recognises it. Readable,
+        # not writable. The deftitle is quoted so the refusal says what the file
+        # claims to be — untrusted, and never the basis for recognition, but the
+        # difference between "not ours" and "this is SCGA0531_C_OEM.a2l, which we
+        # do not map" is the difference between a dead end and a next step.
+        tried = ", ".join(p.name for p in BASE_PROFILES) or "none"
+        # Report the near miss: whichever profile came closest is the one a
+        # reader can act on, and with one registered profile it is simply it.
+        # Ties break on name rather than on registry order, so the *evidence* is
+        # as order-independent as the verdict — a reader comparing two runs
+        # should never see the near miss move because a profile was added.
+        closest = min(misses, key=lambda n: (len(misses[n]), n)) if misses else None
+        advanced: dict = {
+            "deftitle": model.deftitle,
+            "profiles_tried": [p.name for p in BASE_PROFILES],
+        }
+        if closest is not None:
+            advanced["closest_profile"] = closest
+            advanced["profile_misses"] = misses[closest][:20]
+        if len(misses) > 1:
+            advanced["profile_misses_by_profile"] = {
+                n: m[:20] for n, m in misses.items()
+            }
         return Verdict(
             ok_to_edit=False,
             status=INSPECT_ONLY,
-            summary="This is a valid calibration file, but not the SC8S50 (GTI) "
-                    "layout this tool edits — it can be inspected, not edited.",
+            summary=(
+                "This is a valid calibration file — it identifies itself as "
+                f"{model.deftitle} — but it is not a layout this tool maps, so "
+                "it can be inspected, not edited."
+                if model.deftitle else
+                "This is a valid calibration file, but it declares no title and "
+                "is not a layout this tool maps, so it can be inspected, not "
+                "edited."
+            ),
             reasons=(
-                "The SC8S50 profile did not resolve against this XDF: one or more "
-                "of its tables is missing or has a different shape here.",
-                "Editing is limited to bins whose layout exactly matches the "
-                "SC8S50 profile, so the car-specific safety rules always apply.",
+                "No profile this tool ships resolves against this XDF (tried: "
+                f"{tried}): one or more of the profile's tables is missing or has "
+                "a different shape here.",
+                "Editing is limited to bins whose layout exactly matches a mapped "
+                "profile, so the car-specific safety rules always apply.",
             ),
             bin_path=str(bin_path), xdf_path=str(xdf_path),
             bin_size=bin_size, bin_sha256=bin_hash, xdf_sha256=xdf_hash,
@@ -379,7 +471,7 @@ def preflight(
             profile_name=None, profile_matched=False, writable=False,
             checksums=(),
             switch_patch_present=None,
-            advanced={"profile_misses": [m.format() for m in exc.misses][:20]},
+            advanced=advanced,
         )
 
     # -- checksums ---------------------------------------------------------- #
@@ -401,7 +493,7 @@ def preflight(
             ),
             bin_size=bin_size, bin_sha256=bin_hash, xdf_sha256=xdf_hash,
             region_start=region_start, region_size=region_size,
-            profile_name=SC8S50.name, checksums=checksums,
+            profile_name=profile.name, checksums=checksums,
         )
 
     stale_states = [c for c in checksums if c.can_verify and c.is_stale]
@@ -419,7 +511,7 @@ def preflight(
             ),
             bin_size=bin_size, bin_sha256=bin_hash, xdf_sha256=xdf_hash,
             region_start=region_start, region_size=region_size,
-            profile_name=SC8S50.name, checksums=checksums,
+            profile_name=profile.name, checksums=checksums,
         )
 
     # -- optional switch-patch detection ------------------------------------ #
@@ -434,25 +526,27 @@ def preflight(
     if stale_states:
         names = ", ".join(c.name for c in stale_states)
         status = READY_STALE_CHECKSUM
-        summary = (f"Ready to edit — recognised SC8S50 bin. Note: {names} is stale "
-                   "and will be corrected automatically at build time.")
+        summary = (f"Ready to edit — recognised {profile.name} bin. Note: {names} is "
+                   "stale and will be corrected automatically at build time.")
         reasons = (
-            "This is the SC8S50 (GTI) calibration and every profile table resolved "
-            "by symbol and shape.",
+            f"This is the {profile.name} calibration and every profile table "
+            "resolved by symbol and shape.",
             f"{names} does not currently match — normal for an already-edited bin; "
             "the build step recomputes it before the bin is shareable.",
         )
     else:
         status = READY
-        summary = "Ready to edit — recognised SC8S50 bin with valid checksums."
+        summary = (f"Ready to edit — recognised {profile.name} bin with valid "
+                   "checksums.")
         reasons = (
-            "This is the SC8S50 (GTI) calibration and every profile table resolved "
-            "by symbol and shape.",
+            f"This is the {profile.name} calibration and every profile table "
+            "resolved by symbol and shape.",
             "Both embedded checksums (CAL_CRC, ECM3) verify clean.",
         )
 
     advanced = {
-        "profile": SC8S50.name,
+        "profile": profile.name,
+        "deftitle": model.deftitle,
         "region": f"[{region_start:#x}, {region_end:#x})",
         "full_bin": bin_size == FULL_BIN_SIZE,
         **switch_advanced,
@@ -466,7 +560,7 @@ def preflight(
         bin_path=str(bin_path), xdf_path=str(xdf_path),
         bin_size=bin_size, bin_sha256=bin_hash, xdf_sha256=xdf_hash,
         region_start=region_start, region_size=region_size,
-        profile_name=SC8S50.name, profile_matched=True, writable=True,
+        profile_name=profile.name, profile_matched=True, writable=True,
         checksums=checksums,
         switch_patch_present=switch_present,
         advanced=advanced,
