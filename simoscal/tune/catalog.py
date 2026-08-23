@@ -77,6 +77,17 @@ class TableInfo:
     #: editor may write it. A non-empty owner means :func:`catalog` leaves the
     #: table out by default and ``apply_op`` refuses it.
     owner: str
+    #: The domain heading this table is filed under — one of
+    #: :data:`~simoscal.tune.profile.GROUPS`, or ``""`` for a table whose spec
+    #: declares none (only ever an owner-locked one; see ``Profile.ungrouped``).
+    #:
+    #: This is the profile's curated group, deliberately **not** ``categories``.
+    #: The XDF's own categories classify by shape as much as by domain — a
+    #: table's axis is filed under "Axis", away from the map it indexes — and
+    #: where they classify by domain they disagree with the tuner. Both are
+    #: carried: ``group`` is what an editor groups by, ``categories`` is what the
+    #: XDF said, and a search may match either.
+    group: str
     categories: tuple[str, ...]
     x_axis: Optional[AxisInfo]
     y_axis: Optional[AxisInfo]
@@ -226,6 +237,7 @@ def _table_info(
         # the keystroke instead of at Apply.
         is_axis=bool(resolved.has(TAG_AXIS)),
         owner=resolved.owner,
+        group=resolved.group,
         categories=categories,
         x_axis=x_axis,
         y_axis=y_axis,

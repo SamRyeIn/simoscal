@@ -14,7 +14,22 @@ called.
 
 from __future__ import annotations
 
-from ..profile import TAG_AXIS, TAG_FLOAT_BUG, TAG_KG_PER_STROKE, Profile, TableSpec
+from dataclasses import replace
+
+from ..profile import (
+    GROUP_AIRFLOW,
+    GROUP_BOOST,
+    GROUP_FUELING,
+    GROUP_LIMITERS,
+    GROUP_PEDAL_TORQUE,
+    GROUP_TIMING,
+    GROUP_TURBO_THERMAL,
+    TAG_AXIS,
+    TAG_FLOAT_BUG,
+    TAG_KG_PER_STROKE,
+    Profile,
+    TableSpec,
+)
 
 
 def _spec(name, key, description, units="", shape=None, tags=frozenset(), owner=""):
@@ -528,6 +543,110 @@ CYLINDER_HEAD_TEMP = (
     "cylinder_head_temp_rpm_axis",
     "cylinder_head_temp_charge_axis",
 )
+
+
+# --------------------------------------------------------------------------- #
+# Domain groups — what each table is *for*
+# --------------------------------------------------------------------------- #
+# The heading an editing client files a table under. Declared here in one block
+# rather than as a keyword on each spec so the whole classification is reviewable
+# at once: the question "is anything filed in the wrong place?" is answered by
+# reading this, not by scanning 69 call sites.
+#
+# An axis is filed with the map it indexes, never in a bucket of its own. A
+# breakpoint is edited in service of the table it breakpoints and is looked for
+# beside it — see the note on the group constants in ``..profile``.
+_GROUPS: dict[str, tuple[str, ...]] = {
+    # Charge-pressure request and its actuation, from the setpoint grid through
+    # the wastegate feedforward to the ceilings and diagnoses that cap it.
+    # `IP_PQ_CHA_MAX` — Maximum allowed pressure quotient at turbo charger
+    # compressor is filed here rather than under turbo protection: it is a
+    # pressure ratio, and it is raised or lowered to change how much boost is
+    # allowed, which is the question someone browsing "Boost" is asking.
+    GROUP_BOOST: (
+        "put_setpoint",
+        "put_setpoint_rpm_axis",
+        "put_setpoint_map_axis",
+        "pressure_quotient_max",
+        "overboost_threshold",
+        "manifold_pressure_max",
+        "put_from_ambient_enable",
+        "wastegate_feedforward_vvl0",
+        "wastegate_feedforward_vvl1",
+        "wastegate_exh_flow_axis",
+        "charge_air_pressure_max_diag",
+        "charge_air_diag_put_axis",
+        "charge_air_diag_rpm_axis",
+    ),
+    # Ignition angle: the nine base cam-position grids and the two IAT
+    # corrections applied on top of them, with their shared axes.
+    GROUP_TIMING: IGNITION_BASE_VVL0 + IGNITION_TEMP_CORRECTION,
+    # Lambda, everywhere it is set: the three basic grids and their shared axes,
+    # the three minimum-value floors, the full-load enrichment set, and
+    # `ID_PV_AV_FL` — Pedal value threshold for the determination of LV_FL_RAW,
+    # which is what arms full-load enrichment (the XDF files it under "Fuel"
+    # too, and here that is the right call).
+    GROUP_FUELING: LAMBDA_FAMILY + (
+        "lambda_rpm_axis",
+        "lambda_load_axis",
+    ) + LAMBDA_FLOORS + LAMBDA_FULL_LOAD + (
+        "pedal_threshold_full_load",
+    ),
+    # What the engine is allowed to ingest, per stroke.
+    GROUP_AIRFLOW: (
+        "airmass_setpoint_max",
+        "airmass_full_load",
+        "intake_air_max_vvl0",
+        "intake_air_max_vvl1",
+    ),
+    # Where the engine is made to stop — engine speed, road speed, and torque.
+    GROUP_LIMITERS: (
+        "torque_reference_max",
+        "static_rev_fuel_cut_offset",
+    ) + STATIC_REV_LIMIT + ENGINE_SPEED_LIMIT + SPEED_LIMITER,
+    # Hardware-protection ceilings. Unlike the limiters above, these exist to
+    # keep a component alive rather than to cap what the car will do.
+    GROUP_TURBO_THERMAL: TURBO_PROTECTION + CYLINDER_HEAD_TEMP,
+    # How pedal travel becomes a torque request.
+    GROUP_PEDAL_TORQUE: PEDAL_MAPS,
+}
+
+
+def _grouped(specs: list[TableSpec]) -> list[TableSpec]:
+    """Stamp each spec with its group, refusing an incomplete classification.
+
+    Both directions are checked, because both failures are silent otherwise: a
+    spec named in :data:`_GROUPS` but not declared above is a stale entry left
+    behind by a rename, and a spec declared above but named in no group would
+    quietly vanish from a grouped browser. Two headings claiming the same table
+    is likewise a bug rather than a precedence question.
+    """
+    by_name: dict[str, str] = {}
+    for group, names in _GROUPS.items():
+        for name in names:
+            if name in by_name:
+                raise ValueError(
+                    f"SC8S50 grouping: {name!r} is claimed by both "
+                    f"{by_name[name]!r} and {group!r}"
+                )
+            by_name[name] = group
+
+    declared = {spec.name for spec in specs}
+    stale = sorted(set(by_name) - declared)
+    if stale:
+        raise ValueError(
+            f"SC8S50 grouping names tables the profile does not declare: "
+            f"{', '.join(stale)}"
+        )
+    missing = sorted(declared - set(by_name))
+    if missing:
+        raise ValueError(
+            f"SC8S50 declares tables no group claims: {', '.join(missing)}"
+        )
+    return [replace(spec, group=by_name[spec.name]) for spec in specs]
+
+
+_SPECS = _grouped(_SPECS)
 
 
 SC8S50 = Profile(

@@ -511,3 +511,113 @@ def test_wrong_xdf_fails_loud_before_any_edit(
     assert len(excinfo.value.misses) == len(SC8S50)
     assert "IP_PUT_SP" in str(excinfo.value)
     assert not cal.edited
+
+
+# --------------------------------------------------------------------------- #
+# Domain groups — the heading an editing client files a table under
+# --------------------------------------------------------------------------- #
+def test_every_group_is_from_the_declared_vocabulary() -> None:
+    """Membership is closed: a typo becomes a rogue heading, so it must raise."""
+    with pytest.raises(ValueError) as excinfo:
+        TableSpec(name="t", key="T", description="d", group="Boostt")
+
+    assert "Boostt" in str(excinfo.value)
+    assert prof.GROUP_BOOST in str(excinfo.value), "the error lists the real ones"
+
+
+def test_a_spec_may_decline_a_group() -> None:
+    """Empty is legal at the type level; the profiles are what require one."""
+    assert TableSpec(name="t", key="T", description="d").group == ""
+
+
+def test_sc8s50_files_every_table_under_a_group() -> None:
+    assert SC8S50.ungrouped() == []
+
+
+def test_switch_patch_files_every_generically_editable_table() -> None:
+    """Owner-locked slot tables need no heading; anything the browser sees does.
+
+    The Boost and Slots screens are domain-shaped already, so a per-slot gauge
+    bitmask is reached without ever being browsed. The two launch-control
+    scalars are the only patch tables the generic catalog offers, and they are
+    grouped.
+    """
+    orphans = [
+        name for name in SWITCH_PATCH_2933.names()
+        if not SWITCH_PATCH_2933[name].owner and not SWITCH_PATCH_2933[name].group
+    ]
+    assert orphans == []
+    assert SWITCH_PATCH_2933["lc_release_speed"].group == prof.GROUP_LAUNCH_TRACTION
+
+
+def test_an_axis_is_filed_with_the_map_it_indexes() -> None:
+    """The whole reason the group is curated rather than taken from the XDF.
+
+    The XDF files every breakpoint vector under a category called "Axis", which
+    separates a boost setpoint from the rpm axis that indexes it. Here they sit
+    together, and the same holds for the lambda and ignition-correction axes.
+    """
+    for table, axis in (
+        ("put_setpoint", "put_setpoint_rpm_axis"),
+        ("put_setpoint", "put_setpoint_map_axis"),
+        ("lambda_basic", "lambda_rpm_axis"),
+        ("ignition_temp_correction_basic", "ignition_temp_iat_axis"),
+        ("cylinder_head_temp_setpoint", "cylinder_head_temp_rpm_axis"),
+    ):
+        assert SC8S50[axis].group == SC8S50[table].group, (
+            f"{axis} must be filed with {table}"
+        )
+
+
+def test_the_domain_families_do_not_straddle_groups() -> None:
+    """A family the profile declares is edited together must browse together."""
+    for family in (
+        sc_map.IGNITION_BASE_VVL0,
+        sc_map.IGNITION_TEMP_CORRECTION,
+        sc_map.LAMBDA_FAMILY,
+        sc_map.LAMBDA_FLOORS,
+        sc_map.LAMBDA_FULL_LOAD,
+        sc_map.WASTEGATE_MAPS,
+        sc_map.TURBO_PROTECTION,
+        sc_map.SPEED_LIMITER,
+        sc_map.STATIC_REV_LIMIT,
+        sc_map.PEDAL_MAPS,
+        sc_map.CHARGE_AIR_DIAG,
+        sc_map.CYLINDER_HEAD_TEMP,
+    ):
+        groups = {SC8S50[name].group for name in family}
+        assert len(groups) == 1, f"{family[0]}'s family is split across {groups}"
+
+
+def test_grouping_rejects_a_table_claimed_twice() -> None:
+    """A rename that leaves a name in two headings must not be a silent winner."""
+    specs = [TableSpec(name="a", key="A", description="d")]
+    original = dict(sc_map._GROUPS)
+    try:
+        sc_map._GROUPS.clear()
+        sc_map._GROUPS.update({
+            prof.GROUP_BOOST: ("a",), prof.GROUP_TIMING: ("a",),
+        })
+        with pytest.raises(ValueError, match="claimed by both"):
+            sc_map._grouped(specs)
+    finally:
+        sc_map._GROUPS.clear()
+        sc_map._GROUPS.update(original)
+
+
+def test_grouping_rejects_an_unfiled_or_stale_table() -> None:
+    original = dict(sc_map._GROUPS)
+    try:
+        sc_map._GROUPS.clear()
+        sc_map._GROUPS.update({prof.GROUP_BOOST: ("a",)})
+        with pytest.raises(ValueError, match="no group claims"):
+            sc_map._grouped([
+                TableSpec(name="a", key="A", description="d"),
+                TableSpec(name="b", key="B", description="d"),
+            ])
+
+        with pytest.raises(ValueError, match="does not declare"):
+            sc_map._grouped([])
+    finally:
+        sc_map._GROUPS.clear()
+        sc_map._GROUPS.update(original)

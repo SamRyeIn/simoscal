@@ -15,7 +15,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ..profile import TAG_AXIS, TAG_NO_SYMBOL, Profile, TableSpec
+from ..profile import (
+    GROUP_LAUNCH_TRACTION,
+    TAG_AXIS,
+    TAG_NO_SYMBOL,
+    Profile,
+    TableSpec,
+)
 
 #: Slot count the 29.33 patch provides.
 SLOTS = (1, 2, 3, 4, 5)
@@ -312,17 +318,26 @@ _specs = [
     # Independent scalars with no cross-table invariant, so they stay generically
     # editable — the coverage brainstorm's rule for patch-space tables (its Key
     # Decision 3), and the same call the pedal maps get in the base space.
+    #
+    # They are also the only two tables in this profile the generic browser ever
+    # shows, so they are the only two that need a ``group``: every other spec
+    # here is owner-locked and reached through the Boost or Slots screen, which
+    # is domain-shaped already. Filing a per-slot RAL toggle or a gauge bitmask
+    # under one of the eight engine-domain headings would be classification for
+    # its own sake — see ``_ungrouped_is_deliberate`` below.
     TableSpec(
         name="lc_limiter_timing", key="0x7cb31",
         description="Timing during RPM limiter and rampout — ignition angle "
                     "held while launch control sits on its limiter",
         units="\N{DEGREE SIGN}CRK", shape=(1, 1), tags=frozenset({TAG_NO_SYMBOL}),
+        group=GROUP_LAUNCH_TRACTION,
     ),
     TableSpec(
         name="lc_release_speed", key="0x7cb3c",
         description="Release RPM limiter speed — road speed at which launch "
                     "control releases its rpm limiter",
         units="km/h", shape=(1, 1), tags=frozenset({TAG_NO_SYMBOL}),
+        group=GROUP_LAUNCH_TRACTION,
     ),
 ]
 
@@ -371,6 +386,32 @@ def slot_names(kind: str) -> tuple[str, ...]:
     if unknown:
         raise KeyError(f"no per-slot tables of kind {kind!r} in this profile")
     return names
+
+
+
+def _ungrouped_is_deliberate(specs: list[TableSpec]) -> list[TableSpec]:
+    """Assert that only owner-locked specs go without a :attr:`TableSpec.group`.
+
+    A group is a heading in the generic table browser, and the browser is offered
+    exactly the specs with no ``owner``. So the rule this profile holds itself to
+    is not "every table has a group" — it is "every table the browser can show
+    has one". The ninety owner-locked slot tables reach the user through the
+    Boost and Slots screens, which are already shaped by domain; giving a gauge
+    bitmask an engine-domain heading would say something untrue about it.
+
+    The check runs at import, so a future spec added here without an ``owner``
+    and without a ``group`` fails before it can appear as an unfiled row.
+    """
+    orphans = sorted(s.name for s in specs if not s.owner and not s.group)
+    if orphans:
+        raise ValueError(
+            f"SwitchPatch2933: generically editable tables need a group: "
+            f"{', '.join(orphans)}"
+        )
+    return specs
+
+
+_specs = _ungrouped_is_deliberate(_specs)
 
 
 SWITCH_PATCH_2933 = Profile(

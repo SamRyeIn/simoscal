@@ -36,6 +36,15 @@ __all__ = [
     "TAG_AXIS",
     "TAG_KG_PER_STROKE",
     "TAG_NO_SYMBOL",
+    "GROUPS",
+    "GROUP_AIRFLOW",
+    "GROUP_BOOST",
+    "GROUP_FUELING",
+    "GROUP_LAUNCH_TRACTION",
+    "GROUP_LIMITERS",
+    "GROUP_PEDAL_TORQUE",
+    "GROUP_TIMING",
+    "GROUP_TURBO_THERMAL",
     "Profile",
     "ProfileResolutionError",
     "ResolutionMiss",
@@ -65,6 +74,63 @@ TAG_NO_SYMBOL = "no_symbol"
 #: Breakpoint vector. Generic writes must preserve a strictly increasing axis;
 #: a non-monotonic axis makes every table sharing it ambiguous or unreachable.
 TAG_AXIS = "axis"
+
+
+# ---- domain groups --------------------------------------------------------- #
+# What a table is *for*, in the tuner's own vocabulary. A spec's group is the
+# only grouping an editing client is offered, and it is curated here rather than
+# taken from the XDF for two reasons the XDF's own categories demonstrate:
+#
+#   * they classify by shape as often as by domain — 15 of the 58 generically
+#     editable tables sit in a category called "Axis", which files the boost
+#     setpoint's rpm breakpoints away from the boost setpoint;
+#   * and where they do classify by domain they disagree with the tuner —
+#     `IP_PUT_SP` — Pressure up throttle setpoint is filed under "Airflow", and
+#     `ID_PV_AV_FL` — Pedal value threshold for the determination of LV_FL_RAW
+#     under "Fuel".
+#
+# An axis therefore takes its parent table's group: a breakpoint is edited in
+# service of the map it indexes, and is browsed for beside it.
+
+#: Charge-pressure request and its actuation — setpoint grids and their axes,
+#: pressure quotients, overboost thresholds, wastegate feedforward.
+GROUP_BOOST = "Boost"
+
+#: Ignition angle: base maps and their corrections.
+GROUP_TIMING = "Timing"
+
+#: Lambda setpoints, full-load enrichment, and the thresholds that arm them.
+GROUP_FUELING = "Fueling"
+
+#: What the engine is allowed to ingest — per-stroke airmass ceilings.
+GROUP_AIRFLOW = "Airflow"
+
+#: Where the engine is made to stop: rev, road-speed, and torque ceilings.
+GROUP_LIMITERS = "Limiters"
+
+#: Hardware-protection ceilings — turbocharger speed and temperature, cylinder
+#: head temperature control.
+GROUP_TURBO_THERMAL = "Turbo & thermal"
+
+#: How pedal travel becomes a torque request.
+GROUP_PEDAL_TORQUE = "Pedal & torque request"
+
+#: Launch control, traction control, and no-lift shift.
+GROUP_LAUNCH_TRACTION = "Launch & traction"
+
+#: Every group, in the order an editing client lists them. Membership is closed:
+#: :class:`TableSpec` refuses a group that is not in this tuple, so a typo fails
+#: at construction rather than surfacing as a ninth heading on a tablet.
+GROUPS = (
+    GROUP_BOOST,
+    GROUP_TIMING,
+    GROUP_FUELING,
+    GROUP_AIRFLOW,
+    GROUP_LIMITERS,
+    GROUP_TURBO_THERMAL,
+    GROUP_PEDAL_TORQUE,
+    GROUP_LAUNCH_TRACTION,
+)
 
 
 @dataclass(frozen=True)
@@ -97,6 +163,23 @@ class TableSpec:
     #: knowing anything about the patch: :func:`~simoscal.tune.editing.apply_op`
     #: rejects an owned table, and the catalog stops offering it (CR-20260813-01).
     owner: str = ""
+    #: Which of :data:`GROUPS` this table belongs to — the domain heading an
+    #: editing client files it under.
+    #:
+    #: Required in practice for any spec with an empty :attr:`owner`, since those
+    #: are exactly the tables the generic catalog offers and a browser cannot file
+    #: one with no heading. An owner-locked table may leave it empty: it is
+    #: reached through its domain call's screen, never browsed. Each profile
+    #: enforces its own version of that rule at import — see
+    #: :meth:`Profile.ungrouped`.
+    group: str = ""
+
+    def __post_init__(self) -> None:
+        if self.group and self.group not in GROUPS:
+            raise ValueError(
+                f"table spec {self.name!r}: unknown group {self.group!r}; "
+                f"known groups: {', '.join(GROUPS)}"
+            )
 
     @property
     def label(self) -> str:
@@ -156,6 +239,21 @@ class Profile:
     def names(self) -> list[str]:
         return sorted(self.specs)
 
+    def ungrouped(self) -> list[str]:
+        """Logical names whose spec declares no :attr:`TableSpec.group`.
+
+        A generically editable table with no group is one a browser cannot file:
+        it either vanishes from the list or lands under a heading that means
+        "nobody decided", and the first is calibration someone cannot find.
+
+        What counts as acceptable here is per-profile, which is why this reports
+        rather than raises. The SC8S50 base map groups everything, so its tests
+        assert this is empty; the switch-patch map deliberately leaves its
+        owner-locked slot tables unfiled and asserts only that nothing
+        generically editable is (see its ``_ungrouped_is_deliberate``).
+        """
+        return sorted(n for n, spec in self.specs.items() if not spec.group)
+
     def merged_with(self, other: "Profile", *, name: str = "") -> "Profile":
         """Union of two profiles; overlapping logical names raise."""
         clash = sorted(set(self.specs) & set(other.specs))
@@ -197,6 +295,11 @@ class ResolvedTable:
     def owner(self) -> str:
         """The domain call that owns writes to this table; empty if generic."""
         return self.spec.owner
+
+    @property
+    def group(self) -> str:
+        """The domain heading this table is filed under; one of :data:`GROUPS`."""
+        return self.spec.group
 
     @property
     def domain_owned(self) -> bool:

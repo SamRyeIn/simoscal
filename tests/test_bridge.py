@@ -239,6 +239,20 @@ def test_catalog_lists_tables(session: str):
     assert isinstance(tables[0]["values"], list)
 
 
+def test_the_catalog_wire_form_carries_the_domain_group(session: str):
+    """The app groups its browser by this field, so it has to cross the bridge.
+
+    ``group`` rides on the dataclass, which the bridge serializes whole — this
+    asserts the field is actually on the wire and populated, so a rename on the
+    Python side surfaces here rather than as an empty heading on the tablet.
+    """
+    from simoscal.tune.profile import GROUPS
+
+    tables = ok_result(call("catalog", session_id=session))["tables"]
+    assert all(t.get("group") for t in tables), "every row needs a heading"
+    assert {t["group"] for t in tables} <= set(GROUPS)
+
+
 def test_table_detail_returns_one_table(session: str):
     tables = ok_result(call("catalog", session_id=session))["tables"]
     name = tables[0]["name"]

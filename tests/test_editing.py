@@ -102,6 +102,41 @@ def test_catalog_excludes_the_new_domain_owned_tables() -> None:
 
 
 @requires_base
+def test_every_catalog_entry_carries_a_domain_group() -> None:
+    """The heading the app's table browser files each row under.
+
+    Every generically editable table must have one: a row with no group is a row
+    a grouped browser either drops or files under a heading meaning "nobody
+    decided", and neither is something to discover on a tablet.
+    """
+    from simoscal.tune.profile import GROUPS
+
+    tune = _open_base()
+    ungrouped = [t.name for t in catalog(tune) if not t.group]
+    assert ungrouped == []
+    assert {t.group for t in catalog(tune)} <= set(GROUPS)
+
+
+@requires_base
+def test_the_group_is_the_profile_s_not_the_xdf_s_category() -> None:
+    """Why the group exists at all, stated as a test.
+
+    The XDF files `ldp_n_ip_put_sp` — Pressure up throttle setpoint : x axis
+    (engine speed) under a category called "Axis", away from the setpoint it
+    breakpoints. Both facts are carried, and they disagree on purpose: the app
+    groups by ``group`` and searches either.
+    """
+    tune = _open_base()
+    by_name = {t.name: t for t in catalog(tune)}
+    axis = by_name["put_setpoint_rpm_axis"]
+    setpoint = by_name["put_setpoint"]
+
+    assert "Axis" in axis.categories
+    assert "Axis" not in setpoint.categories
+    assert axis.group == setpoint.group == "Boost"
+
+
+@requires_base
 def test_catalog_classifies_dimensionality() -> None:
     tune = _open_base()
     detail = table_detail(tune, "manifold_pressure_max")

@@ -271,14 +271,15 @@ shape, and any guard tags. Supporting another XDF means writing one map file.
 
 ```python
 # simoscal/tune/profiles/my_xdf.py
-from ..profile import Profile, TableSpec, TAG_KG_PER_STROKE
+from ..profile import GROUP_AIRFLOW, GROUP_BOOST, Profile, TableSpec, TAG_KG_PER_STROKE
 
 _SPECS = [
     TableSpec("put_setpoint", "IP_PUT_SP",
-              "Pressure up throttle setpoint", "hPa", (4, 6)),
+              "Pressure up throttle setpoint", "hPa", (4, 6),
+              group=GROUP_BOOST),
     TableSpec("airmass_setpoint_max", "C_M_AIR_CYL_SP_MAX",
               "Maximum allowed airmass setpoint", "mg/stk", (1, 1),
-              frozenset({TAG_KG_PER_STROKE})),
+              frozenset({TAG_KG_PER_STROKE}), group=GROUP_AIRFLOW),
     # …
 ]
 
@@ -296,6 +297,14 @@ unchanged against your XDF. Notes:
   `TAG_FLOAT_BUG` marks a table whose display maximum is a TunerPro artifact.
 - **Bind by uniqueid** when a table has no symbol or shares a title with others,
   as the switch patch's five `PUT setpoint` grids do.
+- **`group` is the heading the app's table browser files it under**, and it is
+  required for any spec with no `owner` — those are exactly the tables the generic
+  browser offers, and one with no group is a table nobody can find. Pick from
+  `profile.GROUPS`; anything else is refused at construction. It is curated rather
+  than taken from the XDF's own categories, which file every breakpoint vector
+  under "Axis" — so an axis takes the group of the map it indexes, not one of its
+  own. Owner-locked tables may go without: they are reached through their domain
+  screen, never browsed.
 
 Resolution happens at `Tune.open`, before any byte can be written, and reports
 *every* unresolved name at once with suggestions:
