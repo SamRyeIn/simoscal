@@ -132,7 +132,12 @@ def test_a_readback_fault_is_not_shareable(
 
     def save_then_corrupt(self, path, **kwargs):
         reports = real_save(self, path, **kwargs)
-        cal = CalFile.open(str(self.space("base").xdf), str(path), structure=SC8S50_STRUCTURE)
+        cal = CalFile.open(
+            str(self.space("base").xdf),
+            str(path),
+            structure=SC8S50_STRUCTURE,
+            float_bug_symbols=SC8S50.float_bug_symbols,
+        )
         view = cal.get("IP_PQ_CHA_MAX")
         values = np.array(view.values)
         values[0, 0] = 9.0

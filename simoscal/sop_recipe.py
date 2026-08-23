@@ -36,7 +36,8 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import Callable, Optional
+from functools import partial
+from typing import Callable, Collection, Mapping, Optional
 
 import numpy as np
 
@@ -270,10 +271,39 @@ class RecipeEntry:
     search_prefixes: tuple[str, ...] = ()
     target: object = None
     reason: str = ""  # for skip kinds: the human explanation printed in the report
+    #: Key into the active profile's ``stock_references``. When set, ``reason``
+    #: carries a ``{stock}`` placeholder and :meth:`reason_for` substitutes that
+    #: car's sentence there — or *removes* the placeholder when the profile has
+    #: no such reference. The guide's instruction is universal; whether it is
+    #: already satisfied depends on the bin in front of you, and quoting one
+    #: car's stock values at another is worse than saying nothing.
+    stock_ref: str = ""
 
     def __post_init__(self) -> None:
         if self.kind not in WRITE_KINDS and self.kind not in SKIP_KINDS:
             raise ValueError(f"unknown kind {self.kind!r} in entry {self.description!r}")
+        if self.stock_ref and "{stock}" not in self.reason:
+            raise ValueError(
+                f"entry {self.guide_section!r} names stock_ref {self.stock_ref!r} "
+                "but its reason has no {stock} placeholder to render it into"
+            )
+        if "{stock}" in self.reason and not self.stock_ref:
+            raise ValueError(
+                f"entry {self.guide_section!r} has a {{stock}} placeholder but "
+                "names no stock_ref, so nothing can ever fill it"
+            )
+
+    def reason_for(self, stock_references: Mapping[str, str]) -> str:
+        """This entry's explanation, with the active car's stock note or without.
+
+        A profile that declares no reference under :attr:`stock_ref` renders the
+        reason with the placeholder dropped entirely — not with a "(unknown)" or
+        another car's figures. The sentence either side of it stands on its own.
+        """
+        if not self.stock_ref:
+            return self.reason
+        note = stock_references.get(self.stock_ref, "")
+        return self.reason.replace("{stock}", f" {note}" if note else "")
 
 
 @dataclass(frozen=True)
@@ -517,10 +547,10 @@ SYMBOL_MAP: tuple[RecipeEntry, ...] = (
             "The 'fueling-influence' tables are lambda minimum-value floors "
             "(min lambda setpoint; cat- and turbo-overheat-protection minimums). "
             "The guide says reduce to 0.80, but that only fattens if stock is ABOVE "
-            "0.80. On 5G0906259L stock is 0.72-0.75 — already richer than 0.80 — so "
-            "writing 0.80 would RAISE these floors (leaner) under raised boost. Left "
+            "0.80.{stock} Left "
             "at stock; applying 0.80 is a per-bin tuner call. See ecu-tuning-basics.md."
         ),
+        stock_ref="lambda_floors",
     ),
     RecipeEntry(
         guide_section="Fueling — heavy-throttle table ~70–75",
@@ -541,9 +571,9 @@ SYMBOL_MAP: tuple[RecipeEntry, ...] = (
         symbols=("IP_LAMB_FL_SP", "IP_LAMB_FL_SP_TIA"),
         reason=(
             "Full-load lambda enrichment maps (IP_LAMB_FL_SP and its IAT-dependent "
-            "sibling; X=RPM, Y=full-load timer). Guide: set entirely to 1. Stock "
-            "already reads all 1.0 on 5G0906259L — already compliant, nothing to write."
+            "sibling; X=RPM, Y=full-load timer). Guide: set entirely to 1.{stock}"
         ),
+        stock_ref="full_load_lambda",
     ),
     RecipeEntry(
         guide_section="Fueling — Ethanol / Flex Fuel",
@@ -1050,7 +1080,10 @@ def _apply_axis_write(cal: CalFile, view: TableView, section: str,
 
 
 # ---- U3: guarded ceiling write --------------------------------------------- #
-def _guarded_ceiling_write(view: TableView, section: str, target: float) -> TableOutcome:
+def _guarded_ceiling_write(
+    view: TableView, section: str, target: float,
+    *, float_bug_symbols: Collection[str] = (),
+) -> TableOutcome:
     """Raise every cell of a limiter to ``target`` — but never lower a higher cell.
 
     Reads each cell first (per the guide's "if already >2700, don't touch"):
@@ -1080,7 +1113,10 @@ def _guarded_ceiling_write(view: TableView, section: str, target: float) -> Tabl
     # message + guard_blocked). Any other table would only warn-and-write, so
     # reject it here — fail loud, never overflow a limiter's element width (2b).
     zmax = view.table.z.max if view.table.z is not None else None
-    if zmax is not None and target > zmax + tol and not is_float_bug_table(view.table):
+    if (
+        zmax is not None and target > zmax + tol
+        and not is_float_bug_table(view.table, float_bug_symbols)
+    ):
         return TableOutcome(
             view.symbol, section, OUTCOME_GUARD_BLOCKED,
             old=float(current.min()), new=target,
@@ -1240,7 +1276,8 @@ def apply_entry(cal: CalFile, resolved: ResolvedEntry) -> list[TableOutcome]:
             " | ".join(entry.search_prefixes) if entry.search_prefixes else "—"
         )
         return [TableOutcome(syms, section, OUTCOME_SKIPPED,
-                             detail=f"[{entry.kind}] {entry.reason}")]
+                             detail=f"[{entry.kind}] "
+                                    f"{entry.reason_for(cal.stock_references)}")]
 
     outcomes: list[TableOutcome] = []
 
@@ -1251,6 +1288,15 @@ def apply_entry(cal: CalFile, resolved: ResolvedEntry) -> list[TableOutcome]:
         return _apply_axis_write(cal, res.view, section, entry.target)
 
     writer = _PER_VIEW_WRITERS.get(entry.kind)
+    if entry.kind == KIND_GUARDED_CEILING:
+        # The only per-view writer that needs a per-car fact: whether the table's
+        # declared ceiling is a real ECU limit or an editor artifact decides
+        # between blocking here and letting the staged write raise its own,
+        # more specific FloatBugGuardError.
+        writer = partial(
+            _guarded_ceiling_write,
+            float_bug_symbols=cal.float_bug_symbols or frozenset(),
+        )
     if writer is None:
         raise NotImplementedError(
             f"no writer registered for kind {entry.kind!r} "

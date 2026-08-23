@@ -50,7 +50,7 @@ def mini_cal() -> CalFile:
     zoff = model.base_offset + 0x5010
     buf[zoff : zoff + 10] = struct.pack("<5H", 10, 20, 30, 40, 50)
     img = BinImage(buf, region_start=model.region_start, region_size=len(buf))
-    return CalFile(model, img, structure=SC8S50_STRUCTURE)
+    return CalFile(model, img, structure=SC8S50_STRUCTURE, float_bug_symbols=frozenset())
 
 
 def _read_csv_blocks(path: Path) -> list[list[list[str]]]:

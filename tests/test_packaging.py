@@ -71,6 +71,25 @@ def _pyproject() -> dict:
     return tomllib.loads((CODE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
 
+def test_every_demo_and_script_byte_compiles() -> None:
+    """The runnable scripts outside ``simoscal/`` must at least parse.
+
+    Nothing imports ``demos/`` during a test run, so a broken one is invisible
+    until a person runs it. ``demos/apply_sop_recipe.py`` sat with an import
+    statement spliced into the middle of a parenthesised import list — a hard
+    SyntaxError — from the U2 structure refactor until U3 found it.
+    """
+    scripts = sorted(CODE_ROOT.glob("demos/*.py")) + sorted(CODE_ROOT.glob("*.py"))
+    assert scripts, "no scripts found to compile — the glob is wrong"
+    broken = []
+    for path in scripts:
+        try:
+            compile(path.read_text(encoding="utf-8"), str(path), "exec")
+        except SyntaxError as exc:
+            broken.append(f"{path.relative_to(CODE_ROOT)}:{exc.lineno}: {exc.msg}")
+    assert not broken, "scripts that do not parse:\n  " + "\n  ".join(broken)
+
+
 def test_core_dependencies_are_numpy_only() -> None:
     """The always-installed deps must be numpy alone — nothing heavy."""
     core = _pyproject()["project"]["dependencies"]

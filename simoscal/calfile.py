@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import Optional, Union
+from typing import Mapping, Optional, Union
 
 import numpy as np
 
@@ -25,7 +25,7 @@ from . import checksum, safety, writer
 from .binimage import BinImage
 from .checksum import ChecksumReport, StaleChecksumWarning, StructureSpec
 from .codec import CodecError, decode_physical, decode_raw
-from .model import Axis, Table
+from .model import Axis, FloatBugPolicyUnset, Table
 from .xdf import XdfModel, parse_xdf
 
 __all__ = ["CalFile", "TableView"]
@@ -109,6 +109,27 @@ class TableView:
         self._raw = None
 
     # -- edits (physical units) ---------------------------------------------- #
+    def _float_bug_symbols(self) -> frozenset[str]:
+        """This car's float-bug flagged-list, or refuse the write without one.
+
+        The guard's question — "is *this* table one whose declared maximum is an
+        editor artifact?" — is per-car, and a CalFile opened with no profile has
+        no answer. Refusing here rather than defaulting to "none flagged" is the
+        point: a silently unguarded write to a limiter ceiling is the failure
+        mode the guard exists for.
+        """
+        symbols = self._cal.float_bug_symbols
+        if symbols is None:
+            raise FloatBugPolicyUnset(
+                f"table {self.uniqueid_hex} ({self.symbol or 'no symbol'}): this "
+                "CalFile was opened without a float-bug policy, so the guard "
+                "cannot be evaluated and the write is refused. Pass "
+                "float_bug_symbols= when opening — e.g. SC8S50.float_bug_symbols "
+                "from simoscal.tune.profiles.sc8s50, or frozenset() for a "
+                "calibration that flags nothing."
+            )
+        return symbols
+
     def _z_writable(self) -> Axis:
         z = self.table.z
         if z is None or z.embedded is None:
@@ -131,7 +152,10 @@ class TableView:
         arr = np.asarray(values, dtype=np.float64)
         if arr.shape != emb.shape:
             arr = arr.reshape(emb.shape)
-        safety.check_display_range(self.table, arr, override=override)
+        safety.check_display_range(
+            self.table, arr,
+            float_bug_symbols=self._float_bug_symbols(), override=override,
+        )
         raw = writer.physical_to_raw(z, arr)
         off, length = writer.stage_full(
             z, self._cal.binimage,
@@ -147,6 +171,7 @@ class TableView:
         z = self._z_writable()
         safety.check_display_range(
             self.table, np.array([[value]], dtype=np.float64),
+            float_bug_symbols=self._float_bug_symbols(),
             override=override, origin=(row, col),
         )
         raw = writer.physical_to_raw(z, np.array([[value]], dtype=np.float64))
@@ -216,12 +241,22 @@ class CalFile:
         binimage: BinImage,
         *,
         structure: StructureSpec,
+        float_bug_symbols: Optional[frozenset[str]] = None,
+        stock_references: Optional[Mapping[str, str]] = None,
     ) -> None:
         self.model = model
         self.binimage = binimage
         #: Where this car's CAL block sits and how it is addressed. Every
         #: checksum call this object makes passes it explicitly.
         self.structure = structure
+        #: Symbols whose declared display maximum is an editor artifact rather
+        #: than an ECU limit, from the active profile. ``None`` means no profile
+        #: was supplied: reads work, physical-unit writes refuse
+        #: (:class:`~simoscal.model.FloatBugPolicyUnset`).
+        self.float_bug_symbols = float_bug_symbols
+        #: What stock reads on this car, keyed by the short id a guidance string
+        #: names. Empty means guidance renders without any stock comparison.
+        self.stock_references: Mapping[str, str] = dict(stock_references or {})
         # One cached view per uniqueid so repeated get() calls share the decode.
         self._views: dict[int, TableView] = {}
         # (offset, length) byte ranges staged by edits this session — consumed by
@@ -235,6 +270,8 @@ class CalFile:
         bin_path: Union[str, Path],
         *,
         structure: StructureSpec,
+        float_bug_symbols: Optional[frozenset[str]] = None,
+        stock_references: Optional[Mapping[str, str]] = None,
     ) -> "CalFile":
         """Parse ``xdf_path`` and load ``bin_path``, wiring the region from the XDF.
 
@@ -246,6 +283,12 @@ class CalFile:
         standing in for another car is exactly the failure this argument exists
         to prevent. Obtain one from a profile, or from
         :func:`~simoscal.checksum.discover_structure` on the bin's bytes.
+
+        ``float_bug_symbols`` and ``stock_references`` are the other two per-car
+        facts a profile supplies. Both may be omitted for a read-only open; a
+        physical-unit write through a CalFile with no ``float_bug_symbols``
+        raises :class:`~simoscal.model.FloatBugPolicyUnset` rather than skipping
+        the guard.
         """
         model = parse_xdf(str(xdf_path))
         binimage = BinImage.from_path(
@@ -253,7 +296,11 @@ class CalFile:
             region_start=model.region_start,
             region_size=model.region_size,
         )
-        return cls(model, binimage, structure=structure)
+        return cls(
+            model, binimage, structure=structure,
+            float_bug_symbols=float_bug_symbols,
+            stock_references=stock_references,
+        )
 
     # -- internal decode helpers (used by TableView) ------------------------- #
     def _decode_physical(self, axis: Axis) -> np.ndarray:

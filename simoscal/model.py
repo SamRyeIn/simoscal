@@ -29,6 +29,7 @@ __all__ = [
     "NonLinearEquationError",
     "RegionBoundsError",
     "FloatBugGuardError",
+    "FloatBugPolicyUnset",
     "RawRangeError",
 ]
 
@@ -75,6 +76,21 @@ class FloatBugGuardError(SimosCalError):
 
     This guard is a safety mechanism (see plan Decision 9): it hard-rejects the
     irreversible-corruption case even when an override flag is set.
+    """
+
+
+class FloatBugPolicyUnset(SimosCalError):
+    """Raised when a physical-unit write is attempted with no float-bug policy.
+
+    Which tables the float-bug guard protects is a *per-car* fact supplied by the
+    active profile, so a :class:`~simoscal.calfile.CalFile` opened without one
+    cannot answer the guard's question. Reading such a file is fine; writing
+    through it is refused, because the alternative is a write that quietly skips
+    a guard the SOP calls irreversible.
+
+    Pass ``float_bug_symbols=`` when opening — from a profile
+    (``SC8S50.float_bug_symbols``), or an explicit empty set for a calibration
+    that flags nothing.
     """
 
 

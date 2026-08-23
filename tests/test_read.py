@@ -238,7 +238,7 @@ def mini_cal() -> CalFile:
     foff = model.base_offset + 0x4000
     buf[foff : foff + 4] = struct.pack("<f", 12.5)
     img = BinImage(buf, region_start=model.region_start, region_size=len(buf))
-    return CalFile(model, img, structure=SC8S50_STRUCTURE)
+    return CalFile(model, img, structure=SC8S50_STRUCTURE, float_bug_symbols=frozenset())
 
 
 def test_calfile_get_returns_bound_view(mini_cal: CalFile):

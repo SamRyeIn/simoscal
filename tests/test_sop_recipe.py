@@ -22,13 +22,21 @@ import pytest
 from simoscal import BinImage, CalFile, parse_xdf
 from simoscal.checksum import SC8S50_STRUCTURE
 from simoscal.sop_recipe import (
+    KIND_SKIP_STOCK,
     SKIP_KINDS,
     SYMBOL_MAP,
     WRITE_KINDS,
     RecipeEntry,
+    apply_entry,
     is_write_kind,
     resolve_symbol_map,
 )
+from simoscal.tune.profiles.sc8s50 import SC8S50
+
+
+def _map_entry(section_prefix: str) -> RecipeEntry:
+    """The shipped entry whose guide section starts with ``section_prefix``."""
+    return next(e for e in SYMBOL_MAP if e.guide_section.startswith(section_prefix))
 
 FIXTURES = Path(__file__).parent / "fixtures"
 MINI_XDF = FIXTURES / "mini.xdf"
@@ -55,7 +63,12 @@ def mini_cal() -> CalFile:
     zoff = model.base_offset + 0x5010
     buf[zoff : zoff + 10] = struct.pack("<5H", 10, 20, 30, 40, 50)
     img = BinImage(buf, region_start=model.region_start, region_size=len(buf))
-    return CalFile(model, img, structure=SC8S50_STRUCTURE)
+    # The synthetic XDF carries none of the real flagged symbols and this is not
+    # a car anyone has measured, so it declares an empty float-bug policy and no
+    # stock references — both stated, neither defaulted.
+    return CalFile(
+        model, img, structure=SC8S50_STRUCTURE, float_bug_symbols=frozenset(),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -90,6 +103,66 @@ class TestSymbolMapShape:
     def test_guide_sections_are_unique(self) -> None:
         sections = [e.guide_section for e in SYMBOL_MAP]
         assert len(sections) == len(set(sections)), "duplicate guide_section entries"
+
+
+# --------------------------------------------------------------------------- #
+# U3 — guidance that quotes stock values is profile-supplied
+# --------------------------------------------------------------------------- #
+class TestStockReferences:
+    """The guide's instruction is universal; whether stock already satisfies it
+    is not. Those clauses used to be literal ``5G0906259L`` figures inside this
+    module, which meant a second car's report would quietly assert this car's
+    stock values about a bin nobody had measured.
+    """
+
+    def test_no_entry_hardcodes_a_box_code(self) -> None:
+        for e in SYMBOL_MAP:
+            assert "5G0906259L" not in e.reason, (
+                f"entry {e.guide_section!r} still names a box code in its reason; "
+                "move the car-specific clause to the profile's stock_references"
+            )
+
+    def test_sc8s50_renders_the_measured_clause_verbatim(self) -> None:
+        entry = _map_entry("Fueling — fueling-influence")
+        rendered = entry.reason_for(SC8S50.stock_references)
+        assert (
+            "On 5G0906259L stock is 0.72-0.75 — already richer than 0.80 — so "
+            "writing 0.80 would RAISE these floors (leaner) under raised boost."
+        ) in rendered
+
+    def test_a_profile_with_no_reference_stays_silent(self) -> None:
+        """No clause, no placeholder, and no invented substitute."""
+        entry = _map_entry("Fueling — fueling-influence")
+        rendered = entry.reason_for({})
+        assert "5G0906259L" not in rendered
+        assert "{stock}" not in rendered
+        assert "0.72" not in rendered
+        # The sentences either side still read as prose, with no double space.
+        assert "ABOVE 0.80. Left at stock" in rendered
+        assert "  " not in rendered
+
+    def test_a_trailing_clause_elides_without_trailing_space(self) -> None:
+        entry = _map_entry("Fueling — two tables set entirely to 1")
+        rendered = entry.reason_for({})
+        assert rendered.endswith("Guide: set entirely to 1.")
+
+    def test_a_stock_ref_without_a_placeholder_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="no .stock. placeholder"):
+            RecipeEntry(guide_section="x", description="y", kind=KIND_SKIP_STOCK,
+                        reason="no slot here", stock_ref="lambda_floors")
+
+    def test_a_placeholder_with_no_stock_ref_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="names no stock_ref"):
+            RecipeEntry(guide_section="x", description="y", kind=KIND_SKIP_STOCK,
+                        reason="a slot{stock} nothing can fill")
+
+    def test_the_skipped_outcome_carries_the_rendered_reason(
+        self, real_cal: CalFile
+    ) -> None:
+        """End to end: the report's detail text comes from the CalFile's profile."""
+        entry = _map_entry("Fueling — fueling-influence")
+        [out] = apply_entry(real_cal, resolve_symbol_map(real_cal, (entry,))[0])
+        assert "already richer than 0.80" in out.detail
 
 
 # --------------------------------------------------------------------------- #

@@ -208,12 +208,15 @@ agent:
   hardcodes SC8S50 as the only writable profile, so a second box code cannot be
   supported end-to-end without either weakening that gate or building the
   registry. This is the load-bearing piece of beta-program work.
-- **Per-car safety knowledge is not yet consolidated onto the profile.**
-  `profiles/sc8s50.py` carries `TAG_FLOAT_BUG` on its specs *and*
-  `safety.FLOAT_BUG_SYMBOLS` carries the same four symbols as a module-level
-  global; `sop_recipe.py` has literal `5G0906259L` stock values inside its
-  guidance strings. A per-car fact stored in a global is a porting bug waiting to
-  happen.
+- ~~**Per-car safety knowledge is not yet consolidated onto the profile.**~~
+  Done. `Profile` now carries the car's `StructureSpec`, derives
+  `float_bug_symbols` from the specs tagged `TAG_FLOAT_BUG`, and supplies the
+  `stock_references` that `sop_recipe.py`'s guidance strings used to hardcode.
+  `safety.FLOAT_BUG_SYMBOLS` is deleted; the guard takes the set from its caller.
+  Deriving the set rather than declaring it twice caught a live drift: the global
+  named `C_PRS_IM_SP_LIM` — Offset to the pressure behind the air cleaner for the
+  limitation of the manifold setpoint, which no spec tagged, so the profile-side
+  view of "flagged" was one table short.
 - **No preflight CLI.** `preflight()` is a Python function; a newcomer has no
   one-command way to ask whether their bin and XDF are supported.
 - **Per-operation cross-runtime golden fixtures for the bridge.** Host tests

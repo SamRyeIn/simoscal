@@ -40,6 +40,7 @@ from simoscal.sop_recipe import (
 
 from .conftest import requires_real_files
 from simoscal.checksum import SC8S50_STRUCTURE
+from simoscal.tune.profiles.sc8s50 import SC8S50
 
 pytestmark = requires_real_files
 
@@ -53,8 +54,16 @@ def applied():
     """
     from .conftest import REAL_XDF, REAL_BIN
 
-    stock = CalFile.open(str(REAL_XDF), str(REAL_BIN), structure=SC8S50_STRUCTURE)
-    tuned = CalFile.open(str(REAL_XDF), str(REAL_BIN), structure=SC8S50_STRUCTURE)
+    stock = CalFile.open(
+        str(REAL_XDF), str(REAL_BIN), structure=SC8S50_STRUCTURE,
+        float_bug_symbols=SC8S50.float_bug_symbols,
+        stock_references=SC8S50.stock_references,
+    )
+    tuned = CalFile.open(
+        str(REAL_XDF), str(REAL_BIN), structure=SC8S50_STRUCTURE,
+        float_bug_symbols=SC8S50.float_bug_symbols,
+        stock_references=SC8S50.stock_references,
+    )
 
     # snapshot every write-target before applying (for AE5 before/after PNGs).
     snaps = {}
@@ -145,7 +154,11 @@ class TestAE2Guard:
         from .conftest import REAL_XDF, REAL_BIN
         from simoscal.sop_recipe import SYMBOL_MAP, apply_entry
 
-        cal = CalFile.open(str(REAL_XDF), str(REAL_BIN), structure=SC8S50_STRUCTURE)
+        cal = CalFile.open(
+            str(REAL_XDF), str(REAL_BIN), structure=SC8S50_STRUCTURE,
+            float_bug_symbols=SC8S50.float_bug_symbols,
+            stock_references=SC8S50.stock_references,
+        )
         view = cal.get("IP_PUT_AMP_DIF_MAX_PRS_DIF_THR")
         staged = view.values.astype(float).copy()
         staged[0, 2] = 2710.0  # above the 2700 target, under the XDF max (2716.96)

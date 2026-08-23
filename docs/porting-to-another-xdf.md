@@ -165,6 +165,11 @@ offset discovered from the file.
    having even though discovery works: it lets a bin that does not match the
    profile the user selected be caught, instead of being silently accepted
    because it happens to be a valid bin of some other car.
+5. Set it as the profile's `structure=`, and settle the profile's other two
+   per-car facts at the same time (section 9): which tables carry
+   `TAG_FLOAT_BUG`, and which — if any — stock values the SOP guidance may
+   quote. Declaring none of the latter is the correct answer until someone has
+   actually read them off this car's bin.
 
 ## 9. What the library does with this
 
@@ -173,6 +178,30 @@ every checksum call — `verify`, `correct`, `verify_cal_crc`, `verify_ecm3`,
 `stored_checksum_ranges`, `correction_patches` — and to `CalFile.open`. There is
 no default and no module-level "current structure": SC8S50 is
 `SC8S50_STRUCTURE`, one declared instance among several.
+
+The structure is one of three per-car facts a `Profile` now carries; the other
+two used to be globals, and porting had no way to override either:
+
+- **`Profile.float_bug_symbols`** — the tables whose XDF-declared display
+  maximum is an editor artifact rather than an ECU limit, so a write above it is
+  legitimate and must go through a raw write. It is *derived* from the specs
+  tagged `TAG_FLOAT_BUG`, so a port flags a table in exactly one place. This
+  replaced `safety.FLOAT_BUG_SYMBOLS`, a module global that had already drifted:
+  it named `C_PRS_IM_SP_LIM` — Offset to the pressure behind the air cleaner for
+  the limitation of the manifold setpoint, which no SC8S50 spec tagged.
+- **`Profile.stock_references`** — sentences describing what stock reads on this
+  car, for the SOP guidance strings that compare the guide's instruction against
+  it. A profile that declares none renders the guidance *without* the comparison
+  clause. That silence is the point: telling an A05 owner what a `5G0906259L`
+  reads is worse than saying nothing.
+
+`CalFile` carries the first two of these — `float_bug_symbols` and
+`stock_references` — as the writer-facing form of "which car is this?".
+`float_bug_symbols` defaults to `None`, meaning *no profile was supplied*: reads
+still work, and a physical-unit write raises `FloatBugPolicyUnset` rather than
+skipping a guard it cannot evaluate. An empty `frozenset()` is a different and
+perfectly valid answer — "this calibration flags nothing" — and it must be
+stated, never inferred from silence.
 
 `correct()` raises `ChecksumNotLocatable` when either checksum cannot be located
 under the spec it was given. It used to return the data unchanged and raise

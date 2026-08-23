@@ -11,7 +11,9 @@ Implements the two safety decisions from the plan, both grounded in the mandate
 * **Float-bug hard guard (Decision 9).** A small, explicit flagged-list of
   overboost / max-airmass calibrations hard-rejects a write that exceeds the
   table's declared upper limit — **even with** ``override=True`` — because the
-  SOP calls this corruption case irreversible.
+  SOP calls this corruption case irreversible. *Which* symbols those are is a
+  per-car fact, so this module does not hold the list: the caller supplies the
+  active profile's :attr:`~simoscal.tune.profile.Profile.float_bug_symbols`.
 
 Separately, the **raw-range guard** hard-fails (:class:`RawRangeError`) any
 inverted value that would overflow the element's integer width, for *every*
@@ -22,6 +24,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
+from typing import Collection
 
 import numpy as np
 
@@ -30,25 +33,17 @@ from .model import EmbeddedData, FloatBugGuardError, RawRangeError, Table
 __all__ = [
     "EditRangeWarning",
     "RangeBreach",
-    "FLOAT_BUG_SYMBOLS",
     "is_float_bug_table",
     "check_raw_fits",
     "check_display_range",
 ]
 
-
-# Overboost / max-airmass constants known to be float-bug-prone (Decision 9).
-# Grounded in SC8S50.V1.0.xdf: the four float32 boost/airmass-ceiling constants.
-# The mechanism the SOP warns about is exceeding the declared upper limit on
-# these; the guard rejects that unconditionally. Extend as more are identified.
-FLOAT_BUG_SYMBOLS = frozenset(
-    {
-        "C_M_AIR_CYL_FL",
-        "C_M_AIR_CYL_SP_MAX",
-        "C_PRS_IM_SP_LIM",
-        "C_PRS_IM_SP_MAX",
-    }
-)
+# The flagged-list of overboost / max-airmass constants used to live here, as a
+# module global naming four ``SC8S50.V1.0.xdf`` symbols. That made this module
+# single-car: a second calibration's flagged symbols had nowhere to go, and the
+# same four symbols were *also* tagged ``TAG_FLOAT_BUG`` on their profile specs,
+# so the two could drift with nothing to catch it. The profile is now the only
+# place a table is flagged; every function here takes the set from its caller.
 
 
 class EditRangeWarning(UserWarning):
@@ -74,9 +69,16 @@ class RangeBreach:
         )
 
 
-def is_float_bug_table(table: Table) -> bool:
-    """Whether ``table``'s symbol is on the float-bug flagged-list."""
-    return table.symbol in FLOAT_BUG_SYMBOLS
+def is_float_bug_table(table: Table, float_bug_symbols: Collection[str]) -> bool:
+    """Whether ``table``'s symbol is on this car's float-bug flagged-list.
+
+    ``float_bug_symbols`` comes from the active profile
+    (:attr:`~simoscal.tune.profile.Profile.float_bug_symbols`). An empty set is a
+    legitimate answer — a profile may flag nothing — but it must be *stated*, so
+    there is no default: "nobody passed a list" and "this car has no flagged
+    tables" are different facts and are never allowed to look alike.
+    """
+    return table.symbol is not None and table.symbol in float_bug_symbols
 
 
 def check_raw_fits(emb: EmbeddedData, raw_values) -> None:
@@ -106,6 +108,7 @@ def check_display_range(
     table: Table,
     phys_values,
     *,
+    float_bug_symbols: Collection[str],
     override: bool = False,
     origin: tuple[int, int] = (0, 0),
 ) -> list[RangeBreach]:
@@ -113,8 +116,11 @@ def check_display_range(
 
     Returns the list of :class:`RangeBreach` records for cells outside the
     declared display limits (also emitted as :class:`EditRangeWarning`). For a
-    flagged float-bug table, a value above the declared upper limit raises
-    :class:`FloatBugGuardError` regardless of ``override``.
+    table named in ``float_bug_symbols``, a value above the declared upper limit
+    raises :class:`FloatBugGuardError` regardless of ``override``.
+
+    ``float_bug_symbols`` is required and comes from the active profile; see
+    :func:`is_float_bug_table` for why it carries no default.
 
     ``origin`` offsets the reported ``(row, col)`` so a single-cell edit can pass
     a 1×1 array and still report its true coordinates.
@@ -126,7 +132,7 @@ def check_display_range(
         np.asarray(phys_values).shape or (1,)
     )
     arr = np.atleast_2d(arr)
-    flagged = is_float_bug_table(table)
+    flagged = is_float_bug_table(table, float_bug_symbols)
 
     span = 1.0
     if mn is not None and mx is not None:

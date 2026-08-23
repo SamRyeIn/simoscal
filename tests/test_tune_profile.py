@@ -184,6 +184,123 @@ def test_merged_profile_is_the_union() -> None:
     assert merged.name == "Mini+Other"
 
 
+# --------------------------------------------------------------------------- #
+# Per-car facts on the profile (U3)
+# --------------------------------------------------------------------------- #
+def test_float_bug_symbols_are_derived_from_the_tagged_specs() -> None:
+    """The tag on the spec is the only place a table is flagged.
+
+    Declaring the set a second time beside the specs is what let
+    ``safety.FLOAT_BUG_SYMBOLS`` drift into naming a symbol no spec tagged.
+    """
+    p = _mini_profile(
+        flagged=TableSpec("flagged", "SYM_A", "A",
+                          tags=frozenset({prof.TAG_FLOAT_BUG})),
+        plain=TableSpec("plain", "SYM_B", "B"),
+    )
+    assert p.float_bug_symbols == frozenset({"SYM_A"})
+
+
+def test_float_bug_symbols_skip_uniqueid_keyed_specs() -> None:
+    """A patch-added table has no symbol for the guard to match on."""
+    p = _mini_profile(
+        by_id=TableSpec("by_id", 0x7D41A, "no symbol",
+                        tags=frozenset({prof.TAG_FLOAT_BUG})),
+    )
+    assert p.float_bug_symbols == frozenset()
+
+
+def test_a_profile_flagging_nothing_has_an_empty_set() -> None:
+    """Not an error and not a missing answer — some cars flag nothing."""
+    assert _mini_profile(plain=TableSpec("plain", "SYM", "d")).float_bug_symbols == (
+        frozenset()
+    )
+
+
+def test_sc8s50_flags_the_four_float32_ceilings() -> None:
+    """The exact set the deleted ``safety.FLOAT_BUG_SYMBOLS`` global carried.
+
+    Pinned by symbol rather than by count so that dropping one — the way
+    `C_PRS_IM_SP_LIM` — Offset to the pressure behind the air cleaner for the
+    limitation of the manifold setpoint was never tagged before U3 — fails here.
+    """
+    assert SC8S50.float_bug_symbols == frozenset({
+        "C_M_AIR_CYL_FL",
+        "C_M_AIR_CYL_SP_MAX",
+        "C_PRS_IM_SP_LIM",
+        "C_PRS_IM_SP_MAX",
+    })
+
+
+def test_sc8s50_carries_its_own_cal_structure() -> None:
+    assert SC8S50.structure is SC8S50_STRUCTURE
+
+
+def test_merged_profile_inherits_the_declared_structure() -> None:
+    """The patch profile declares none and takes the base profile's."""
+    base = Profile(name="Base", xdf="b.xdf", structure=SC8S50_STRUCTURE)
+    patch = Profile(name="Patch", xdf="p.xdf")
+    assert base.merged_with(patch).structure is SC8S50_STRUCTURE
+    assert patch.merged_with(base).structure is SC8S50_STRUCTURE
+
+
+def test_merging_profiles_with_different_structures_raises() -> None:
+    """Two profiles over one bin cannot disagree about where its CAL block is."""
+    from dataclasses import replace
+
+    other = replace(SC8S50_STRUCTURE, name="A05", cal_file_offset=0x220000)
+    a = Profile(name="A", xdf="a.xdf", structure=SC8S50_STRUCTURE)
+    b = Profile(name="B", xdf="b.xdf", structure=other)
+    with pytest.raises(ValueError, match="different CAL structures"):
+        a.merged_with(b)
+
+
+def test_merging_profiles_with_conflicting_stock_references_raises() -> None:
+    a = Profile(name="A", xdf="a.xdf", stock_references={"lambda_floors": "one"})
+    b = Profile(name="B", xdf="b.xdf", stock_references={"lambda_floors": "two"})
+    with pytest.raises(ValueError, match="different stock references"):
+        a.merged_with(b)
+
+
+#: Text that only makes sense for one car. A module-level binding whose *code*
+#: contains one of these is a per-car fact stored where a second calibration
+#: cannot override it — the class of defect this whole effort removes.
+_PER_CAR_MARKERS = ("5G0906259L", "FLOAT_BUG_SYMBOLS")
+
+#: Where per-car facts are allowed to live: the profile modules themselves.
+_PROFILES_PKG = "simoscal/tune/profiles/"
+
+
+def test_no_per_car_constant_lives_outside_the_profiles_package() -> None:
+    """Per-car facts belong to a profile, not to a module that imports one.
+
+    Checked over the *code* of module-level bindings via ``ast.unparse``, not the
+    raw text, so a docstring or comment explaining why a symbol matters — as
+    ``safety.py`` and ``checksum.py`` both now do — is not a violation. Only an
+    actual constant is.
+    """
+    import ast
+
+    code_root = Path(__file__).resolve().parents[1]
+    offenders: list[str] = []
+    for path in sorted((code_root / "simoscal").rglob("*.py")):
+        rel = path.relative_to(code_root).as_posix()
+        if rel.startswith(_PROFILES_PKG):
+            continue
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            src = ast.unparse(node)
+            for marker in _PER_CAR_MARKERS:
+                if marker in src:
+                    offenders.append(f"{rel}:{node.lineno} names {marker!r}")
+
+    assert not offenders, (
+        "per-car constants outside " + _PROFILES_PKG + ":\n  " +
+        "\n  ".join(offenders)
+    )
+
+
 def test_profile_getitem_lists_known_names_on_a_miss() -> None:
     p = _mini_profile(known=TableSpec("known", "SYM", "desc"))
     with pytest.raises(KeyError, match="known"):

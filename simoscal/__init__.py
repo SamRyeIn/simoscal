@@ -19,6 +19,7 @@ from .model import (
     Category,
     EmbeddedData,
     FloatBugGuardError,
+    FloatBugPolicyUnset,
     NonLinearEquationError,
     RawRangeError,
     RegionBoundsError,
@@ -64,7 +65,6 @@ from .checksum import (
 )
 from .safety import (
     EditRangeWarning,
-    FLOAT_BUG_SYMBOLS,
     RangeBreach,
     check_display_range,
     check_raw_fits,
@@ -137,6 +137,7 @@ __all__ = [
     "NonLinearEquationError",
     "RegionBoundsError",
     "FloatBugGuardError",
+    "FloatBugPolicyUnset",
     "RawRangeError",
     "Defaults",
     "XdfModel",
@@ -188,7 +189,6 @@ __all__ = [
     "crc32_simos",
     "EditRangeWarning",
     "RangeBreach",
-    "FLOAT_BUG_SYMBOLS",
     "check_display_range",
     "check_raw_fits",
     "is_float_bug_table",

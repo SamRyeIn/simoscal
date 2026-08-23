@@ -166,7 +166,9 @@ class Tune:
 
         try:
             base_cal = CalFile.open(
-                str(xdf), str(working_bin), structure=structure_of(working_bin)
+                str(xdf), str(working_bin), structure=structure_of(working_bin),
+                float_bug_symbols=profile.float_bug_symbols,
+                stock_references=profile.stock_references,
             )
             base_tables = resolve_profile(
                 profile, base_cal, xdf_label=str(xdf)
@@ -462,7 +464,16 @@ def _open_shared_space(
             f"cannot share one bin between the base XDF and {xdf.name}: "
             f"they disagree on {'; '.join(mismatch)}"
         )
-    cal = CalFile(model, base_cal.binimage, structure=base_cal.structure)
+    # Union rather than replace: this space is a second XDF over the *same* bin,
+    # so a symbol the base profile flags is still flagged wherever it is reached
+    # from. Narrowing the set here would quietly unguard a base table that the
+    # patch XDF also defines.
+    cal = CalFile(
+        model, base_cal.binimage, structure=base_cal.structure,
+        float_bug_symbols=(base_cal.float_bug_symbols or frozenset())
+        | profile.float_bug_symbols,
+        stock_references={**base_cal.stock_references, **profile.stock_references},
+    )
     return TableSpace(
         name=name, profile=profile, xdf=xdf, cal=cal,
         tables=resolve_profile(profile, cal, xdf_label=str(xdf)),

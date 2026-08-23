@@ -18,6 +18,7 @@ from simoscal import (
     BinImage,
     EditRangeWarning,
     FloatBugGuardError,
+    FloatBugPolicyUnset,
     NonLinearEquationError,
     RawRangeError,
     parse_xdf,
@@ -84,11 +85,25 @@ WRITE_XDF = """<XDFFORMAT version="1.60">
 """
 
 
-@pytest.fixture
-def cal() -> CalFile:
+#: This fixture's XDF names one real flagged symbol, so it declares it. The set
+#: is stated here rather than imported from the SC8S50 profile: these are
+#: low-level writer tests over a synthetic XDF, and what they need is *a* policy,
+#: not this car's.
+FLAGGED = frozenset({"C_PRS_IM_SP_MAX"})
+
+
+def _cal(float_bug_symbols=FLAGGED) -> CalFile:
     model = parse_xdf(io.StringIO(WRITE_XDF))
     img = BinImage(bytearray(0x1000), region_start=0, region_size=0x1000)
-    return CalFile(model, img, structure=SC8S50_STRUCTURE)
+    return CalFile(
+        model, img, structure=SC8S50_STRUCTURE,
+        float_bug_symbols=float_bug_symbols,
+    )
+
+
+@pytest.fixture
+def cal() -> CalFile:
+    return _cal()
 
 
 # --------------------------------------------------------------------------- #
@@ -210,6 +225,42 @@ def test_float_bug_within_limit_writes(cal: CalFile):
     v = cal.get("C_PRS_IM_SP_MAX")
     v.set_cell(0, 0, 5000)
     assert abs(float(v.values[0, 0]) - 5000) < 1e-2
+
+
+def test_no_float_bug_policy_refuses_the_write(tmp_path):
+    """A CalFile opened without a policy cannot answer the guard, so it refuses.
+
+    The alternative — treating "nobody said" as "nothing is flagged" — would let
+    a limiter ceiling be written past its declared maximum with no guard and no
+    trace, which is the exact failure the guard exists for.
+    """
+    cal = _cal(float_bug_symbols=None)
+    with pytest.raises(FloatBugPolicyUnset) as excinfo:
+        cal.get("C_PRS_IM_SP_MAX").set_cell(0, 0, 5000)
+    assert "float_bug_symbols=" in str(excinfo.value)
+    assert cal.binimage.to_bytes()[0x50:0x54] == bytes(4)  # unchanged
+
+    with pytest.raises(FloatBugPolicyUnset):
+        cal.get("MULTI").set([[1, 2], [3, 4]])
+
+
+def test_reads_work_without_a_float_bug_policy():
+    """Only *writes* need the policy — a read-only open stays usable."""
+    cal = _cal(float_bug_symbols=None)
+    assert cal.get("C_PRS_IM_SP_MAX").values.shape == (1, 1)
+
+
+def test_empty_float_bug_policy_applies_no_guard(recwarn):
+    """A profile that flags nothing is a legitimate, *stated* answer.
+
+    The same over-limit write that raises under FLAGGED falls back to plain
+    warn+allow here, and nothing about it is silent: the breach still warns.
+    """
+    cal = _cal(float_bug_symbols=frozenset())
+    v = cal.get("C_PRS_IM_SP_MAX")
+    with pytest.warns(EditRangeWarning):
+        v.set_cell(0, 0, 20000)
+    assert abs(float(v.values[0, 0]) - 20000) < 1e-2
 
 
 # --------------------------------------------------------------------------- #

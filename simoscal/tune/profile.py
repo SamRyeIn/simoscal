@@ -29,6 +29,7 @@ from difflib import SequenceMatcher
 from typing import Iterable, Iterator, Mapping, Optional, Union
 
 from ..calfile import CalFile, TableView
+from ..checksum import StructureSpec
 from ..model import AmbiguousTableError, SimosCalError
 
 __all__ = [
@@ -199,6 +200,16 @@ class TableSpec:
 class Profile:
     """A named set of :class:`TableSpec`s authored against one XDF.
 
+    A profile is also where the rest of this car's *facts* live — the ones the
+    library used to hold as module globals, which is what made it structurally
+    single-car:
+
+    * :attr:`structure` — where this car's CAL block sits in its bin and what
+      address the ECU maps it to (a :class:`~simoscal.checksum.StructureSpec`);
+    * :attr:`float_bug_symbols` — derived from the specs, not declared twice;
+    * :attr:`stock_references` — what stock reads on this car, for guidance text
+      that wants to compare a guide instruction against it.
+
     Profiles compose: a patched-bin tune resolves the base calibration through
     the SC8S50 profile and the patch-added tables through the switch-patch
     profile, so :meth:`merged_with` builds the union. Merging is strict — a
@@ -209,6 +220,16 @@ class Profile:
     name: str
     xdf: str  # the XDF filename this map was authored against (documentation)
     specs: Mapping[str, TableSpec] = field(default_factory=dict)
+    #: This car's CAL layout. ``None`` for a profile that only adds tables to
+    #: another profile's space (the switch patch), which inherits the base
+    #: profile's structure through :meth:`merged_with`.
+    structure: Optional[StructureSpec] = None
+    #: Named facts about what *stock* reads on this car, for guidance text.
+    #: Keys are short ids a guidance string names; values are the sentence to
+    #: render. A profile that declares none renders no comparison at all —
+    #: silence is the correct output for a car nobody has measured, and
+    #: inventing another car's numbers is the failure this replaces.
+    stock_references: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for name, spec in self.specs.items():
@@ -217,6 +238,25 @@ class Profile:
                     f"profile {self.name!r}: key {name!r} does not match "
                     f"spec.name {spec.name!r}"
                 )
+
+    @property
+    def float_bug_symbols(self) -> frozenset[str]:
+        """Symbols whose XDF display max is an editor artifact, not an ECU limit.
+
+        Derived from the specs rather than declared beside them: the tag on the
+        spec is the single place a table is flagged, so the writer-facing set and
+        the domain-facing tag cannot drift apart. It used to be a module global in
+        :mod:`simoscal.safety`, listing four symbols that a reader had to
+        cross-check by hand against three tagged specs.
+
+        Only string keys appear — a uniqueid-keyed spec has no symbol for
+        :func:`~simoscal.safety.is_float_bug_table` to match on.
+        """
+        return frozenset(
+            spec.key
+            for spec in self.specs.values()
+            if spec.has(TAG_FLOAT_BUG) and isinstance(spec.key, str)
+        )
 
     def __contains__(self, name: object) -> bool:
         return name in self.specs
@@ -255,17 +295,44 @@ class Profile:
         return sorted(n for n, spec in self.specs.items() if not spec.group)
 
     def merged_with(self, other: "Profile", *, name: str = "") -> "Profile":
-        """Union of two profiles; overlapping logical names raise."""
+        """Union of two profiles; overlapping logical names raise.
+
+        The merged profile keeps whichever :attr:`structure` is declared. Two
+        *different* structures raise: a patch profile and the base calibration it
+        patches describe one bin, and disagreeing about where its CAL block sits
+        is a map-authoring bug rather than something to resolve by precedence.
+        """
         clash = sorted(set(self.specs) & set(other.specs))
         if clash:
             raise ValueError(
                 f"cannot merge profiles {self.name!r} and {other.name!r}: "
                 f"both define {', '.join(clash)}"
             )
+        ref_clash = sorted(
+            k for k in set(self.stock_references) & set(other.stock_references)
+            if self.stock_references[k] != other.stock_references[k]
+        )
+        if ref_clash:
+            raise ValueError(
+                f"cannot merge profiles {self.name!r} and {other.name!r}: "
+                f"they give different stock references for {', '.join(ref_clash)}"
+            )
+        if (
+            self.structure is not None
+            and other.structure is not None
+            and self.structure != other.structure
+        ):
+            raise ValueError(
+                f"cannot merge profiles {self.name!r} and {other.name!r}: "
+                f"they declare different CAL structures "
+                f"({self.structure.name!r} vs {other.structure.name!r})"
+            )
         return Profile(
             name=name or f"{self.name}+{other.name}",
             xdf=f"{self.xdf}, {other.xdf}",
             specs={**self.specs, **other.specs},
+            structure=self.structure if self.structure is not None else other.structure,
+            stock_references={**self.stock_references, **other.stock_references},
         )
 
 

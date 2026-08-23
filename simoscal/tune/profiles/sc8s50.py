@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from ...checksum import SC8S50_STRUCTURE
 from ..profile import (
     GROUP_AIRFLOW,
     GROUP_BOOST,
@@ -83,6 +84,20 @@ _SPECS = [
     _spec("manifold_pressure_max", "C_PRS_IM_SP_MAX",
           "Maximum allowed PRS_IM_SP (maximum requested intake-manifold "
           "pressure setpoint)", "hPa", (1, 1), frozenset({TAG_FLOAT_BUG})),
+    # The table an early revision of the shared recipe mistook for the overboost
+    # limit. It is a manifold-setpoint limitation offset, not the P0234 threshold
+    # (that is `IP_PUT_AMP_DIF_MAX_PRS_DIF_THR`), and writing 2700 here does not
+    # do what the guide asks. Mapped with no write path so the mistake cannot be
+    # repeated through the generic editor, and so the float-bug flag it needs is
+    # declared in the same place as every other one: its XDF range is
+    # -10000..10000 while stock reads 271695.84 hPa, 27x the declared maximum.
+    _spec("manifold_pressure_limit_offset", "C_PRS_IM_SP_LIM",
+          "Offset to the pressure behind the air cleaner for the limitation of "
+          "the manifold setpoint", "hPa", (1, 1), frozenset({TAG_FLOAT_BUG}),
+          owner="no write path — this is a manifold-setpoint limitation offset, "
+                "not the overboost threshold. The P0234 threshold is "
+                "`IP_PUT_AMP_DIF_MAX_PRS_DIF_THR`, written by "
+                "tune.boost.overboost_threshold()"),
     # THE kg/stk trap. The XDF labels this identity-scaled mg/stk; the ECU
     # stores kg/stk. Any mg/stk API must divide by 1e6 — writing raw 2000 here
     # raises the ceiling ~1.44 million-fold (stock is 0.001389 kg/stk), i.e.
@@ -570,6 +585,7 @@ _GROUPS: dict[str, tuple[str, ...]] = {
         "pressure_quotient_max",
         "overboost_threshold",
         "manifold_pressure_max",
+        "manifold_pressure_limit_offset",
         "put_from_ambient_enable",
         "wastegate_feedforward_vvl0",
         "wastegate_feedforward_vvl1",
@@ -649,14 +665,36 @@ def _grouped(specs: list[TableSpec]) -> list[TableSpec]:
 _SPECS = _grouped(_SPECS)
 
 
+#: What stock reads on this car, for guidance text that compares a guide
+#: instruction against it. Each value is measured off the stock
+#: ``5G0906259L__0002`` bin, and each is a whole sentence rather than a number,
+#: because the comparison the guidance wants to draw is the part that is
+#: car-specific — not just the figure. A profile for another car that has not
+#: been measured declares none of these, and the guidance renders without the
+#: comparison rather than quoting this car's numbers at that car.
+STOCK_REFERENCES = {
+    "lambda_floors": (
+        "On 5G0906259L stock is 0.72-0.75 — already richer than 0.80 — so "
+        "writing 0.80 would RAISE these floors (leaner) under raised boost."
+    ),
+    "full_load_lambda": (
+        "Stock already reads all 1.0 on 5G0906259L — already compliant, "
+        "nothing to write."
+    ),
+}
+
+
 SC8S50 = Profile(
     name="SC8S50",
     xdf="SC8S50.V1.0.xdf",
     specs={s.name: s for s in _SPECS},
+    structure=SC8S50_STRUCTURE,
+    stock_references=STOCK_REFERENCES,
 )
 
 __all__ = [
     "SC8S50",
+    "STOCK_REFERENCES",
     "CHARGE_AIR_DIAG",
     "CYLINDER_HEAD_TEMP",
     "ENGINE_SPEED_LIMIT",

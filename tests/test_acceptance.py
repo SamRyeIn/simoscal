@@ -204,7 +204,7 @@ _NONLINEAR_XDF = """<XDFFORMAT version="1.60">
 def nonlinear_cal() -> CalFile:
     model = parse_xdf(io.StringIO(_NONLINEAR_XDF))
     img = BinImage(bytearray(0x100), region_start=0, region_size=0x100)
-    return CalFile(model, img, structure=SC8S50_STRUCTURE)
+    return CalFile(model, img, structure=SC8S50_STRUCTURE, float_bug_symbols=frozenset())
 
 
 def test_ae5_nonlinear_rejects_physical_set(nonlinear_cal: CalFile):

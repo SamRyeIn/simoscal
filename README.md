@@ -275,7 +275,7 @@ screen is not a reason for an op; an invariant is.
 ### `CalFile`
 | Member | Description |
 |--------|-------------|
-| `CalFile.open(xdf_path, bin_path, *, structure)` | Parse the XDF and load the bin; region taken from the XDF `REGION` header. `structure` is a `StructureSpec` saying where this car's CAL block sits and how it is addressed — it has no default, because one car's layout standing in for another's is the failure it exists to prevent. Use `SC8S50_STRUCTURE`, or `structure_of(bin_path)` to discover it. |
+| `CalFile.open(xdf_path, bin_path, *, structure, float_bug_symbols=None, stock_references=None)` | Parse the XDF and load the bin; region taken from the XDF `REGION` header. `structure` is a `StructureSpec` saying where this car's CAL block sits and how it is addressed — it has no default, because one car's layout standing in for another's is the failure it exists to prevent. Use `SC8S50_STRUCTURE`, or `structure_of(bin_path)` to discover it. `float_bug_symbols` and `stock_references` are the profile's other two per-car facts (`SC8S50.float_bug_symbols`, `SC8S50.stock_references`). Omit them for a read-only open; a physical-unit write with no `float_bug_symbols` raises `FloatBugPolicyUnset` rather than skipping a guard it cannot evaluate. An explicit `frozenset()` means "this car flags nothing". |
 | `.get(key)` | Fetch the single `TableView` by symbol, title, or `uniqueid` int. Raises `AmbiguousTableError` if a name maps to genuinely distinct tables. |
 | `.search(substring)` | List `TableView`s whose symbol/title contains `substring`. |
 | `.unique_tables()` | Dedup-by-`uniqueid` view (3,814 tables) for sweeps. |
