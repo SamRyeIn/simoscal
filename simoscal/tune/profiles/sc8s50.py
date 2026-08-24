@@ -14,8 +14,6 @@ called.
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 from ...checksum import SC8S50_STRUCTURE
 from ..profile import (
     GROUP_AIRFLOW,
@@ -30,6 +28,7 @@ from ..profile import (
     TAG_KG_PER_STROKE,
     Profile,
     TableSpec,
+    apply_groups,
 )
 
 
@@ -628,41 +627,7 @@ _GROUPS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _grouped(specs: list[TableSpec]) -> list[TableSpec]:
-    """Stamp each spec with its group, refusing an incomplete classification.
-
-    Both directions are checked, because both failures are silent otherwise: a
-    spec named in :data:`_GROUPS` but not declared above is a stale entry left
-    behind by a rename, and a spec declared above but named in no group would
-    quietly vanish from a grouped browser. Two headings claiming the same table
-    is likewise a bug rather than a precedence question.
-    """
-    by_name: dict[str, str] = {}
-    for group, names in _GROUPS.items():
-        for name in names:
-            if name in by_name:
-                raise ValueError(
-                    f"SC8S50 grouping: {name!r} is claimed by both "
-                    f"{by_name[name]!r} and {group!r}"
-                )
-            by_name[name] = group
-
-    declared = {spec.name for spec in specs}
-    stale = sorted(set(by_name) - declared)
-    if stale:
-        raise ValueError(
-            f"SC8S50 grouping names tables the profile does not declare: "
-            f"{', '.join(stale)}"
-        )
-    missing = sorted(declared - set(by_name))
-    if missing:
-        raise ValueError(
-            f"SC8S50 declares tables no group claims: {', '.join(missing)}"
-        )
-    return [replace(spec, group=by_name[spec.name]) for spec in specs]
-
-
-_SPECS = _grouped(_SPECS)
+_SPECS = apply_groups("SC8S50", _SPECS, _GROUPS)
 
 
 #: What stock reads on this car, for guidance text that compares a guide

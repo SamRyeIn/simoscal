@@ -24,7 +24,7 @@ is opened for editing (requirements AE3).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from typing import Iterable, Iterator, Mapping, Optional, Union
 
@@ -52,6 +52,8 @@ __all__ = [
     "ResolvedProfile",
     "ResolvedTable",
     "TableSpec",
+    "TableUnavailableError",
+    "apply_groups",
 ]
 
 # ---- guard tags ------------------------------------------------------------ #
@@ -132,6 +134,32 @@ GROUPS = (
     GROUP_PEDAL_TORQUE,
     GROUP_LAUNCH_TRACTION,
 )
+
+
+class TableUnavailableError(SimosCalError, KeyError):
+    """A logical name this profile explicitly declares this car does not have.
+
+    Distinct from a plain :class:`KeyError` on purpose. "I have never heard of
+    that name" and "I looked for that table on this car and it is not there"
+    are different answers, and only the second one is *evidence*: it tells a
+    caller the gap is known rather than a typo, and carries the reason so the
+    caller can decide whether to skip the step or refuse the whole edit.
+
+    Subclasses :class:`KeyError` as well so existing ``except KeyError`` paths —
+    the mapping protocol callers already write — keep working unchanged.
+    """
+
+    def __init__(self, profile: str, name: str, reason: str) -> None:
+        self.profile = profile
+        self.name = name
+        self.reason = reason
+        super().__init__(
+            f"profile {profile!r} declares {name!r} unavailable on this car: "
+            f"{reason}"
+        )
+
+    def __str__(self) -> str:  # KeyError would otherwise repr() the message
+        return self.args[0]
 
 
 @dataclass(frozen=True)
@@ -230,6 +258,21 @@ class Profile:
     #: silence is the correct output for a car nobody has measured, and
     #: inventing another car's numbers is the failure this replaces.
     stock_references: Mapping[str, str] = field(default_factory=dict)
+    #: Logical names this car does **not** have, each mapped to why — a
+    #: *declaration*, not an omission.
+    #:
+    #: The two are only the same to a reader who trusts the author's memory. A
+    #: name simply left out of :attr:`specs` cannot be told apart from one
+    #: forgotten during the port, and the failure it produces ("no logical name
+    #: X") says nothing about whether X was investigated. Declaring it says the
+    #: gap was looked at, records what was looked for, and turns the lookup into
+    #: a :class:`TableUnavailableError` carrying the reason.
+    #:
+    #: Two distinct causes both belong here, and the reason string must say
+    #: which: the table does not exist in this calibration at all, or it exists
+    #: in the bin but this car's XDF declares no editable table for it (an
+    #: embedded axis with no standalone entry is the common case).
+    unavailable: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for name, spec in self.specs.items():
@@ -238,6 +281,13 @@ class Profile:
                     f"profile {self.name!r}: key {name!r} does not match "
                     f"spec.name {spec.name!r}"
                 )
+        both = sorted(set(self.specs) & set(self.unavailable))
+        if both:
+            raise ValueError(
+                f"profile {self.name!r}: {', '.join(both)} is declared both as a "
+                "mapped table and as unavailable — one of the two is wrong, and "
+                "guessing which would either hide a table or offer a missing one"
+            )
 
     @property
     def float_bug_symbols(self) -> frozenset[str]:
@@ -265,10 +315,13 @@ class Profile:
         try:
             return self.specs[name]
         except KeyError:
-            raise KeyError(
-                f"profile {self.name!r} has no logical name {name!r}; "
-                f"known names: {', '.join(self.names())}"
-            ) from None
+            pass
+        if name in self.unavailable:
+            raise TableUnavailableError(self.name, name, self.unavailable[name])
+        raise KeyError(
+            f"profile {self.name!r} has no logical name {name!r}; "
+            f"known names: {', '.join(self.names())}"
+        ) from None
 
     def __iter__(self) -> Iterator[str]:
         return iter(self.specs)
@@ -327,13 +380,72 @@ class Profile:
                 f"they declare different CAL structures "
                 f"({self.structure.name!r} vs {other.structure.name!r})"
             )
+        specs = {**self.specs, **other.specs}
+        # A gap one profile declares can be *filled* by the other — that is what
+        # a patch profile is for — so the merged declaration keeps only the gaps
+        # nothing in the union supplies. Without this subtraction a patched bin
+        # would still report a table as absent while holding a spec for it.
+        unavailable = {
+            n: why
+            for n, why in {**self.unavailable, **other.unavailable}.items()
+            if n not in specs
+        }
         return Profile(
             name=name or f"{self.name}+{other.name}",
             xdf=f"{self.xdf}, {other.xdf}",
-            specs={**self.specs, **other.specs},
+            specs=specs,
             structure=self.structure if self.structure is not None else other.structure,
             stock_references={**self.stock_references, **other.stock_references},
+            unavailable=unavailable,
         )
+
+
+def apply_groups(
+    profile_name: str,
+    specs: list[TableSpec],
+    groups: Mapping[str, tuple[str, ...]],
+) -> list[TableSpec]:
+    """Stamp each spec with its group, refusing an incomplete classification.
+
+    ``groups`` is the map-file's classification block: heading → the logical
+    names filed under it. Declaring it in one block, rather than as a keyword on
+    every spec, is what makes "is anything filed in the wrong place?" answerable
+    by reading one screen instead of scanning sixty call sites — so this
+    function exists to make that block *checkable* rather than decorative.
+
+    All three failures it refuses are otherwise silent:
+
+    * a name in ``groups`` that no spec declares is a stale entry left behind by
+      a rename;
+    * a spec no group claims would quietly vanish from a grouped browser, which
+      is calibration a person cannot find;
+    * two headings claiming one table is a bug, not a precedence question.
+
+    Raised at import time, so a mis-filed table cannot reach a tablet.
+    """
+    by_name: dict[str, str] = {}
+    for group, names in groups.items():
+        for name in names:
+            if name in by_name:
+                raise ValueError(
+                    f"{profile_name} grouping: {name!r} is claimed by both "
+                    f"{by_name[name]!r} and {group!r}"
+                )
+            by_name[name] = group
+
+    declared = {spec.name for spec in specs}
+    stale = sorted(set(by_name) - declared)
+    if stale:
+        raise ValueError(
+            f"{profile_name} grouping names tables the profile does not declare: "
+            f"{', '.join(stale)}"
+        )
+    missing = sorted(declared - set(by_name))
+    if missing:
+        raise ValueError(
+            f"{profile_name} declares tables no group claims: {', '.join(missing)}"
+        )
+    return [replace(spec, group=by_name[spec.name]) for spec in specs]
 
 
 @dataclass(frozen=True)

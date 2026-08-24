@@ -23,7 +23,7 @@ from simoscal.tune.profile import (
     TableSpec,
     resolve,
 )
-from simoscal.tune.profiles import PROFILES, SC8S50, SWITCH_PATCH_2933
+from simoscal.tune.profiles import PROFILES, SC8S50, SCGA05, SWITCH_PATCH_2933
 from simoscal.tune.profiles import sc8s50 as sc_map
 from simoscal.tune.profiles import switchpatch_2933 as sp_map
 from simoscal.checksum import SC8S50_STRUCTURE
@@ -311,7 +311,11 @@ def test_profile_getitem_lists_known_names_on_a_miss() -> None:
 # The shipped maps
 # --------------------------------------------------------------------------- #
 def test_shipped_profiles_are_registered() -> None:
-    assert PROFILES == {"SC8S50": SC8S50, "SwitchPatch2933": SWITCH_PATCH_2933}
+    assert PROFILES == {
+        "SC8S50": SC8S50,
+        "SCGA05": SCGA05,
+        "SwitchPatch2933": SWITCH_PATCH_2933,
+    }
 
 
 def test_sc8s50_map_covers_the_whole_r00_r12_lineage() -> None:
@@ -710,32 +714,26 @@ def test_the_domain_families_do_not_straddle_groups() -> None:
 def test_grouping_rejects_a_table_claimed_twice() -> None:
     """A rename that leaves a name in two headings must not be a silent winner."""
     specs = [TableSpec(name="a", key="A", description="d")]
-    original = dict(sc_map._GROUPS)
-    try:
-        sc_map._GROUPS.clear()
-        sc_map._GROUPS.update({
+    with pytest.raises(ValueError, match="claimed by both"):
+        prof.apply_groups("T", specs, {
             prof.GROUP_BOOST: ("a",), prof.GROUP_TIMING: ("a",),
         })
-        with pytest.raises(ValueError, match="claimed by both"):
-            sc_map._grouped(specs)
-    finally:
-        sc_map._GROUPS.clear()
-        sc_map._GROUPS.update(original)
 
 
 def test_grouping_rejects_an_unfiled_or_stale_table() -> None:
-    original = dict(sc_map._GROUPS)
-    try:
-        sc_map._GROUPS.clear()
-        sc_map._GROUPS.update({prof.GROUP_BOOST: ("a",)})
-        with pytest.raises(ValueError, match="no group claims"):
-            sc_map._grouped([
-                TableSpec(name="a", key="A", description="d"),
-                TableSpec(name="b", key="B", description="d"),
-            ])
+    with pytest.raises(ValueError, match="no group claims"):
+        prof.apply_groups("T", [
+            TableSpec(name="a", key="A", description="d"),
+            TableSpec(name="b", key="B", description="d"),
+        ], {prof.GROUP_BOOST: ("a",)})
 
-        with pytest.raises(ValueError, match="does not declare"):
-            sc_map._grouped([])
-    finally:
-        sc_map._GROUPS.clear()
-        sc_map._GROUPS.update(original)
+    with pytest.raises(ValueError, match="does not declare"):
+        prof.apply_groups("T", [], {prof.GROUP_BOOST: ("a",)})
+
+
+def test_grouping_names_the_profile_it_is_complaining_about() -> None:
+    """Two profiles now share this validator, so the message must say which."""
+    with pytest.raises(ValueError, match="SCGA05 declares tables no group claims"):
+        prof.apply_groups(
+            "SCGA05", [TableSpec(name="a", key="A", description="d")], {},
+        )

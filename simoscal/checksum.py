@@ -50,6 +50,7 @@ __all__ = [
     "stored_checksum_ranges",
     "StructureSpec",
     "SC8S50_STRUCTURE",
+    "SCGA05_STRUCTURE",
     "discover_structure",
     "verify_discovered",
     "StructureNotFound",
@@ -141,6 +142,31 @@ SC8S50_STRUCTURE = StructureSpec(
     cal_base_address=0xA0800000,
     cal_block_length=0x7FC00,
     asw_file_offset=0x40000,
+)
+
+
+#: Box code ``3CN906259B``, software ``SCGA05`` — the second structure this
+#: library was ported to. Located by measurement, not by analogy: the whole CAL
+#: block sits ``0x20000`` further into the file than SC8S50's and is mapped
+#: ``0x20000`` higher in the address space, while the layout *inside* the block
+#: is identical (CAL CRC at +0x300, ECM3 at +0x400).
+#:
+#: ``ecm3_addr_locs`` is left at the default pair: A05's area addresses live at
+#: ASW-relative ``0x540``, which the default already tries second. Stating the
+#: single value would be a narrower claim than the evidence supports — the
+#: fallback is what proved it.
+#:
+#: ``cal_block_length`` is the declared block length, ``0x200`` past where this
+#: bin's own CAL CRC reaches (``0x9FA00``) — the same relationship SC8S50 shows.
+#: Two samples is not a rule; it is used only as an upper bound for area range
+#: checks, where the looser of the two candidate values costs nothing and the
+#: tighter one could reject a legitimate area.
+SCGA05_STRUCTURE = StructureSpec(
+    name="SCGA05",
+    cal_file_offset=0x220000,
+    cal_base_address=0xA0820000,
+    cal_block_length=0x9FC00,
+    asw_file_offset=0x20000,
 )
 
 

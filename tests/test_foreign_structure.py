@@ -9,15 +9,22 @@ against a **genuinely different structure**: box code `3CN906259B`, software
 What is pinned here is the **decision and its loudness**, not the wording:
 
 * F1 the XDF's declared ``BASEOFFSET`` is honoured, including ``0``;
-* F2 preflight refuses the bin as inspect-only and never writable;
+* F2 preflight recognises the car and still refuses the *pairing* — the A05
+  base XDF addresses the wrong part of the bin, so it is blocked, never writable;
 * F3 a partially-matching profile still fails, and **shape-mismatched tables are
   refused for shape reasons** — the safety claim this module exists for;
 * F4 both switch-patch XDFs fail loudly, by their two distinct mechanisms;
   a refused bin makes no patch claim at all; and an unreadable patch XDF is an
   error rather than an absent patch (the CR-20260815-02 class), pinned with a
   passing control so the assertion cannot survive a permanently broken detector;
-* F5 the checksum layer cannot locate either checksum, and the two reasons are
-  different in kind — CAL_CRC is one address constant away, ECM3 is not.
+* F5 the checksum layer cannot locate either checksum *under SC8S50's layout*,
+  and the two reasons are different in kind — CAL_CRC is one address constant
+  away, ECM3 is not;
+* F6 the A05 base profile (U5): it resolves against its own XDF and nothing
+  else, the nine ignition grids are declared (16, 18) as a positive claim that
+  a wrong declaration still fails, and the per-car facts SC8S50 needs — the
+  kg/stk trap, the float-bug flags — are measured absent here rather than
+  copied across.
 
 The A05 files are a third party's calibration and are **not committed** — like
 the SC8S50 files, they are gitignored and you drop your own copies in. Every
@@ -33,15 +40,24 @@ from __future__ import annotations
 
 import hashlib
 import os
+from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from simoscal import checksum as ck
 from simoscal.calfile import CalFile
-from simoscal.preflight import INSPECT_ONLY, preflight
-from simoscal.tune.profile import ProfileResolutionError, resolve
-from simoscal.tune.profiles import SC8S50
+from simoscal.preflight import BLOCKED, preflight
+from simoscal.tune.profile import (
+    TAG_KG_PER_STROKE,
+    Profile,
+    ProfileResolutionError,
+    TableSpec,
+    TableUnavailableError,
+    resolve,
+)
+from simoscal.tune.profiles import BASE_PROFILES, PROFILES, SC8S50, SCGA05
 from simoscal.tune.profiles.switchpatch_2933 import SWITCH_PATCH_2933
 from simoscal.xdf import XdfParseError, parse_xdf
 from simoscal.checksum import SC8S50_STRUCTURE
@@ -111,9 +127,15 @@ def _require(*paths: Path) -> None:
 
 @pytest.fixture(scope="module")
 def a05_cal() -> CalFile:
-    """The A05 bin opened against its own base XDF. Read-only; never edited."""
+    """The A05 bin opened against its own base XDF. Read-only; never edited.
+
+    Opened under A05's own structure. Resolution only inspects names and shapes,
+    so the structure does not change any assertion here — but handing this
+    fixture SC8S50's layout, as it did before U5, made every test that touches it
+    read as though the wrong car's constants were in play.
+    """
     _require(A05_BIN, A05_XDF)
-    return CalFile.open(str(A05_XDF), str(A05_BIN), structure=SC8S50_STRUCTURE)
+    return CalFile.open(str(A05_XDF), str(A05_BIN), structure=ck.SCGA05_STRUCTURE)
 
 
 # --------------------------------------------------------------------------- #
@@ -147,45 +169,84 @@ def test_f1_a05_patch_xdf_uses_a_third_base_offset() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# F2 — preflight refuses it: inspect-only, never writable
+# F2 — preflight recognises the car and still refuses the *pairing*
 # --------------------------------------------------------------------------- #
-def test_f2_a05_bin_is_inspect_only_and_never_writable() -> None:
+# These were "A05 is inspect-only because nothing maps it". Since U5 something
+# does map it, and the refusal moved to a different and more specific reason:
+# `SCGa05_cal.xdf` declares ``BASEOFFSET 0`` for addresses that are CAL-relative
+# to 0x220000, so it names every table correctly and reads every one of them
+# from the wrong place. The claims below are the ones that survived the change —
+# the bin is never writable through this file, the refusal says why, and nothing
+# on either file is modified — plus the new one, that the reason is now the
+# faulty definition rather than an unrecognised car.
+def test_f2_a05_is_recognised_but_never_writable_through_this_xdf() -> None:
     _require(A05_BIN, A05_XDF)
     v = preflight(A05_BIN, A05_XDF)
-    assert v.status == INSPECT_ONLY
+    assert v.status == BLOCKED
     assert v.ok_to_edit is False
     assert v.writable is False
+    # The profile resolved — that is what changed — but resolution is not
+    # permission, and the two must stay separately readable off the verdict.
+    assert v.profile_name == "SCGA05"
     assert v.profile_matched is False
-    assert v.profile_name is None
+    assert v.advanced["profile_resolved"] is True
     assert v.bin_sha256 == _sha(A05_BIN)
 
 
-def test_f2_preflight_reports_the_profile_misses_that_caused_the_refusal() -> None:
-    """A refusal has to say *what* did not match, or it cannot be acted on."""
-    _require(A05_BIN, A05_XDF)
-    v = preflight(A05_BIN, A05_XDF)
-    misses = (v.advanced or {}).get("profile_misses")
-    assert misses, "an INSPECT_ONLY verdict must carry the profile misses"
-    assert any("IP_IGA_BAS_IVVT_VVL_PORT_L" in m for m in misses)
+def test_f2_the_refusal_names_the_offset_disagreement_in_both_directions() -> None:
+    """A refusal has to say *what* did not match, or it cannot be acted on.
 
-
-def test_f2_refusal_names_the_software_the_file_declares_itself_to_be() -> None:
-    """A refusal has to say what the file *is*, not only what it is not.
-
-    The deftitle is the XDF's own claim and is never what recognition turns on —
-    resolution by symbol and shape is — but quoting it back turns "not ours" into
-    a fact the reader can act on: this is `SCGA0531_C_OEM.a2l`, which we do not
-    map, rather than an unnamed file that failed for unstated reasons.
+    Here that means both numbers: what the XDF claims and what the bin holds.
+    One of them alone is not actionable — "the base offset is wrong" leaves the
+    reader with no way to tell which file to replace.
     """
     _require(A05_BIN, A05_XDF)
     v = preflight(A05_BIN, A05_XDF)
-    assert v.status == INSPECT_ONLY
-    assert "SCGA0531_C_OEM.a2l" in v.summary
+    assert v.advanced["xdf_base_offset"] == "0x0"
+    assert v.advanced["profile_cal_file_offset"] == "0x220000"
+    blob = " ".join(v.reasons)
+    assert "0x0" in blob and "0x220000" in blob
+    # And it must say the consequence, because "wrong offset" reads like a
+    # cosmetic complaint: the danger is that a write lands where no checksum
+    # looks, so the bad bin builds and flashes without a single warning.
+    assert "flash" in blob.lower()
+
+
+def test_f2_the_xdf_really_does_read_the_wrong_bytes() -> None:
+    """The evidence behind the refusal, measured rather than asserted.
+
+    If this ever stops holding — a corrected `SCGa05_cal.xdf` is dropped in —
+    the guard above stops firing too, and it should: the two are the same fact.
+    """
+    _require(A05_BIN, A05_XDF)
+    cal = CalFile.open(str(A05_XDF), str(A05_BIN), structure=ck.SCGA05_STRUCTURE)
+    at_declared = cal.get("IP_PUT_SP").values
+    assert not at_declared.any(), (
+        "expected padding at the XDF's declared address; if this file now reads "
+        "real values its BASEOFFSET has been fixed and F2 needs rewriting"
+    )
+    # The real table is 0x220000 further in, and holds a plausible boost grid.
+    raw = np.frombuffer(
+        A05_BIN.read_bytes(), dtype="<u2", count=24,
+        offset=parse_xdf(str(A05_XDF)).get("IP_PUT_SP").z.embedded.address + 0x220000,
+    )
+    hpa = raw * parse_xdf(str(A05_XDF)).get("IP_PUT_SP").z.scaling.m
+    assert 500 < hpa.min() and hpa.max() < 3000, (
+        f"expected a plausible hPa boost grid at +0x220000, "
+        f"got {hpa.min()}..{hpa.max()}"
+    )
+
+
+def test_f2_refusal_names_the_software_the_file_declares_itself_to_be() -> None:
+    """The deftitle stays on the verdict even now that recognition succeeded.
+
+    It is the XDF's own claim and never what recognition turns on — resolution
+    by symbol and shape is — but a reader comparing two definition files for the
+    same car needs to see which one they are holding.
+    """
+    _require(A05_BIN, A05_XDF)
+    v = preflight(A05_BIN, A05_XDF)
     assert v.advanced["deftitle"] == "SCGA0531_C_OEM.a2l"
-    # And it names what was tried, so "unrecognised" is a checkable claim about a
-    # known registry rather than an opaque verdict.
-    assert v.advanced["profiles_tried"] == ["SC8S50"]
-    assert v.advanced["closest_profile"] == "SC8S50"
 
 
 def test_f2_preflight_does_not_modify_the_foreign_files() -> None:
@@ -297,16 +358,20 @@ def test_f4b_bintoolz_patch_parses_but_resolves_nothing() -> None:
     assert len(excinfo.value.misses) == len(SWITCH_PATCH_2933.names())
 
 
-def test_f4c_an_inspect_only_verdict_makes_no_switch_patch_claim() -> None:
+def test_f4c_a_refused_verdict_makes_no_switch_patch_claim() -> None:
     """On a refused bin, preflight must not claim anything about a switch patch.
 
-    Detection never runs: the profile miss short-circuits first. That is the
-    right behaviour — there is nothing to patch on a bin this tool will not
-    edit — but it must be *silence*, not a confident "no patch present".
+    Detection never runs: the refusal short-circuits first. Since U5 the
+    short-circuit is the base-offset guard rather than a profile miss, which
+    makes the silence *more* necessary rather than less — the patch XDF for this
+    car does declare the right base offset, so a detector reached through the
+    faulty base XDF could return a confident answer about a bin nothing else
+    here will touch.
     """
     _require(A05_BIN, A05_XDF, A05_PATCH_SIMOSCAL)
     v = preflight(A05_BIN, A05_XDF, switch_patch_xdf=A05_PATCH_SIMOSCAL)
-    assert v.status == INSPECT_ONLY
+    assert v.status == BLOCKED
+    assert v.switch_patch_present is None
     advanced = v.advanced or {}
     assert "switch_patch_present" not in advanced
     assert "switch_patch_slot1_range" not in advanced
@@ -501,3 +566,273 @@ def test_every_foreign_file_is_unmodified_by_this_module() -> None:
         # Re-read and re-hash; any in-place write by the read paths shows up here.
         assert _sha(path) == hashlib.sha256(path.read_bytes()).hexdigest()
         assert path.stat().st_size > 0
+
+
+# --------------------------------------------------------------------------- #
+# F6 — the A05 base profile (U5)
+# --------------------------------------------------------------------------- #
+# What F3 pins from the other side: the SC8S50 map must not resolve here. These
+# pin that a map authored *for* this car does — and that making a second shape
+# legitimate did not make the shape check optional.
+
+def test_f6_the_a05_profile_fully_resolves_against_its_own_xdf(a05_cal) -> None:
+    """Every logical name the A05 map declares binds to a real table, exactly."""
+    resolved = resolve(SCGA05, a05_cal, xdf_label=str(A05_XDF))
+    assert len(resolved) == len(SCGA05.names())
+    assert set(resolved.names()) == set(SCGA05.names())
+
+
+def test_f6_the_nine_ignition_grids_are_16x18_here_and_16x16_there() -> None:
+    """The same nine symbols, two legitimate shapes — declared, never inferred."""
+    _require(A05_XDF, S50_XDF)
+    a05, s50 = parse_xdf(str(A05_XDF)), parse_xdf(str(S50_XDF))
+    for name in sorted(SHAPE_MISMATCH_NAMES):
+        key = SCGA05[name].key
+        assert key == SC8S50[name].key, "the two maps must be naming one symbol"
+        assert a05.get(key).shape == (16, 18)
+        assert s50.get(key).shape == (16, 16)
+        assert SCGA05[name].shape == (16, 18)
+        assert SC8S50[name].shape == (16, 16)
+
+
+def test_f6_declaring_the_wrong_shape_for_a05_still_fails(a05_cal) -> None:
+    """The mutation that proves the check is intact, not bypassed per car.
+
+    Per-car shape declarations exist so that two different grids can both be
+    described truthfully. The hazard they introduce is that "declared" starts to
+    read as "allowed", so this rebuilds the A05 profile with SC8S50's (16, 16)
+    and requires it to be refused — on the same file that accepts (16, 18).
+    """
+    wrong = Profile(
+        name="SCGA05-wrong-shape",
+        xdf=SCGA05.xdf,
+        specs={
+            n: (replace(s, shape=(16, 16)) if n in SHAPE_MISMATCH_NAMES else s)
+            for n, s in SCGA05.specs.items()
+        },
+        structure=SCGA05.structure,
+    )
+    with pytest.raises(ProfileResolutionError) as excinfo:
+        resolve(wrong, a05_cal, xdf_label=str(A05_XDF))
+    by_name = {m.name: m for m in excinfo.value.misses}
+    assert set(by_name) == SHAPE_MISMATCH_NAMES, (
+        "only the nine mutated tables may fail; anything else means the mutation "
+        "broke something other than the shape claim"
+    )
+    for name in SHAPE_MISMATCH_NAMES:
+        assert "shape" in by_name[name].reason
+
+
+def test_f6_the_a05_profile_does_not_resolve_against_the_sc8s50_xdf() -> None:
+    """The refusal is symmetric, and for the same reason in both directions."""
+    _require(S50_BIN, S50_XDF)
+    s50_cal = CalFile.open(str(S50_XDF), str(S50_BIN), structure=SC8S50_STRUCTURE)
+    with pytest.raises(ProfileResolutionError) as excinfo:
+        resolve(SCGA05, s50_cal, xdf_label=str(S50_XDF))
+    by_name = {m.name: m for m in excinfo.value.misses}
+    assert set(by_name) == SHAPE_MISMATCH_NAMES
+    for name in SHAPE_MISMATCH_NAMES:
+        reason = by_name[name].reason
+        assert "(16, 16)" in reason and "(16, 18)" in reason
+
+
+def test_f6_the_a05_profile_is_registered_and_declares_a_structure() -> None:
+    """Registration is what makes preflight try it; a structure is what earns it."""
+    assert PROFILES["SCGA05"] is SCGA05
+    assert SCGA05 in BASE_PROFILES
+    assert SCGA05.structure is ck.SCGA05_STRUCTURE
+    assert SCGA05.structure.cal_file_offset == A05_CAL_FILE_OFFSET
+    assert SCGA05.structure.cal_base_address == A05_CAL_BASE_ADDRESS
+
+
+def test_f6_ae1_opening_and_saving_the_a05_bin_changes_nothing(tmp_path) -> None:
+    """AE1, on the foreign car: open → save with no edits → byte-identical."""
+    _require(A05_BIN, A05_XDF)
+    cal = CalFile.open(
+        str(A05_XDF), str(A05_BIN), structure=ck.SCGA05_STRUCTURE,
+        float_bug_symbols=SCGA05.float_bug_symbols,
+        stock_references=SCGA05.stock_references,
+    )
+    out = tmp_path / "a05_unchanged.bin"
+    cal.save(out)
+    assert out.read_bytes() == A05_BIN.read_bytes()
+
+
+def test_f6_both_a05_checksums_verify_under_the_declared_structure() -> None:
+    """The declared spec must reproduce what discovery finds, not merely resemble it."""
+    _require(A05_BIN)
+    data = A05_BIN.read_bytes()
+    for report in ck.verify(data, ck.SCGA05_STRUCTURE):
+        assert report.can_verify is True, report.detail
+        assert report.is_stale is False
+    found = ck.discover_structure(data, name="SCGA05")
+    assert found.cal_file_offset == ck.SCGA05_STRUCTURE.cal_file_offset
+    assert found.cal_base_address == ck.SCGA05_STRUCTURE.cal_base_address
+    assert (found.asw_file_offset + found.ecm3_addr_locs[0]
+            == ck.SCGA05_STRUCTURE.asw_file_offset
+            + ck.SCGA05_STRUCTURE.ecm3_addr_locs[1])
+
+
+# ---- the per-car facts that did NOT transfer ------------------------------- #
+def test_f6_the_kg_per_stroke_trap_is_an_sc8s50_xdf_defect_not_a_car_fact() -> None:
+    """Same bytes in both ECUs; only SC8S50's definition file misreads them.
+
+    `C_M_AIR_CYL_SP_MAX` — Maximum allowed airmass setpoint is the library's
+    single most dangerous table: writing the mg/stk figure into SC8S50's
+    identity-scaled store raises the ceiling a millionfold and removes the
+    limiter. This pins *why* the A05 map does not carry the tag — not because
+    nobody got round to it, but because this XDF already carries the 1e6 factor,
+    so tagging it would reintroduce the same millionfold error on this car.
+    """
+    _require(A05_XDF, S50_XDF, A05_BIN, S50_BIN)
+    a05 = parse_xdf(str(A05_XDF)).get("C_M_AIR_CYL_SP_MAX")
+    s50 = parse_xdf(str(S50_XDF)).get("C_M_AIR_CYL_SP_MAX")
+    # Identical raw stores: 0.001389 kg/stk on both cars.
+    a05_raw = np.frombuffer(A05_BIN.read_bytes(), dtype="<f4", count=1,
+                            offset=a05.z.embedded.address + A05_CAL_FILE_OFFSET)[0]
+    s50_raw = np.frombuffer(S50_BIN.read_bytes(), dtype="<f4", count=1,
+                            offset=s50.z.embedded.address + 0x200000)[0]
+    assert a05_raw == pytest.approx(s50_raw, rel=1e-6)
+    # Different equations: A05 converts to the mg/stk its label claims, S50 does not.
+    assert a05.z.scaling.m == 1e6
+    assert s50.z.scaling.m == 1.0
+    assert TAG_KG_PER_STROKE in SC8S50["airmass_setpoint_max"].tags
+    assert TAG_KG_PER_STROKE not in SCGA05["airmass_setpoint_max"].tags
+    # And with no tag there must be no owner pointing at the converting writer,
+    # which refuses an untagged table — that pairing would leave the ceiling
+    # with no write path at all rather than a safe one.
+    assert SCGA05["airmass_setpoint_max"].owner == ""
+
+
+def test_f6_a05_flags_no_float_bug_tables_and_that_is_a_measurement() -> None:
+    """An empty float-bug set must be a stated answer, not an unfilled field.
+
+    The tag disables a guard, so it is only correct where the XDF's declared
+    range is genuinely an editor artifact. The check is objective: does stock
+    already sit outside the declared range? On SC8S50 two tables do. On A05 —
+    whose XDF scales those same two floats correctly — none does.
+    """
+    _require(A05_XDF, A05_BIN, S50_XDF, S50_BIN)
+    assert SCGA05.float_bug_symbols == frozenset()
+    assert SC8S50.float_bug_symbols  # the contrast, so "empty" is not the default
+
+    def breaches(xdf_path, bin_path, profile, cal_offset):
+        model, data = parse_xdf(str(xdf_path)), bin_path.read_bytes()
+        out = set()
+        for name in profile.names():
+            table = model.get(profile[name].key)
+            emb, scaling, hi = table.z.embedded, table.z.scaling, table.z.max
+            if hi is None or not emb.is_float:
+                continue  # the float-bug class is exactly the float32 stores
+            values = np.frombuffer(
+                data, dtype="<f4", count=emb.rows * emb.cols,
+                offset=emb.address + cal_offset,
+            ) * (scaling.m if scaling.is_linear else 1.0)
+            if values.max() > hi:
+                out.add(name)
+        return out
+
+    assert breaches(A05_XDF, A05_BIN, SCGA05, A05_CAL_FILE_OFFSET) == set()
+    assert breaches(S50_XDF, S50_BIN, SC8S50, 0x200000) == {
+        "manifold_pressure_max", "manifold_pressure_limit_offset",
+    }
+
+
+def test_f6_a05_declares_no_stock_references() -> None:
+    """Nobody has measured this car for advice, so the guidance must stay silent."""
+    assert SCGA05.stock_references == {}
+    assert SC8S50.stock_references, "the contrast: SC8S50 has been measured"
+
+
+# ---- declared gaps --------------------------------------------------------- #
+def test_f6_the_ten_absent_names_are_declared_not_omitted() -> None:
+    """A gap that was investigated must be distinguishable from one that was not."""
+    assert set(SCGA05.unavailable) == {
+        "airmass_full_load",
+        "static_rev_fuel_cut_offset",
+        "ignition_temp_correction_reference",
+        "pedal_dct_offroad_high",
+        "pedal_dct_offroad_low",
+        "lambda_rpm_axis",
+        "lambda_load_axis",
+        "ignition_temp_iat_axis",
+        "cylinder_head_temp_rpm_axis",
+        "cylinder_head_temp_charge_axis",
+    }
+    # Every one of them is a name the *other* car has, which is what makes the
+    # declaration meaningful rather than a list of arbitrary strings.
+    assert set(SCGA05.unavailable) <= set(SC8S50.names())
+    # Together they account for the whole difference between the two maps.
+    assert set(SC8S50.names()) - set(SCGA05.names()) == set(SCGA05.unavailable)
+
+
+def test_f6_each_declared_gap_is_genuinely_absent_from_the_xdf() -> None:
+    """The declaration is a claim about the file; check it against the file."""
+    _require(A05_XDF)
+    model = parse_xdf(str(A05_XDF))
+    for name in SCGA05.unavailable:
+        key = SC8S50[name].key
+        with pytest.raises(KeyError):
+            model.get(key)
+
+
+def test_f6_asking_for_a_declared_gap_says_why(tmp_path) -> None:
+    """The lookup failure has to carry the reason, or declaring it bought nothing."""
+    with pytest.raises(TableUnavailableError) as excinfo:
+        SCGA05["lambda_rpm_axis"]
+    exc = excinfo.value
+    assert exc.profile == "SCGA05" and exc.name == "lambda_rpm_axis"
+    assert "embedded" in exc.reason
+    assert "lambda_rpm_axis" in str(exc) and "SCGA05" in str(exc)
+    # It is still a KeyError, so mapping-protocol callers are unaffected.
+    assert isinstance(exc, KeyError)
+    # A name neither mapped nor declared stays an ordinary KeyError — "never
+    # heard of it" and "looked for it, not there" must not collapse together.
+    with pytest.raises(KeyError) as plain:
+        SCGA05["not_a_logical_name"]
+    assert not isinstance(plain.value, TableUnavailableError)
+
+
+def test_f6_a_name_cannot_be_both_mapped_and_declared_absent() -> None:
+    with pytest.raises(ValueError, match="both as a mapped table and as unavailable"):
+        Profile(
+            name="contradictory",
+            xdf="x.xdf",
+            specs={"a": TableSpec(name="a", key="A", description="d")},
+            unavailable={"a": "absent"},
+        )
+
+
+def test_f6_merging_lets_one_profile_fill_another_s_declared_gap() -> None:
+    """A patch profile that supplies a missing table closes the gap, not doubles it."""
+    base = Profile(name="base", xdf="b.xdf", unavailable={"a": "absent on this car"})
+    patch = Profile(
+        name="patch", xdf="p.xdf",
+        specs={"a": TableSpec(name="a", key="0x1", description="added by the patch")},
+    )
+    merged = base.merged_with(patch)
+    assert "a" in merged.specs
+    assert merged.unavailable == {}
+
+
+# ---- what the two maps must agree about ------------------------------------ #
+def test_f6_shared_names_are_filed_under_the_same_heading() -> None:
+    """Groups are a property of the logical name, so the two maps must not drift.
+
+    The A05 map writes its classification out rather than importing SC8S50's, so
+    that a change to one profile's filing cannot silently restate itself as a
+    claim about the other car. This is the check that keeps them honest without
+    reintroducing the coupling.
+    """
+    shared = set(SCGA05.names()) & set(SC8S50.names())
+    assert len(shared) == 60, "the overlap moved; check the map before the test"
+    mismatched = {
+        n: (SC8S50[n].group, SCGA05[n].group)
+        for n in shared
+        if SC8S50[n].group != SCGA05[n].group
+    }
+    assert mismatched == {}
+
+
+def test_f6_every_a05_table_is_filed_somewhere() -> None:
+    assert SCGA05.ungrouped() == []

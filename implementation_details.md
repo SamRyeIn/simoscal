@@ -102,6 +102,18 @@ under one car's safety rules on a file that might be another's. When none match,
 the refusal quotes the XDF's `deftitle` so it names what the file *is* — the
 title is evidence for the reader and never an input to matching.
 
+A matched profile is also the second opinion on *where* the XDF reads. Profile
+resolution matches on symbol and shape, which says nothing about addressing, so
+preflight compares the XDF's declared base offset against the matched profile's
+`structure.cal_file_offset` and blocks the pairing when they disagree. This is
+not hypothetical: `SCGa05_cal.xdf` names every A05 table correctly and declares
+`BASEOFFSET 0` for addresses that are CAL-relative to `0x220000`, so an edit
+through it would write `0x220000` short of its table — outside every range the
+CAL checksums cover, producing a bin that builds clean and flashes wrong. The
+verdict keeps the two facts separate: `profile_name` and
+`advanced.profile_resolved` say the car was recognised, while `profile_matched`
+and `writable` stay false.
+
 What is **not** implemented is the *graduated trust model* on top of this: every
 registered profile is equally writable once it matches, so there is no
 "contributed, readable on arrival, writable only once validated" tier. That
@@ -220,9 +232,14 @@ agent:
   built — `preflight` resolves against `BASE_PROFILES` and writability follows
   from the match, not from a hardcoded name — but every registered profile is
   equally trusted. A contributed profile that is readable on arrival and
-  writable only once marked validated is still beta-program work. Note also
-  that only SC8S50 is registered today, so a second box code needs its map file
-  (U5) before any of this is exercised end-to-end.
+  writable only once marked validated is still beta-program work.
+- **A05 is mapped but has never been edited.** The `SCGA05` profile is
+  registered and resolves cleanly against `SCGa05_cal.xdf`, but that file's
+  `BASEOFFSET` is wrong (see above), so preflight blocks the pairing and no A05
+  read or write has ever produced a real value. Everything downstream of
+  resolution — the domain calls, the build gates, the byte audit — is therefore
+  unexercised on this car. A corrected definition file, not a code change, is
+  what would change that. Do not describe A05 as a supported car.
 - ~~**Per-car safety knowledge is not yet consolidated onto the profile.**~~
   Done. `Profile` now carries the car's `StructureSpec`, derives
   `float_bug_symbols` from the specs tagged `TAG_FLOAT_BUG`, and supplies the

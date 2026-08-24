@@ -30,7 +30,8 @@ the file, and what address the ECU maps it to.**
 | Full bin size            | `0x400000`            | `0x400000`            |
 
 Both cars' checksums verify clean on their stock bins once those constants are
-right. Nothing else in the checksum layer needed changing.
+right. Nothing else in the checksum layer needed changing. Both are declared:
+`SC8S50_STRUCTURE` and `SCGA05_STRUCTURE` in `simoscal/checksum.py`.
 
 ## 2. The one thing that made this findable
 
@@ -151,6 +152,28 @@ through this XDF at its declared offset is meaningless**. A port must not treat
 a declared `BASEOFFSET` as authoritative — cross-check it against the CAL block
 offset discovered from the file.
 
+**This cross-check is now code, not procedure.** Once a profile declares a
+`StructureSpec`, preflight has a second, independent opinion about where the CAL
+block starts, and it compares the two before calling a bin writable:
+
+```
+preflight(3CN906259B__0002_SCGA05.bin, SCGa05_cal.xdf)
+  -> BLOCKED, profile_name=SCGA05, advanced.profile_resolved=True
+     "This XDF's tables match the SCGA05 profile, but it addresses the wrong
+      part of the bin — the definition file is faulty."
+```
+
+Recognition and permission are separate results here, and both are reported: the
+map is correct and the file is not. The reason it is `BLOCKED` rather than
+`INSPECT_ONLY` is that nothing read through this pairing is the car's — offering
+it read-only would be offering padding as calibration. And the reason the check
+is worth its lines is what the alternative looks like: `IP_PUT_SP` — Pressure up
+throttle setpoint is declared at `0x1F054`, so an edit through this file writes
+its boost grid to file `0x1F054` instead of `0x23F054`. That lands outside every
+range the CAL checksums cover, so `build()` would correct the checksums, verify
+them clean, and hand back a flashable bin with the boost table untouched and 48
+bytes of unrelated flash overwritten.
+
 ## 8. Procedure for the next structure
 
 1. Run `probe_foreign.py <bin> <xdf> [patch-xdf]`. Read the STRUCTURE DISCOVERY
@@ -160,7 +183,10 @@ offset discovered from the file.
    anything it says about the new bin.
 3. Confirm the XDF's `BASEOFFSET` equals the discovered CAL file offset. If it
    does not, the XDF is wrong; check a known breakpoint axis both ways as in
-   section 7 before deciding which to trust.
+   section 7 before deciding which to trust. Preflight enforces this once the
+   profile exists, so a mismatch you miss here surfaces as a `BLOCKED` verdict
+   rather than as wrong bytes — but finding it at this step saves writing a map
+   against a file you cannot use.
 4. Only then write the profile's `StructureSpec`. A declared spec is worth
    having even though discovery works: it lets a bin that does not match the
    profile the user selected be caught, instead of being silently accepted
@@ -232,13 +258,71 @@ under the spec it was given. It used to return the data unchanged and raise
 nothing, which meant the caller held an uncorrected bin with no sign of it — on
 the one operation whose entire job is making a bin flash-ready.
 
+A fourth per-car fact arrived with the A05 map: **`Profile.unavailable`** —
+logical names this car does not have, each with the reason. It exists because
+leaving a name out and declaring it absent produce the same profile but not the
+same knowledge: an omission cannot be told apart from an oversight, and the
+`KeyError` it produces says nothing about whether anyone looked. A declared gap
+raises `TableUnavailableError` carrying the reason, and the two causes are
+worded differently because they have different fixes — *absent from the
+calibration* (no definition file could supply it) versus *absent from this XDF*
+(the data is in the bin, embedded in the map that uses it, with no standalone
+table to bind). A05 has five of each.
+
+## 9a. What the A05 map actually measured
+
+Every "obviously universal" fact this port touched turned out to be a fact about
+one XDF. All three below are checked by tests rather than asserted here.
+
+| Fact | SC8S50 | SCGA05 |
+|-------------------------------------------------|--------------------------|--------------------------|
+| `IP_IGA_BAS_IVVT_VVL_PORT_L[STND][i][e]` shape   | (16, 16)                 | (16, 18)                 |
+| `C_M_AIR_CYL_SP_MAX` scaling                     | identity — stores kg/stk behind an mg/stk label | `m = 1e6` — reads mg/stk correctly |
+| `C_PRS_IM_SP_MAX` / `_LIM` scaling               | identity — stock is 24x the declared max | `m = 0.01` — stock is inside it |
+| Tables tagged `TAG_FLOAT_BUG`                    | 4                        | **0**                    |
+| Tables tagged `TAG_KG_PER_STROKE`                | 1                        | **0**                    |
+
+The middle rows are the important ones, and they run *opposite* to intuition: it
+is the tag that is dangerous to copy, not to omit. `TAG_KG_PER_STROKE` tells
+`tune.limits.airmass_cap_mg()` to divide by a million before writing. On SC8S50
+that converts an mg/stk figure into the kg/stk the store actually holds; carried
+to A05, whose XDF already carries the factor, it would divide a value that is
+already correct — the same millionfold error, in the other direction, produced by
+copying the very tag that exists to prevent it. `TAG_FLOAT_BUG` is the same
+shape of hazard: it *disables* a range guard, so an empty set is the safe answer
+and it must be reached by measurement — does stock already sit outside the
+declared range? — rather than by analogy.
+
+Because A05's ceiling needs no conversion, its `airmass_setpoint_max` is left
+generically editable. Pointing it at `airmass_cap_mg()` would be worse than
+useless: that method refuses an untagged table, so the owner would leave the
+ceiling with no write path at all.
+
 ## 10. Still open
 
-- **Declared `CAL_BLOCK_LENGTH`.** The probe reports how far the CAL CRC
-  covers, which is not the same number. SC8S50 declares `0x7FC00` where its CRC
-  covers to `0x7FA00` — `0x200` more. If that relationship holds, A05's is
-  `0x9FC00`; two samples is not a rule, so confirm it independently rather than
-  assuming the offset.
+- **A05 has no usable base definition file.** This is the one that blocks the
+  port from meaning anything in practice. The `SCGA05` profile is written,
+  registered, and resolves cleanly — but the only base XDF anyone has for this
+  car is `SCGa05_cal.xdf`, whose `BASEOFFSET` defect (section 7) makes every
+  read and write through it land in the wrong place, so preflight blocks the
+  pairing. Nothing about the profile changes when a corrected file arrives: fix
+  the `BASEOFFSET` to `0x220000`, or obtain a definition that already declares
+  it, and the same profile goes `READY` with no code change. Until then A05 is
+  mapped but not editable, and no A05 edit path has ever been exercised on a
+  real read.
+- **Declared `CAL_BLOCK_LENGTH`, still two samples.** `SCGA05_STRUCTURE`
+  declares `0x9FC00` on the SC8S50 relationship — `0x200` past where the bin's
+  own CAL CRC reaches (`0x9FA00`) — because it is used only as an upper bound
+  for area range checks, where the looser of two candidate values costs nothing
+  and the tighter one could reject a legitimate area. That is a defensible
+  default, not a confirmation; the relationship is still unproven.
 - **The ASW block's file offset** (`0x40000` on S50, `0x20000` on A05) is
-  inferred from where the ECM3 addresses were found. It should be confirmed
-  against the block's own header before being written into a profile.
+  inferred from where the ECM3 addresses were found, and is now declared in both
+  structures. It should still be confirmed against the block's own header.
+  `SCGA05_STRUCTURE` leaves `ecm3_addr_locs` at the default `(0x520, 0x540)`
+  rather than pinning A05's `0x540`, so the claim stays as narrow as the
+  evidence: the fallback pair is what located it.
+- **Whether A05 mirrors the `full-profile-coverage` specs.** That effort adds 93
+  SC8S50 names. The A05 map covers the same 70-name vocabulary the SC8S50 map
+  did at the time of the port, minus its ten declared gaps. Extending it is an
+  open question, not a commitment.

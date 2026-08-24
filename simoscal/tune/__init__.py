@@ -50,7 +50,7 @@ from .profile import (
     TableSpec,
     resolve,
 )
-from .profiles import PROFILES, SC8S50, SWITCH_PATCH_2933
+from .profiles import PROFILES, SC8S50, SCGA05, SWITCH_PATCH_2933
 from .project import BASE_SPACE, PatchSpec, TableSpace, Tune, TuneError
 from .recovery import (
     RecoveryError,
@@ -91,6 +91,7 @@ __all__ = [
     # profiles
     "PROFILES",
     "SC8S50",
+    "SCGA05",
     "SWITCH_PATCH_2933",
     "Profile",
     "TableSpec",

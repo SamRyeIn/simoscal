@@ -13,11 +13,13 @@ from __future__ import annotations
 
 from ..profile import Profile
 from .sc8s50 import SC8S50
+from .scga05 import SCGA05
 from .switchpatch_2933 import SWITCH_PATCH_2933
 
 #: Every shipped profile, by name — for lookup and for the docs to enumerate.
 PROFILES: dict[str, Profile] = {
     SC8S50.name: SC8S50,
+    SCGA05.name: SCGA05,
     SWITCH_PATCH_2933.name: SWITCH_PATCH_2933,
 }
 
@@ -36,4 +38,4 @@ BASE_PROFILES: tuple[Profile, ...] = tuple(
     p for p in PROFILES.values() if p.structure is not None
 )
 
-__all__ = ["PROFILES", "BASE_PROFILES", "SC8S50", "SWITCH_PATCH_2933"]
+__all__ = ["PROFILES", "BASE_PROFILES", "SC8S50", "SCGA05", "SWITCH_PATCH_2933"]

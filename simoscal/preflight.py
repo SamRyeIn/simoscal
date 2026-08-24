@@ -474,6 +474,70 @@ def preflight(
             advanced=advanced,
         )
 
+    # -- the XDF must address the CAL block the profile declares ------------ #
+    # Profile resolution matches on symbol and shape, which says nothing about
+    # *where* the XDF reads. A definition file can name every table correctly,
+    # declare every shape correctly, and still point every address at the wrong
+    # part of the bin — `SCGa05_cal.xdf` does exactly that, declaring
+    # ``BASEOFFSET 0`` for addresses that are CAL-relative to 0x220000. Reads
+    # through it return padding; a write lands 0x220000 short of its table, in
+    # bytes no CAL checksum covers, so the bin builds clean and flashes wrong.
+    #
+    # The profile's own `StructureSpec` is the independent second opinion: it
+    # says where this car's CAL block starts, measured from the bin. If the XDF
+    # disagrees, one of the two is wrong and neither reading nor editing is
+    # safe, so this is BLOCKED rather than INSPECT_ONLY — "you may look but not
+    # touch" would still be offering values that are not the car's.
+    #
+    # ``profile`` came from BASE_PROFILES, whose membership rule *is* "declares a
+    # structure", so this is always present — but read it once rather than
+    # reaching through the Optional four times below.
+    structure = profile.structure
+    assert structure is not None, "a base profile always declares a structure"
+    # With ``base_subtract`` the XDF's addresses are ECU addresses, so the file
+    # offset of CAL-relative zero is the CAL base address minus the declared
+    # base; without it the declared base *is* that file offset. No shipped XDF
+    # uses subtract mode, but deriving the same quantity both ways means the
+    # check does not quietly stop applying if one ever does.
+    declared_cal_offset = (
+        structure.cal_base_address - model.base_offset
+        if model.base_subtract else model.base_offset
+    )
+    if declared_cal_offset != structure.cal_file_offset:
+        return _blocked(
+            bin_path=bin_path, xdf_path=xdf_path,
+            summary=(
+                f"This XDF's tables match the {profile.name} profile, but it "
+                "addresses the wrong part of the bin — the definition file is "
+                "faulty."
+            ),
+            reasons=(
+                f"The XDF's declared base offset puts the calibration block at "
+                f"{declared_cal_offset:#x}, but the {profile.name} calibration "
+                f"block is at {structure.cal_file_offset:#x} in this bin.",
+                "Every value read through this file would come from the wrong "
+                "address, and every write would land there too — outside the "
+                "region the checksums protect, so the result would build and "
+                "flash without complaint.",
+                "Use a definition file whose BASEOFFSET matches the calibration "
+                "block; the tables themselves are correctly named here.",
+            ),
+            bin_size=bin_size, bin_sha256=bin_hash, xdf_sha256=xdf_hash,
+            region_start=region_start, region_size=region_size,
+            profile_name=profile.name,
+            advanced={
+                "deftitle": model.deftitle,
+                # The profile *did* resolve; ``profile_matched`` stays False
+                # because nothing here may be edited as that car. Both facts
+                # matter to a caller, so the second one is stated rather than
+                # inferred from a name appearing beside a False flag.
+                "profile_resolved": True,
+                "xdf_base_offset": f"{model.base_offset:#x}",
+                "xdf_base_subtract": model.base_subtract,
+                "profile_cal_file_offset": f"{structure.cal_file_offset:#x}",
+            },
+        )
+
     # -- checksums ---------------------------------------------------------- #
     data = cal.binimage.to_bytes()
     checksums = _checksum_states(data)
