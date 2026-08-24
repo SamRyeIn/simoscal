@@ -88,7 +88,7 @@ from .tune import (
 )
 from .tune.domains.switchpatch import PATCH_SPACE
 from .tune.journal import VERDICT_SUPERSEDED
-from .tune.profiles import PROFILES, SWITCH_PATCH_2933
+from .tune.profiles import PROFILES, patch_profile_for
 from .tune.recovery import RecoveryError
 
 #: Bump when the request/response contract changes shape. A request carrying a
@@ -387,7 +387,10 @@ def _op_session_create(params: dict) -> dict:
 
     extra_spaces = {}
     if patch_xdf is not None:
-        extra_spaces[PATCH_SPACE] = (SWITCH_PATCH_2933, patch_xdf)
+        # The patch map for *this* car, not a fixed one — see
+        # ``profiles.patch_profile_for``. Preflight has already refused above if
+        # the car has none, so this cannot raise here.
+        extra_spaces[PATCH_SPACE] = (patch_profile_for(profile), patch_xdf)
 
     try:
         tune = Tune.open(profile, xdf=xdf_path, bin=bin_path, extra_spaces=extra_spaces)

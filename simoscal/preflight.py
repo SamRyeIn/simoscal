@@ -282,17 +282,30 @@ def _identify(
 
 
 def _detect_switch_patch(
-    bin_path: Path, switch_patch_xdf: Path
+    bin_path: Path, switch_patch_xdf: Path, profile: "Profile"
 ) -> tuple[Optional[bool], dict]:
-    """Resolve the switch-patch profile against ``switch_patch_xdf`` + the bin.
+    """Resolve ``profile``'s switch-patch map against ``switch_patch_xdf`` + the bin.
 
     Present means the five slot grids resolve *and* slot 1 decodes to real values —
     a patch declared but not applied would resolve yet decode to the as-patched
     default (or fail). Returns ``(present_or_None, advanced_detail)``; ``None``
     only on an internal error, never as a guess.
+
+    Which map to use comes from ``profile`` — the car preflight has already
+    identified — and never from the patch XDF itself. The patch tables are bound
+    by uniqueid, so another car's map would resolve against this file rather than
+    miss, and report a confident answer about 92 wrong addresses.
     """
     from .tune.profile import resolve, ProfileResolutionError
-    from .tune.profiles.switchpatch_2933 import SWITCH_PATCH_2933, slot_names
+    from .tune.profiles import patch_profile_for
+    from .tune.profiles.switchpatch_2933 import slot_names
+
+    try:
+        patch_profile = patch_profile_for(profile)
+    except KeyError as exc:
+        # "Could not look", not "not present" — the CR-20260815-02 distinction,
+        # reached here by a different route.
+        return None, {"switch_patch_error": str(exc.args[0])}
 
     try:
         patch_cal = CalFile.open(
@@ -303,7 +316,7 @@ def _detect_switch_patch(
 
     try:
         resolved = resolve(
-            SWITCH_PATCH_2933, patch_cal,
+            patch_profile, patch_cal,
             names=list(slot_names("put_setpoint")),
             xdf_label=str(switch_patch_xdf),
         )
@@ -602,7 +615,7 @@ def preflight(
     switch_advanced: dict = {}
     if switch_patch_xdf is not None:
         switch_present, switch_advanced = _detect_switch_patch(
-            bin_path, Path(switch_patch_xdf)
+            bin_path, Path(switch_patch_xdf), profile
         )
 
     # -- verdict ------------------------------------------------------------ #

@@ -23,7 +23,14 @@ from simoscal.tune.profile import (
     TableSpec,
     resolve,
 )
-from simoscal.tune.profiles import PROFILES, SC8S50, SCGA05, SWITCH_PATCH_2933
+from simoscal.tune.profiles import (
+    PATCH_PROFILES,
+    PROFILES,
+    SC8S50,
+    SCGA05,
+    SWITCH_PATCH_2933,
+    SWITCH_PATCH_2933_A05,
+)
 from simoscal.tune.profiles import sc8s50 as sc_map
 from simoscal.tune.profiles import switchpatch_2933 as sp_map
 from simoscal.checksum import SC8S50_STRUCTURE
@@ -315,6 +322,13 @@ def test_shipped_profiles_are_registered() -> None:
         "SC8S50": SC8S50,
         "SCGA05": SCGA05,
         "SwitchPatch2933": SWITCH_PATCH_2933,
+        "SwitchPatch2933_A05": SWITCH_PATCH_2933_A05,
+    }
+    # Every car has exactly one patch map, and every patch map belongs to a
+    # registered car — the pairing preflight follows instead of guessing.
+    assert PATCH_PROFILES == {
+        "SC8S50": SWITCH_PATCH_2933,
+        "SCGA05": SWITCH_PATCH_2933_A05,
     }
 
 

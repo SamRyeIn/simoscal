@@ -26,7 +26,7 @@ from simoscal.preflight import (
     AmbiguousProfileError,
     preflight,
 )
-from simoscal.tune.profiles import BASE_PROFILES, PROFILES, SC8S50
+from simoscal.tune.profiles import BASE_PROFILES, PATCH_PROFILES, PROFILES, SC8S50
 
 CODE_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = CODE_ROOT.parent
@@ -172,7 +172,9 @@ def test_base_profiles_are_the_ones_that_declare_a_structure() -> None:
         p.name for p in PROFILES.values() if p.structure is not None
     ]
     unregistered = [p.name for p in PROFILES.values() if p not in BASE_PROFILES]
-    assert unregistered == ["SwitchPatch2933"]
+    # Exactly the switch-patch maps, one per car — named by the registry that
+    # says which car each belongs to, so adding a car cannot make this stale.
+    assert set(unregistered) == {p.name for p in PATCH_PROFILES.values()}
     assert all(p.structure is None for p in PROFILES.values()
                if p.name in unregistered)
 

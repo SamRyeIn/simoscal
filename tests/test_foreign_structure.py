@@ -24,7 +24,12 @@ What is pinned here is the **decision and its loudness**, not the wording:
   else, the nine ignition grids are declared (16, 18) as a positive claim that
   a wrong declaration still fails, and the per-car facts SC8S50 needs — the
   kg/stk trap, the float-bug flags — are measured absent here rather than
-  copied across.
+  copied across;
+* F7 the car's two XDFs use two different address conventions and may still
+  share one buffer, because what has to agree is where addresses land;
+* F8 the A05 switch-patch map (U6): the two patch definitions are one file with
+  the addresses moved, the committed address book is what role mapping produces,
+  and neither car's map resolves against the other's file.
 
 The A05 files are a third party's calibration and are **not committed** — like
 the SC8S50 files, they are gitignored and you drop your own copies in. Every
@@ -48,7 +53,7 @@ import pytest
 
 from simoscal import checksum as ck
 from simoscal.calfile import CalFile
-from simoscal.preflight import BLOCKED, preflight
+from simoscal.preflight import BLOCKED, READY, _detect_switch_patch, preflight
 from simoscal.tune.profile import (
     TAG_KG_PER_STROKE,
     Profile,
@@ -57,9 +62,24 @@ from simoscal.tune.profile import (
     TableUnavailableError,
     resolve,
 )
-from simoscal.tune.profiles import BASE_PROFILES, PROFILES, SC8S50, SCGA05
+from simoscal.tune.profiles import (
+    BASE_PROFILES,
+    PROFILES,
+    SC8S50,
+    SCGA05,
+    patch_profile_for,
+)
 from simoscal.tune.project import TuneError, _open_shared_space
-from simoscal.tune.profiles.switchpatch_2933 import SWITCH_PATCH_2933
+from simoscal.tune.profiles.switchpatch_2933 import (
+    SWITCH_PATCH_2933,
+    build_switch_patch_profile,
+)
+from simoscal.tune.profiles.switchpatch_2933_a05 import (
+    A05_PUT_GRID_UIDS,
+    A05_SLOT_SETTING_UIDS,
+    A05_STANDALONE_UIDS,
+    SWITCH_PATCH_2933_A05,
+)
 from simoscal.xdf import XdfParseError, parse_xdf
 from simoscal.checksum import SC8S50_STRUCTURE
 
@@ -442,12 +462,14 @@ def test_f4a_simoscal_style_patch_xdf_fails_to_parse() -> None:
 
 
 def test_f4b_bintoolz_patch_parses_but_resolves_nothing() -> None:
-    """``SWITCH_PATCH_2933`` is keyed to hardcoded S50 addresses.
+    """``SWITCH_PATCH_2933`` is keyed to S50 addresses and stays that way.
 
-    It is not merely untested against another box code — it is non-portable by
-    construction, and every one of its names must miss here. If some subset ever
-    started resolving against a foreign patch, that would mean addresses were
-    being matched by luck, which is far worse than failing.
+    Since U6 the patch *is* mapped for A05 — but by a second address book, not by
+    this profile learning to stretch. So the claim here is unchanged and now
+    load-bearing in a new way: S50's map against A05's file must still miss every
+    name, because a subset resolving would mean addresses matching by luck. What
+    replaced the old "non-portable by construction" reading is F8, which pins the
+    other direction too and shows how the port was actually made.
     """
     _require(A05_PATCH_BINTOOLZ, A05_BIN)
     patch_cal = CalFile.open(str(A05_PATCH_BINTOOLZ), str(A05_BIN), structure=SC8S50_STRUCTURE)
@@ -1039,3 +1061,226 @@ def test_f7_a_shared_xdf_that_lands_elsewhere_is_still_refused() -> None:
         _open_shared_space(
             "wrong", Profile(name="X", xdf=S50_XDF.name), S50_XDF, base,
         )
+
+
+# --------------------------------------------------------------------------- #
+# F8 — the A05 switch-patch map (U6)
+# --------------------------------------------------------------------------- #
+# The patch is one BinToolz build cut for several file structures, so porting it
+# was not a re-derivation of what the tables mean — that was settled once, on
+# S50 — but of where they sit. These tests pin both halves of that claim: that
+# the two definitions really are the same file with the addresses moved, and
+# that the address book committed in the module is the one that correspondence
+# produces.
+def _patch_role_correspondence() -> list[tuple[int, int]]:
+    """``(s50 uniqueid, a05 uniqueid)`` for all 185 tables, paired by role.
+
+    The pairing is the two files' shared table order, and it is only usable
+    because every pair agrees on title, symbol and category path — asserted by
+    the test below before any of the others leans on it. Category path is what
+    carries the role for the five grids titled ``PUT setpoint``: only
+    ``… | Map Slot N`` says which slot one is.
+    """
+    s50 = parse_xdf(str(S50_PATCH_BINTOOLZ)).tables
+    a05 = parse_xdf(str(A05_PATCH_BINTOOLZ)).tables
+    assert len(s50) == len(a05) == 185
+    for s, a in zip(s50, a05):
+        assert (s.title, s.symbol, tuple(c.name for c in s.categories)) == (
+            a.title, a.symbol, tuple(c.name for c in a.categories)
+        ), f"the two patch XDFs diverge at {s.title!r} — the pairing is not by role"
+    return [(s.uniqueid, a.uniqueid) for s, a in zip(s50, a05)]
+
+
+def test_f8_the_two_patch_definitions_are_one_file_with_the_addresses_moved() -> None:
+    """The premise the whole port rests on, measured rather than assumed.
+
+    If these two files were independently authored definitions, role mapping
+    would be a judgement call per table. They are not: 185 tables each, and index
+    for index the same title, the same A2L symbol, the same category path. Only
+    the addresses differ.
+    """
+    _require(S50_PATCH_BINTOOLZ, A05_PATCH_BINTOOLZ)
+    pairs = _patch_role_correspondence()
+    assert all(s != a for s, a in pairs), "the addresses must be what differs"
+
+
+def test_f8_the_committed_a05_addresses_are_the_ones_role_mapping_produces() -> None:
+    """Re-derive the address book from both XDFs and compare it to the module.
+
+    This is the check that makes the 92 hand-committed hex constants trustworthy:
+    they are not read back from the same place they were written, they are
+    re-derived from the two definition files and compared. A transposed digit
+    fails here instead of reaching a bin.
+    """
+    _require(S50_PATCH_BINTOOLZ, A05_PATCH_BINTOOLZ)
+    derived = dict(_patch_role_correspondence())
+    for name in sorted(SWITCH_PATCH_2933.names()):
+        expected = derived[int(SWITCH_PATCH_2933[name].key, 16)]
+        assert int(SWITCH_PATCH_2933_A05[name].key, 16) == expected, (
+            f"{name}: A05 map says {SWITCH_PATCH_2933_A05[name].key}, "
+            f"role mapping says {expected:#x}"
+        )
+
+
+def test_f8_the_a05_offsets_are_not_one_delta_from_s50s() -> None:
+    """Why the book had to be read off the file rather than computed from S50's.
+
+    Three different deltas across the 92. Adding the most common one would have
+    placed twenty-five tables in the wrong place — and, because these tables are
+    bound by uniqueid rather than by name, resolution would not have noticed.
+    """
+    deltas = [
+        int(SWITCH_PATCH_2933_A05[n].key, 16) - int(SWITCH_PATCH_2933[n].key, 16)
+        for n in SWITCH_PATCH_2933.names()
+    ]
+    assert set(deltas) == {0x13000, 0x12F60, 0x13020}
+    assert sum(d != 0x13000 for d in deltas) == 25
+
+
+def test_f8_the_a05_patch_map_fully_resolves_against_its_own_xdf() -> None:
+    """Happy path: all 92, on the stock A05 bin, against A05's own patch XDF."""
+    _require(A05_BIN, A05_PATCH_BINTOOLZ)
+    patch_cal = CalFile.open(
+        str(A05_PATCH_BINTOOLZ), str(A05_BIN), structure=ck.SCGA05_STRUCTURE
+    )
+    resolved = resolve(
+        SWITCH_PATCH_2933_A05, patch_cal, xdf_label=str(A05_PATCH_BINTOOLZ)
+    )
+    assert len(resolved) == len(SWITCH_PATCH_2933_A05.names()) == 92
+
+
+def test_f8_neither_patch_map_resolves_against_the_other_car_s_xdf() -> None:
+    """Both directions, all 92 each way — the claim F4b only made one way.
+
+    The two files share no uniqueid at all, so a wrong pairing misses everything
+    rather than landing a subset by coincidence. That total miss is the property
+    worth pinning: a partial resolve would mean addresses matching by luck.
+    """
+    _require(A05_BIN, S50_BIN, A05_PATCH_BINTOOLZ, S50_PATCH_BINTOOLZ)
+    for profile, xdf, binary, structure in (
+        (SWITCH_PATCH_2933_A05, S50_PATCH_BINTOOLZ, S50_BIN, SC8S50_STRUCTURE),
+        (SWITCH_PATCH_2933, A05_PATCH_BINTOOLZ, A05_BIN, ck.SCGA05_STRUCTURE),
+    ):
+        cal = CalFile.open(str(xdf), str(binary), structure=structure)
+        with pytest.raises(ProfileResolutionError) as excinfo:
+            resolve(profile, cal, xdf_label=str(xdf))
+        assert len(excinfo.value.misses) == len(profile.names()), (
+            f"{profile.name} against {xdf.name} must miss every name"
+        )
+
+
+def test_f8_the_patch_space_reads_as_unapplied_on_the_stock_a05_bin() -> None:
+    """The A05 bin is stock, and the map says so instead of inventing a curve.
+
+    Every mapped patch table decodes to zero here — the space has never been
+    written, which is exactly what an unpatched bin should look like through a
+    correct map. (The plan expected a plausible non-zero read; zeros are the
+    stronger result, because a map pointed at the wrong bytes would almost
+    certainly find calibration data rather than a clean run of nothing.)
+    """
+    _require(A05_BIN, A05_PATCH_BINTOOLZ)
+    patch_cal = CalFile.open(
+        str(A05_PATCH_BINTOOLZ), str(A05_BIN), structure=ck.SCGA05_STRUCTURE
+    )
+    resolved = resolve(
+        SWITCH_PATCH_2933_A05, patch_cal, xdf_label=str(A05_PATCH_BINTOOLZ)
+    )
+    grid = resolved.view("slot1_put_setpoint").values
+    assert grid.shape == (8, 12)
+    assert np.all(grid == 0.0), f"expected an unwritten slot 1, got {grid.min()}..{grid.max()}"
+    assert np.all(resolved.view("slot_put_rpm_axis").values == 0.0)
+
+
+def test_f8_the_patch_map_follows_the_car_not_the_patch_xdf() -> None:
+    """Selection is by identified car, and a car without a map is refused.
+
+    Patch tables are bound by uniqueid, so pointing S50's map at A05's file does
+    not miss loudly in every context — it is only the zero uniqueid overlap of
+    *these two* files that makes it miss here. The library therefore never picks
+    a patch map by trying them: it follows the base profile preflight matched.
+    """
+    assert patch_profile_for(SC8S50) is SWITCH_PATCH_2933
+    assert patch_profile_for(SCGA05) is SWITCH_PATCH_2933_A05
+    with pytest.raises(KeyError, match="no switch-patch map is registered"):
+        patch_profile_for(Profile(name="NoSuchCar", xdf="none.xdf"))
+
+
+def test_f8_an_address_book_that_repeats_a_uniqueid_is_refused() -> None:
+    """Two logical names on one table would resolve cleanly and write wrong.
+
+    The copy-a-column typo: both names resolve, both read the same bytes, and
+    writing one silently moves the other. Caught when the profile is built, not
+    when a bin is saved.
+    """
+    book = {k: dict(v) for k, v in A05_SLOT_SETTING_UIDS.items()}
+    book["enable_lc"][2] = book["enable_nls"][2]
+    with pytest.raises(ValueError, match="both bound to uniqueid"):
+        build_switch_patch_profile(
+            name="Typo", xdf="x.xdf",
+            standalone_uids=A05_STANDALONE_UIDS,
+            put_grid_uids=A05_PUT_GRID_UIDS,
+            slot_setting_uids=book,
+        )
+
+
+def test_f8_an_incomplete_address_book_is_refused() -> None:
+    """A forgotten role would ship a profile that resolves and has no axis."""
+    book = {k: v for k, v in A05_STANDALONE_UIDS.items() if k != "slot_put_rpm_axis"}
+    with pytest.raises(ValueError, match="slot_put_rpm_axis"):
+        build_switch_patch_profile(
+            name="Partial", xdf="x.xdf",
+            standalone_uids=book,
+            put_grid_uids=A05_PUT_GRID_UIDS,
+            slot_setting_uids=A05_SLOT_SETTING_UIDS,
+        )
+
+
+def test_f8_both_patch_maps_describe_the_patch_identically() -> None:
+    """Only addresses may differ between two cars' maps of one patch build.
+
+    The reason the descriptions live in one module: if a port could restate them,
+    two maps of the same BinToolz build could disagree about what a table does
+    while both resolving. Here they cannot, and this asserts it stays that way.
+    """
+    assert set(SWITCH_PATCH_2933.names()) == set(SWITCH_PATCH_2933_A05.names())
+    for name in sorted(SWITCH_PATCH_2933.names()):
+        s50, a05 = SWITCH_PATCH_2933[name], SWITCH_PATCH_2933_A05[name]
+        assert (s50.description, s50.units, s50.shape, s50.tags, s50.owner,
+                s50.group) == (a05.description, a05.units, a05.shape, a05.tags,
+                               a05.owner, a05.group), name
+        assert s50.key != a05.key, f"{name}: the addresses are the per-car part"
+
+
+def test_f8_preflight_reads_the_a05_patch_space_and_calls_it_unapplied() -> None:
+    """Integration: the verdict now distinguishes "no patch" from "no map".
+
+    Before U6 this pairing reported ``switch_patch_present=False`` — the right
+    answer for the wrong reason, since the only map preflight had was S50's and
+    it missed every name. Now the answer comes from reading A05's own patch
+    space and finding it unwritten, and the slot-1 range in ``advanced`` is the
+    evidence for that rather than a leftover from a failed resolve.
+    """
+    _require(A05_BIN, A05_XDF, A05_PATCH_BINTOOLZ)
+    v = preflight(A05_BIN, A05_XDF, switch_patch_xdf=A05_PATCH_BINTOOLZ)
+    assert v.status == READY and v.writable
+    assert v.switch_patch_present is False
+    advanced = v.advanced or {}
+    assert "switch_patch_error" not in advanced
+    assert advanced.get("switch_patch_slot1_range") == "0..0"
+
+
+def test_f8_a_car_with_no_patch_map_is_an_error_not_an_absent_patch() -> None:
+    """The CR-20260815-02 distinction, on the route U6 opened.
+
+    "This library has no switch-patch map for your car" and "your bin has no
+    switch patch" are different facts, and only one of them is about the bin.
+    Reporting the first as the second would send someone to re-patch a bin that
+    may already be patched — so the unmapped car raises the error channel.
+    """
+    unmapped = replace(SCGA05, name="AnotherCar")
+    with pytest.raises(KeyError):
+        patch_profile_for(unmapped)
+    present, advanced = _detect_switch_patch(A05_BIN, A05_PATCH_BINTOOLZ, unmapped)
+    assert present is None, "an unmapped car must not be reported as unpatched"
+    assert "no switch-patch map is registered" in advanced["switch_patch_error"]
+    assert "switch_patch_slot1_range" not in advanced

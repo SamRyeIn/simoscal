@@ -244,6 +244,13 @@ changed byte runs — the CAL CRC at `0x220304` and the 48-byte table at `0x23F0
    `writable=True`, and `preflight(sc8s50_bin, sc8s50_xdf)` must still say
    `SC8S50` — two profiles both resolving against one file raises
    `AmbiguousProfileError` rather than picking one.
+7. If the car has a 29.33 switch-patch definition, port that separately by the
+   address-book method in section 9b, and register it in `PATCH_PROFILES` beside
+   the base profile it belongs to. Unlike `BASE_PROFILES` this one *is* a
+   hand-written list, and it has to be: a patch map is bound by address, so it
+   cannot be found by trying it. Leaving the entry out is safe — the car simply
+   has no patch map, and preflight says exactly that instead of reporting an
+   unpatched bin.
 
 ## 9. What the library does with this
 
@@ -345,18 +352,63 @@ generically editable. Pointing it at `airmass_cap_mg()` would be worse than
 useless: that method refuses an untagged table, so the owner would leave the
 ceiling with no write path at all.
 
+## 9b. Porting the switch patch is a different job from porting the base map
+
+The base map was re-measured table by table. The 29.33 switch patch was not, and
+should not have been: `S50 Switch Patch.29.33.V2.xdf` and
+`A05 Switch Patch.29.33.V2.xdf` are byte-identical apart from the `<deftitle>`,
+the timestamp, six table shapes, and the addresses. 185 tables each, and index
+for index the same title, the same A2L symbol, the same category path. They are
+one BinToolz build emitted for several file structures.
+
+So the role mapping is that shared ordering, and the port is an address book:
+
+1. Parse both patch XDFs and pair the tables by index.
+2. Assert every pair agrees on title, symbol and **category path**. The path is
+   what carries the role — five grids share the title `PUT setpoint`, and only
+   `Switch Patch | Map Switching | Map Slot N` says which slot one is.
+3. Read the new car's uniqueid out of each pair.
+
+`test_f8_the_committed_a05_addresses_are_the_ones_role_mapping_produces` re-runs
+that derivation and compares it to the committed constants, so the address book
+is checked against the files rather than against itself.
+
+Two things this must not become:
+
+- **Not address arithmetic.** The A05 offsets are three different deltas from
+  S50's (`+0x12F60`, `+0x13000`, `+0x13020`), so adding the most common one
+  would place 25 of the 92 in the wrong table. Worse, patch tables are bound by
+  uniqueid rather than by name, so all 92 would still *resolve* — the failure
+  would be silent, and it would be a wrong write.
+- **Not a second copy of the descriptions.** What each table does is a fact about
+  the patch, not the car, so it lives once in
+  `simoscal/tune/profiles/switchpatch_2933.py`. A per-car module supplies only
+  uniqueids and calls `build_switch_patch_profile()`. Two maps of one patch build
+  cannot then disagree about what a table does while both resolving.
+
+The corollary for selection: a patch map is chosen by the **base profile
+preflight already matched**, never by trying patch maps against the file. Bound
+by address, a wrong map does not reliably miss — the two files here happen to
+share no uniqueid at all, which is a property of this pair, not a guarantee. See
+`PATCH_PROFILES` and `patch_profile_for()`.
+
+One shape note carried forward: six of the 185 patch tables are (16, 18) on A05
+against S50's (16, 16) — the flex-fuel `Spark modifier` grids and one `Modifier`
+— the same grid difference the base map records. None of them is among the 92
+mapped, so no per-car shape override was needed. A revision that maps them will
+need one.
+
 ## 10. Still open
 
-- **A05 has no usable base definition file.** This is the one that blocks the
-  port from meaning anything in practice. The `SCGA05` profile is written,
-  registered, and resolves cleanly — but the only base XDF anyone has for this
-  car is `SCGa05_cal.xdf`, whose `BASEOFFSET` defect (section 7) makes every
-  read and write through it land in the wrong place, so preflight blocks the
-  pairing. Nothing about the profile changes when a corrected file arrives: fix
-  the `BASEOFFSET` to `0x220000`, or obtain a definition that already declares
-  it, and the same profile goes `READY` with no code change. Until then A05 is
-  mapped but not editable, and no A05 edit path has ever been exercised on a
-  real read.
+- **No A05 bin has been flashed, or driven.** The map is `READY`, both spaces
+  open, and an A05 edit has been byte-audited on a real read — but every one of
+  those is a statement about files. Nothing here has been validated against an
+  engine, and none of the calibration judgement in the SC8S50 domains applies to
+  this car (section 9a). A05 is editable; it is not tuned.
+  (An earlier version of this bullet said A05 had no usable base definition and
+  was blocked. That was the conservative reading of `SCGa05_cal.xdf`'s
+  `BASEOFFSET 0`, before section 7 established it as a second legitimate
+  convention rather than a defect. The file was never wrong.)
 - **Declared `CAL_BLOCK_LENGTH`, still two samples.** `SCGA05_STRUCTURE`
   declares `0x9FC00` on the SC8S50 relationship — `0x200` past where the bin's
   own CAL CRC reaches (`0x9FA00`) — because it is used only as an upper bound
