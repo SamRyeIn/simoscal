@@ -106,7 +106,10 @@ def main(argv: list[str]) -> int:
     from simoscal import checksum
     data = binp.read_bytes()
     try:
-        for r in checksum.verify(data):
+        # Both of these are per-car since U2: the layout is discovered from the
+        # file, then the checksums are verified against that layout. Verifying
+        # under SC8S50's constants is what this whole script exists to avoid.
+        for r in checksum.verify(data, checksum.discover_structure(data)):
             stored = "None" if r.stored is None else f"0x{r.stored:08X}"
             comp = "None" if r.computed is None else f"0x{r.computed:08X}"
             state = "STALE" if r.is_stale else ("ok" if r.can_verify else "cannot verify")
@@ -167,11 +170,11 @@ def main(argv: list[str]) -> int:
     print("  How many SC8S50 profile tables fail to resolve against this XDF.")
     print("  0 misses = same structure. Many misses = genuinely different.")
     print()
-    from simoscal.calfile import CalFile
+    from simoscal.calfile import CalFile, structure_of
     from simoscal.tune.profile import resolve, ProfileResolutionError
     from simoscal.tune.profiles import SC8S50
     try:
-        cal = CalFile.open(str(xdfp), str(binp))
+        cal = CalFile.open(str(xdfp), str(binp), structure=structure_of(binp))
     except Exception as exc:
         print(f"  CalFile.open RAISED {type(exc).__name__}: {str(exc)[:200]}")
         cal = None
@@ -188,20 +191,36 @@ def main(argv: list[str]) -> int:
                 print(f"      … and {len(exc.misses) - 15} more")
 
         if patchp is not None:
-            from simoscal.tune.profiles.switchpatch_2933 import SWITCH_PATCH_2933
+            from simoscal.tune.profiles import PATCH_PROFILES
+            # Every registered patch map, not the one for a car we have not
+            # identified yet. This is reconnaissance on an unknown file and
+            # nothing here writes, so trying them all is informative; the
+            # library itself never selects a patch map this way, because a map
+            # bound by address can resolve against the wrong file (see
+            # docs/porting-to-another-xdf.md section 9b).
             print()
             try:
-                patch_cal = CalFile.open(str(patchp), str(binp))
-                resolve(SWITCH_PATCH_2933, patch_cal, xdf_label=str(patchp))
-                n = len(SWITCH_PATCH_2933.names())
-                print(f"  SWITCH_PATCH_2933: ALL {n} tables resolved against the patch XDF.")
-            except ProfileResolutionError as exc:
-                total = len(SWITCH_PATCH_2933.names())
-                print(f"  SWITCH_PATCH_2933: {len(exc.misses)} of {total} did NOT resolve.")
-                for m in exc.misses[:10]:
-                    print(m.format())
+                patch_cal = CalFile.open(
+                    str(patchp), str(binp), structure=structure_of(binp)
+                )
             except Exception as exc:
-                print(f"  SWITCH_PATCH_2933 RAISED {type(exc).__name__}: {str(exc)[:200]}")
+                print(f"  patch CalFile.open RAISED {type(exc).__name__}: {str(exc)[:200]}")
+                patch_cal = None
+            seen: set[str] = set()
+            for patch in (PATCH_PROFILES.values() if patch_cal else ()):
+                if patch.name in seen:
+                    continue
+                seen.add(patch.name)
+                total = len(patch.names())
+                try:
+                    resolve(patch, patch_cal, xdf_label=str(patchp))
+                    print(f"  {patch.name}: ALL {total} tables resolved against the patch XDF.")
+                except ProfileResolutionError as exc:
+                    print(f"  {patch.name}: {len(exc.misses)} of {total} did NOT resolve.")
+                    for m in exc.misses[:10]:
+                        print(m.format())
+                except Exception as exc:
+                    print(f"  {patch.name} RAISED {type(exc).__name__}: {str(exc)[:200]}")
 
     print()
     print("=" * 72)
