@@ -66,9 +66,15 @@ def table_byte_offsets(
         raise ValueError(
             f"table {view.uniqueid_hex} has no embedded z-data — no byte extent"
         )
+    # The CalFile's effective base, not the XDF's declared one. A CAL-relative
+    # definition declares 0 and is opened with the CAL block's file offset as an
+    # override; reading the declaration here would compute the extent 0x220000
+    # short of where the same CalFile reads and writes the cells, so a write's
+    # before/after bytes would be sampled from somewhere else entirely. The two
+    # agree on SC8S50, which is why nothing caught it there.
     start = file_offset_for(
         emb.address,
-        view._cal.model.base_offset,
+        view._cal.base_offset,
         view._cal.model.base_subtract,
     )
     width = emb.elem_bits // 8
