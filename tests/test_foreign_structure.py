@@ -30,6 +30,10 @@ What is pinned here is the **decision and its loudness**, not the wording:
 * F8 the A05 switch-patch map (U6): the two patch definitions are one file with
   the addresses moved, the committed address book is what role mapping produces,
   and neither car's map resolves against the other's file.
+* F9 table sets are a per-car fact (U7): which tables a domain method writes
+  together is declared by the profile and reached through it, so SC8S50's sets
+  no longer travel to another car — and a car that has not declared a required
+  set is refused rather than defaulted.
 
 The A05 files are a third party's calibration and are **not committed** — like
 the SC8S50 files, they are gitignored and you drop your own copies in. Every
@@ -1284,3 +1288,123 @@ def test_f8_a_car_with_no_patch_map_is_an_error_not_an_absent_patch() -> None:
     assert present is None, "an unmapped car must not be reported as unpatched"
     assert "no switch-patch map is registered" in advanced["switch_patch_error"]
     assert "switch_patch_slot1_range" not in advanced
+
+
+# ---- F9: table sets are a per-car fact (U7) --------------------------------- #
+# A domain method whose meaning is "write these together" has to be told which
+# tables those are. Before U7 four domain modules imported SC8S50's module-global
+# tuples and used them as `tables=` defaults, so every domain call on any bin
+# quietly asserted SC8S50's table sets. The sets are now declared by the profile
+# and reached through it; a car that has not declared one is refused, not
+# defaulted.
+
+
+def _a05_tune():
+    """An A05 tune, base space only."""
+    from simoscal.tune import Tune
+
+    _require(A05_BIN, A05_XDF)
+    return Tune.open(SCGA05, xdf=A05_XDF, bin=A05_BIN)
+
+
+def _a05_patched_tune():
+    """An A05 tune with the patch space mapped through A05's own address book."""
+    from simoscal.tune import Tune
+    from simoscal.tune.domains.switchpatch import PATCH_SPACE
+
+    _require(A05_BIN, A05_XDF, A05_PATCH_BINTOOLZ)
+    return Tune.open(
+        SCGA05, xdf=A05_XDF, bin=A05_BIN,
+        extra_spaces={PATCH_SPACE: (SWITCH_PATCH_2933_A05, A05_PATCH_BINTOOLZ)},
+    )
+
+
+def test_f9_sc8s50_domain_output_is_what_it_always_was(real_xdf, real_bin) -> None:
+    """The happy path: routing through the profile changed nothing on this car.
+
+    The four tables written, their order, and the sentence attached to each are
+    the same as when the tuple lived in the module. That is the whole acceptance
+    criterion for this unit — a behaviour change on SC8S50 here would be a bug,
+    not a migration.
+    """
+    from simoscal.tune import Tune
+
+    tune = Tune.open(SC8S50, xdf=real_xdf, bin=real_bin)
+    entries = tune.limits.static_rev_limit(4000, intent="x")
+    assert [e.name for e in entries] == list(SC8S50.table_set("static_rev_limit"))
+    live = [e for e in entries if "actually reads" in e.detail]
+    assert [e.name for e in live] == ["static_rev_limit_dct"]
+    assert all(
+        "inert for this transmission" in e.detail
+        for e in entries if e not in live
+    )
+
+
+def test_f9_a05_gets_no_claim_about_which_variant_its_ecu_reads() -> None:
+    """The edge the unit exists for: silence where nothing has been established.
+
+    SC8S50 declares `static_rev_limit_active` because someone established which
+    standstill cap this DSG car resolves. Nobody has established that for A05,
+    so it declares none — and the journal then says all four were written and
+    that which one applies is unknown, rather than inheriting "the variant this
+    DSG car actually reads" from another engine's evidence. All four are still
+    written, which is what makes the unknown harmless.
+    """
+    tune = _a05_tune()
+    entries = tune.limits.static_rev_limit(4000, intent="x")
+    assert [e.name for e in entries] == list(SCGA05.table_set("static_rev_limit"))
+    assert "static_rev_limit_active" not in SCGA05.table_sets
+    for entry in entries:
+        assert "actually reads" not in entry.detail
+        assert "DSG" not in entry.detail
+        assert "inert for this transmission" not in entry.detail
+        assert "not established for this car" in entry.detail
+
+
+def test_f9_the_a05_boost_ceiling_is_still_arithmetic_on_the_bin_in_hand() -> None:
+    """Structural guards are universal — only the *guidance* was per-car.
+
+    A slot cap at or above the base full-load ceiling is capped by the base
+    table under the min() semantics, so it is refused on any car. Proved to be
+    reading this bin rather than a constant: lower A05's own base ceiling and
+    the refusal moves with it, quoting the new number.
+    """
+    import numpy as np
+
+    tune = _a05_patched_tune()
+    with pytest.raises(ValueError, match=r"at or above the base"):
+        tune.switchpatch.slot_curve(1, psi=40.0, intent="x")
+    # Below it, the same call is accepted — the guard is a ceiling, not a veto.
+    tune.switchpatch.slot_curve(1, psi=20.0, intent="x")
+
+    lowered = _a05_patched_tune()
+    values = lowered.values("put_setpoint")
+    values[-1] = 1600.0
+    lowered.write("put_setpoint", values, intent="lower this car's own ceiling")
+    with pytest.raises(ValueError, match=r"ceiling of 1[56]\d\d hPa"):
+        lowered.switchpatch.slot_curve(1, psi=20.0, intent="x")
+
+
+def test_f9_a_car_that_declares_no_set_is_refused_not_defaulted() -> None:
+    """The error path: absence fails loudly, and names the profile.
+
+    A required set decides *what gets written*. Falling back to another car's
+    tuple would write that car's tables under this car's name, which is exactly
+    the substitution the profile layer exists to prevent — so the lookup raises
+    with the profile named and its declared sets listed.
+    """
+    bare = replace(SCGA05, name="NoSets", table_sets={})
+    with pytest.raises(KeyError) as excinfo:
+        bare.table_set("static_rev_limit")
+    message = str(excinfo.value)
+    assert "NoSets" in message and "static_rev_limit" in message
+
+    # A set whose members the profile does not map is a typo, and is caught at
+    # construction rather than at some later revision's call site.
+    with pytest.raises(ValueError, match="neither maps nor declares unavailable"):
+        replace(SCGA05, name="Typo", table_sets={"lambda_floors": ("no_such_table",)})
+
+    # An empty set is indistinguishable from a forgotten one, so it is refused
+    # too — declaring nothing and declaring "none" must not look the same.
+    with pytest.raises(ValueError):
+        replace(SCGA05, name="Empty", table_sets={"lambda_floors": ()})

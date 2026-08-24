@@ -40,6 +40,31 @@ class Domain:
     def _values(self, name: str, space: str = "base") -> np.ndarray:
         return self._tune.values(name, space=space)
 
+    def _table_set(self, set_name: str, space: str = "base") -> tuple[str, ...]:
+        """The open bin's own names for a set this domain writes together.
+
+        Required by construction: a domain call whose whole meaning is "write
+        these together" cannot proceed on a car that has not said which tables
+        those are, and the tuple it would otherwise reach for belongs to a
+        different engine. :meth:`~simoscal.tune.profile.Profile.table_set`
+        raises with the profile named.
+        """
+        return self._tune.space(space).profile.table_set(set_name)
+
+    def _optional_table_set(
+        self, set_name: str, space: str = "base"
+    ) -> tuple[str, ...]:
+        """As :meth:`_table_set`, but ``()`` when this car declares none.
+
+        For the sets that only sharpen what a journal entry *says* — which of
+        four written variants is the live one, say. Absence there is a car
+        nobody has established that for, and the honest output is the sentence
+        without the clause, exactly as
+        :attr:`~simoscal.tune.profile.Profile.stock_references` handles the
+        numbers. Never use this for a set that decides what gets written.
+        """
+        return tuple(self._tune.space(space).profile.table_sets.get(set_name, ()))
+
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         return f"<{type(self).__name__} of {self._tune!r}>"
 

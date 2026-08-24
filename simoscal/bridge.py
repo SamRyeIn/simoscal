@@ -1074,17 +1074,11 @@ def _op_limiters(params: dict) -> dict:
     is a degraded screen, not an error: a bin without the patch genuinely has no
     trio.
     """
-    from .tune.profiles.sc8s50 import (
-        ENGINE_SPEED_LIMIT,
-        SPEED_LIMITER,
-        STATIC_REV_LIMIT,
-    )
-    from .tune.profiles.switchpatch_2933 import (
-        LAUNCH_CONTROL_LIMITER,
-        REV_LIMIT_TRIO,
-    )
-
     sess = _session(params)
+    # Which tables each limiter is made of is a per-car fact, so the sets come
+    # off the open bin's own profile. Naming one file structure's tuples here
+    # would render that car's Limiters screen for every other car.
+    base = sess.tune.space("base").profile
 
     def scalar(name: str, space: str = "base") -> dict:
         resolved = sess.tune.table(name, space=space)
@@ -1098,17 +1092,21 @@ def _op_limiters(params: dict) -> dict:
         }
 
     result: dict = {
-        "speed_limiter": [scalar(name) for name in SPEED_LIMITER],
+        "speed_limiter": [
+            scalar(name) for name in base.table_set("speed_limiter")
+        ],
         # The standstill cap, plus the rev limiter it sits under. The limiter
         # travels with it because the cap is meaningless without it: "3808" says
         # nothing until you know the engine itself stops at 6816, and a screen
         # that showed one without the other would invite reading the cap as the
         # redline.
-        "static_rev_limit": [scalar(name) for name in STATIC_REV_LIMIT],
+        "static_rev_limit": [
+            scalar(name) for name in base.table_set("static_rev_limit")
+        ],
         "engine_rev_limit": min(
             (
                 float(np.min(sess.tune.values(name)))
-                for name in ENGINE_SPEED_LIMIT
+                for name in base.table_set("engine_speed_limit")
                 if name in sess.tune.space("base").tables
             ),
             default=None,
@@ -1117,11 +1115,14 @@ def _op_limiters(params: dict) -> dict:
         "launch_control": None,
     }
     if PATCH_SPACE in sess.tune.spaces:
+        patch = sess.tune.space(PATCH_SPACE).profile
         result["rev_limits"] = [
-            scalar(name, PATCH_SPACE) for name in REV_LIMIT_TRIO
+            scalar(name, PATCH_SPACE)
+            for name in patch.table_set("rev_limit_trio")
         ]
         result["launch_control"] = [
-            scalar(name, PATCH_SPACE) for name in LAUNCH_CONTROL_LIMITER
+            scalar(name, PATCH_SPACE)
+            for name in patch.table_set("launch_control_limiter")
         ]
     return result
 

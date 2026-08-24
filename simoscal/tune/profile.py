@@ -236,7 +236,9 @@ class Profile:
       address the ECU maps it to (a :class:`~simoscal.checksum.StructureSpec`);
     * :attr:`float_bug_symbols` — derived from the specs, not declared twice;
     * :attr:`stock_references` — what stock reads on this car, for guidance text
-      that wants to compare a guide instruction against it.
+      that wants to compare a guide instruction against it;
+    * :attr:`table_sets` — which logical names this car groups into the sets a
+      domain call writes together.
 
     Profiles compose: a patched-bin tune resolves the base calibration through
     the SC8S50 profile and the patch-added tables through the switch-patch
@@ -273,6 +275,25 @@ class Profile:
     #: in the bin but this car's XDF declares no editable table for it (an
     #: embedded axis with no standalone entry is the common case).
     unavailable: Mapping[str, str] = field(default_factory=dict)
+    #: Named groupings of logical names that a domain call writes as one set.
+    #:
+    #: The counterpart of :attr:`stock_references` for *which tables*, and it
+    #: exists for the same reason. ``tune.limits.speed_limiter()`` writes "the
+    #: road-speed limiter quartet"; which four logical names that is, and
+    #: whether there are four of them at all, is a fact about the car. Holding
+    #: those tuples as module globals in one car's profile and importing them
+    #: into the domain code made every domain call quietly assert that car's
+    #: table sets about whatever bin was open.
+    #:
+    #: Keys are short ids the domain code names (``"speed_limiter"``,
+    #: ``"ignition_base_vvl0"``); values are the logical names, in the order the
+    #: domain should write them. Every member must be a name this profile knows
+    #: — mapped or declared unavailable — so a typo fails at import rather than
+    #: at the call site of a revision.
+    #:
+    #: A profile that declares no set under a key the domain asks for gets a
+    #: loud :meth:`table_set` failure, never another car's tuple.
+    table_sets: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     #: Whether this car's XDF numbers its tables from the start of the
     #: **calibration block** rather than the start of the whole bin.
     #:
@@ -308,6 +329,24 @@ class Profile:
                 "mapped table and as unavailable — one of the two is wrong, and "
                 "guessing which would either hide a table or offer a missing one"
             )
+        for set_name, members in self.table_sets.items():
+            if not members:
+                raise ValueError(
+                    f"profile {self.name!r}: table set {set_name!r} is empty; a "
+                    "set with no members cannot be told apart from one the "
+                    "profile forgot to declare — leave it out, or declare the "
+                    "gap in `unavailable`"
+                )
+            unknown = [
+                n for n in members
+                if n not in self.specs and n not in self.unavailable
+            ]
+            if unknown:
+                raise ValueError(
+                    f"profile {self.name!r}: table set {set_name!r} names "
+                    f"{', '.join(unknown)}, which this profile neither maps nor "
+                    "declares unavailable"
+                )
         if self.xdf_addresses_cal_relative and self.structure is None:
             raise ValueError(
                 f"profile {self.name!r}: xdf_addresses_cal_relative says addresses "
@@ -387,6 +426,25 @@ class Profile:
     def names(self) -> list[str]:
         return sorted(self.specs)
 
+    def table_set(self, set_name: str) -> tuple[str, ...]:
+        """The logical names this car groups under ``set_name``.
+
+        Raises rather than falling back. A domain that asks for a set this
+        profile does not declare has reached the edge of what has been measured
+        on this car, and the only two honest answers are the car's own tuple or
+        a refusal — the third option, another car's tuple, is the defect this
+        replaces.
+        """
+        try:
+            return tuple(self.table_sets[set_name])
+        except KeyError:
+            raise KeyError(
+                f"profile {self.name!r} declares no table set {set_name!r}; "
+                f"it declares: {', '.join(sorted(self.table_sets)) or 'none'}. "
+                "A set is a per-car fact — this profile has to name its own "
+                "tables, not inherit another car's."
+            ) from None
+
     def ungrouped(self) -> list[str]:
         """Logical names whose spec declares no :attr:`TableSpec.group`.
 
@@ -425,6 +483,15 @@ class Profile:
                 f"cannot merge profiles {self.name!r} and {other.name!r}: "
                 f"they give different stock references for {', '.join(ref_clash)}"
             )
+        set_clash = sorted(
+            k for k in set(self.table_sets) & set(other.table_sets)
+            if tuple(self.table_sets[k]) != tuple(other.table_sets[k])
+        )
+        if set_clash:
+            raise ValueError(
+                f"cannot merge profiles {self.name!r} and {other.name!r}: "
+                f"they group different tables under {', '.join(set_clash)}"
+            )
         if (
             self.structure is not None
             and other.structure is not None
@@ -451,6 +518,7 @@ class Profile:
             specs=specs,
             structure=self.structure if self.structure is not None else other.structure,
             stock_references={**self.stock_references, **other.stock_references},
+            table_sets={**self.table_sets, **other.table_sets},
             unavailable=unavailable,
             # The convention travels with the structure, because it is only
             # meaningful beside one: whichever profile said where the CAL block

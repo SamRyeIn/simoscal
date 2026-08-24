@@ -649,17 +649,46 @@ STOCK_REFERENCES = {
 }
 
 
+#: The table sets a domain call writes as one, keyed by the id the domain names.
+#:
+#: The tuples above are the declaration; this dict is what makes them reachable
+#: as a fact about *this car* rather than as an import from this module. A domain
+#: asking for ``"speed_limiter"`` gets whichever quartet the open bin's profile
+#: names — see :attr:`~simoscal.tune.profile.Profile.table_sets`.
+TABLE_SETS: dict[str, tuple[str, ...]] = {
+    "ignition_base_vvl0": IGNITION_BASE_VVL0,
+    "ignition_temp_correction": IGNITION_TEMP_CORRECTION,
+    "lambda_family": LAMBDA_FAMILY,
+    "lambda_floors": LAMBDA_FLOORS,
+    "lambda_full_load": LAMBDA_FULL_LOAD,
+    "wastegate_maps": WASTEGATE_MAPS,
+    "speed_limiter": SPEED_LIMITER,
+    "static_rev_limit": STATIC_REV_LIMIT,
+    # Which of the four standstill caps this car's ECU actually resolves. All
+    # four are written; only this one does anything, and saying so in the
+    # journal is a claim about the car in front of you, not about the method.
+    "static_rev_limit_active": ("static_rev_limit_dct",),
+    "engine_speed_limit": ENGINE_SPEED_LIMIT,
+    "turbo_protection": TURBO_PROTECTION,
+    "pedal_maps": PEDAL_MAPS,
+    "charge_air_diag": CHARGE_AIR_DIAG,
+    "cylinder_head_temp": CYLINDER_HEAD_TEMP,
+}
+
+
 SC8S50 = Profile(
     name="SC8S50",
     xdf="SC8S50.V1.0.xdf",
     specs={s.name: s for s in _SPECS},
     structure=SC8S50_STRUCTURE,
     stock_references=STOCK_REFERENCES,
+    table_sets=TABLE_SETS,
 )
 
 __all__ = [
     "SC8S50",
     "STOCK_REFERENCES",
+    "TABLE_SETS",
     "CHARGE_AIR_DIAG",
     "CYLINDER_HEAD_TEMP",
     "ENGINE_SPEED_LIMIT",

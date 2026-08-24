@@ -34,15 +34,10 @@ import numpy as np
 
 from ..profile import TAG_KG_PER_STROKE
 from ..journal import EditEntry
-from ..profiles.sc8s50 import ENGINE_SPEED_LIMIT, SPEED_LIMITER, STATIC_REV_LIMIT
-from ..profiles.switchpatch_2933 import REV_LIMIT_TRIO
 from ..project import TuneError
 from ._common import Domain, float_bug_write, guarded_ceiling
 
-__all__ = [
-    "ENGINE_SPEED_LIMIT", "Limits", "MG_PER_KG",
-    "REV_LIMIT_TRIO", "SPEED_LIMITER", "STATIC_REV_LIMIT",
-]
+__all__ = ["Limits", "MG_PER_KG"]
 
 #: Milligrams per kilogram — the scale hiding inside the airmass cap's label.
 MG_PER_KG = 1_000_000.0
@@ -156,6 +151,7 @@ class Limits(Domain):
         whole trio first, so a rejected member cannot leave one scalar moved and
         the other two behind (the atomicity the screens rely on).
         """
+        trio = self._table_set("rev_limit_trio", space)
         requested = {"soft": soft, "medium": medium, "hard": hard}
         if all(v is None for v in requested.values()):
             raise ValueError(
@@ -165,7 +161,7 @@ class Limits(Domain):
         # Resolve the whole trio — given values where given, live values where
         # not — so the ordering check sees what the ECU would actually hold.
         resulting: dict[str, float] = {}
-        for label, name in zip(requested, REV_LIMIT_TRIO):
+        for label, name in zip(requested, trio):
             given = requested[label]
             if given is None:
                 resulting[label] = float(
@@ -194,7 +190,7 @@ class Limits(Domain):
             )
 
         entries = []
-        for label, name in zip(requested, REV_LIMIT_TRIO):
+        for label, name in zip(requested, trio):
             if requested[label] is None:
                 continue
             entries.append(self._tune.write(
@@ -212,7 +208,7 @@ class Limits(Domain):
         return tuple(entries)
 
     def static_rev_limit(
-        self, rpm: float, *, tables: Sequence[str] = STATIC_REV_LIMIT,
+        self, rpm: float, *, tables: Optional[Sequence[str]] = None,
         intent: str = "",
     ) -> tuple[EditEntry, ...]:
         """Set how high the engine may rev while the vehicle is stopped, in rpm.
@@ -257,14 +253,20 @@ class Limits(Domain):
                 "separate decision — this call does not do it. Nothing written."
             )
 
-        names = tuple(tables)
+        names = tuple(tables) if tables is not None else self._table_set(
+            "static_rev_limit"
+        )
+        # Which of them the ECU actually reads is a per-car fact. A profile that
+        # has not established it declares no `static_rev_limit_active`, and the
+        # journal then says only that all the variants were written — never that
+        # one of them is "the variant this car reads" on another car's evidence.
+        active = set(self._optional_table_set("static_rev_limit_active"))
         for name in names:
             self._require_within_declared(name, target, "static_rev_limit")
 
         entries = []
         for name in names:
-            resolved = self._tune.table(name)
-            applies = name.endswith("_dct")
+            applies = name in active
             entries.append(self._tune.write(
                 name, [[target]],
                 intent=intent or (
@@ -272,10 +274,15 @@ class Limits(Domain):
                 ),
                 detail=(
                     (
-                        "the variant this DSG car actually reads"
+                        "the variant this car's ECU actually reads"
                         if applies else
                         "inert for this transmission — written so the change "
                         "cannot be defeated by which variant the ECU resolves"
+                        if active else
+                        f"one of {len(names)} transmission variants, all "
+                        "written together — which one this ECU resolves is not "
+                        "established for this car, and writing them all is what "
+                        "makes that harmless"
                     )
                     + (
                         f"; the engine's own rev limiter stays at {ceiling:g} rpm "
@@ -295,7 +302,7 @@ class Limits(Domain):
         reported by its absence rather than by inventing a ceiling.
         """
         values = []
-        for name in ENGINE_SPEED_LIMIT:
+        for name in self._table_set("engine_speed_limit"):
             try:
                 values.append(float(np.min(self._values(name))))
             except (KeyError, TuneError):
@@ -303,7 +310,7 @@ class Limits(Domain):
         return min(values) if values else None
 
     def speed_limiter(
-        self, kmh: float, *, tables: Sequence[str] = SPEED_LIMITER,
+        self, kmh: float, *, tables: Optional[Sequence[str]] = None,
         intent: str = "",
     ) -> tuple[EditEntry, ...]:
         """Set the road-speed limiter, in km/h — all four scalars together.
@@ -323,7 +330,9 @@ class Limits(Domain):
             raise ValueError(
                 f"limits.speed_limiter: {kmh!r} is not a positive road speed"
             )
-        names = tuple(tables)
+        names = tuple(tables) if tables is not None else self._table_set(
+            "speed_limiter"
+        )
         for name in names:
             self._require_within_declared(name, value, "speed_limiter")
 

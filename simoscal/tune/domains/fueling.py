@@ -28,7 +28,6 @@ from typing import Optional, Sequence
 import numpy as np
 
 from ..journal import KIND_AXIS, EditEntry
-from ..profiles.sc8s50 import LAMBDA_FAMILY, LAMBDA_FLOORS
 from ..sop_bridge import positional_axis_match
 from ._common import Domain, nearest_index, require_shape
 
@@ -155,7 +154,7 @@ class Fueling(Domain):
                 )
 
     def lambda_floors(
-        self, value: float, *, tables: Sequence[str] = LAMBDA_FLOORS,
+        self, value: float, *, tables: Optional[Sequence[str]] = None,
         intent: str = "",
     ) -> tuple[EditEntry, ...]:
         """Flatten the lambda minimum-value floors to ``value``.
@@ -165,8 +164,11 @@ class Fueling(Domain):
         0.80, so writing 0.80 makes them *less* permissive — a deliberate
         choice about where protection ends, not a free enrichment.
         """
+        names = tuple(tables) if tables is not None else self._table_set(
+            "lambda_floors"
+        )
         entries = []
-        for name in tables:
+        for name in names:
             current = self._values(name)
             entries.append(self._tune.write(
                 name, np.full(current.shape, float(value)),
@@ -294,5 +296,13 @@ class Fueling(Domain):
             ),
         )
 
-    #: Convenience: every grid sharing the lambda axes, for callers that mean all.
-    FAMILY = LAMBDA_FAMILY
+    @property
+    def FAMILY(self) -> tuple[str, ...]:
+        """Every grid sharing this car's lambda axes, for callers meaning all.
+
+        Read off the open bin's profile rather than fixed by this module:
+        which grids share those axes is a fact about the ECU in front of
+        you, and a tuple named here would assert one engine's family on
+        every car that reaches this call.
+        """
+        return self._table_set("lambda_family")

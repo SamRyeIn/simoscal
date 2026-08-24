@@ -203,7 +203,10 @@ def test_resolution_order_does_not_change_the_outcome(monkeypatch) -> None:
     decoy = replace(SC8S50, name="Decoy", specs={
         n: replace(spec, shape=(spec.shape[0] + 1, spec.shape[1] + 1))
         for n, spec in list(SC8S50.specs.items())[:3]
-    })
+    # Three specs cannot satisfy a table set, and a profile whose sets name
+    # tables it does not map is rejected at construction — so the decoy
+    # declares none rather than inheriting SC8S50's.
+    }, table_sets={})
 
     verdicts = []
     for order in ((SC8S50, decoy), (decoy, SC8S50)):

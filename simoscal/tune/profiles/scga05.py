@@ -489,6 +489,47 @@ _GROUPS: dict[str, tuple[str, ...]] = {
 _SPECS = apply_groups("SCGA05", _SPECS, _GROUPS)
 
 
+#: The table sets a domain call writes as one, keyed by the id the domain names.
+#:
+#: Declared for this car, not imported from :mod:`.sc8s50`, for the same reason
+#: the groups below are written out: a set is a claim about which tables this
+#: ECU holds and in what order they should be written, and borrowing the other
+#: car's tuple would restate its claim as this car's.
+#:
+#: Two sets are shorter here than on SC8S50, and one is absent:
+#:
+#: * ``lambda_family`` has no shared-axis siblings to re-breakpoint (the axes
+#:   are embedded — see :data:`UNAVAILABLE`), so the axes are not part of it;
+#: * ``cylinder_head_temp`` is the setpoint alone, its two axes being embedded;
+#: * ``static_rev_limit_active`` is **not declared**. Which of the four
+#:   standstill caps this ECU resolves has not been established on this car, and
+#:   the journal says nothing rather than repeating SC8S50's DCT answer. All
+#:   four are still written — that is the method, and it is what makes the
+#:   unknown harmless.
+TABLE_SETS: dict[str, tuple[str, ...]] = {
+    "ignition_base_vvl0": IGNITION_BASE_VVL0,
+    "ignition_temp_correction": (
+        "ignition_temp_correction_basic",
+        "ignition_temp_rpm_axis",
+    ),
+    "lambda_family": LAMBDA_FAMILY,
+    "lambda_floors": LAMBDA_FLOORS,
+    "lambda_full_load": LAMBDA_FULL_LOAD,
+    "wastegate_maps": WASTEGATE_MAPS,
+    "speed_limiter": SPEED_LIMITER,
+    "static_rev_limit": STATIC_REV_LIMIT,
+    "engine_speed_limit": ENGINE_SPEED_LIMIT,
+    "turbo_protection": TURBO_PROTECTION,
+    "pedal_maps": PEDAL_MAPS,
+    "charge_air_diag": (
+        "charge_air_pressure_max_diag",
+        "charge_air_diag_put_axis",
+        "charge_air_diag_rpm_axis",
+    ),
+    "cylinder_head_temp": ("cylinder_head_temp_setpoint",),
+}
+
+
 SCGA05 = Profile(
     name="SCGA05",
     xdf="SCGa05_cal.xdf",
@@ -500,6 +541,7 @@ SCGA05 = Profile(
     # 3CN906259B owner. Silence is the correct output here; see
     # `Profile.stock_references`.
     stock_references={},
+    table_sets=TABLE_SETS,
     unavailable=UNAVAILABLE,
     # `SCGa05_cal.xdf` is written against the extracted calibration block, not
     # the whole bin — the `_cal` in its name — so it declares BASEOFFSET 0 and
@@ -515,6 +557,7 @@ SCGA05 = Profile(
 
 __all__ = [
     "SCGA05",
+    "TABLE_SETS",
     "UNAVAILABLE",
     "IGNITION_GRID_SHAPE",
     "IGNITION_BASE_VVL0",

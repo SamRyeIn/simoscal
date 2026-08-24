@@ -13,10 +13,9 @@ which looks, in the next set of logs, exactly like a pull that did not work.
 
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+from typing import Mapping, Optional, Sequence
 
 from ..journal import EditEntry
-from ..profiles.sc8s50 import IGNITION_BASE_VVL0
 from ._common import Domain, nearest_index
 
 __all__ = ["Ignition"]
@@ -29,7 +28,7 @@ class Ignition(Domain):
         self,
         targets: Mapping[tuple[float, float], float],
         *,
-        tables: Sequence[str] = IGNITION_BASE_VVL0,
+        tables: Optional[Sequence[str]] = None,
         intent: str = "",
     ) -> tuple[EditEntry, ...]:
         """Set absolute timing, in °CRK, at each ``(rpm, load)`` operating point.
@@ -45,8 +44,11 @@ class Ignition(Domain):
         if not targets:
             raise ValueError("ignition.retard_cells: no targets given")
 
+        names = tuple(tables) if tables is not None else self._table_set(
+            "ignition_base_vvl0"
+        )
         entries = []
-        for name in tables:
+        for name in names:
             values = self._values(name)
             x_axis = self._tune.axis(name, "x")
             y_axis = self._tune.axis(name, "y")
@@ -75,7 +77,7 @@ class Ignition(Domain):
         self,
         deltas: Mapping[tuple[float, float], float],
         *,
-        tables: Sequence[str] = IGNITION_BASE_VVL0,
+        tables: Optional[Sequence[str]] = None,
         intent: str = "",
     ) -> tuple[EditEntry, ...]:
         """Add ``(rpm, load) → degrees`` to the current timing at each point.
@@ -87,8 +89,11 @@ class Ignition(Domain):
         if not deltas:
             raise ValueError("ignition.offset_cells: no deltas given")
 
+        names = tuple(tables) if tables is not None else self._table_set(
+            "ignition_base_vvl0"
+        )
         entries = []
-        for name in tables:
+        for name in names:
             values = self._values(name)
             x_axis = self._tune.axis(name, "x")
             y_axis = self._tune.axis(name, "y")

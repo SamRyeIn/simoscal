@@ -18,12 +18,11 @@ here:
 
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+from typing import Mapping, Optional, Sequence
 
 import numpy as np
 
 from ..journal import KIND_AXIS, EditEntry
-from ..profiles.sc8s50 import WASTEGATE_MAPS
 from ._common import Domain
 
 __all__ = ["Wastegate", "WG_CLOSED", "WG_OPEN"]
@@ -40,7 +39,7 @@ class Wastegate(Domain):
         deltas: Mapping[tuple[int, int], float],
         *,
         intent: str = "",
-        maps: Sequence[str] = WASTEGATE_MAPS,
+        maps: Optional[Sequence[str]] = None,
     ) -> tuple[EditEntry, ...]:
         """Add ``{(row, col): delta}`` to both VVL feedforward tables.
 
@@ -55,9 +54,12 @@ class Wastegate(Domain):
         if not deltas:
             raise ValueError("wastegate.overlay: no deltas given")
 
+        names = tuple(maps) if maps is not None else self._table_set(
+            "wastegate_maps"
+        )
         applied: list[np.ndarray] = []
         entries: list[EditEntry] = []
-        for name in maps:
+        for name in names:
             before = self._values(name)
             values = before.copy()
             for (row, col), delta in deltas.items():

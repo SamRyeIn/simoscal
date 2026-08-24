@@ -513,7 +513,16 @@ def build_switch_patch_profile(
             ))
 
     specs = _ungrouped_is_deliberate(name, specs)
-    return Profile(name=name, xdf=xdf, specs={s.name: s for s in specs})
+    return Profile(
+        name=name, xdf=xdf, specs={s.name: s for s in specs},
+        # Unlike a base profile's sets, these are the same on every car: they
+        # name tables the *patch* adds, so the grouping travels with the patch
+        # and reaches a tune through `Profile.merged_with`.
+        table_sets={
+            "rev_limit_trio": REV_LIMIT_TRIO,
+            "launch_control_limiter": LAUNCH_CONTROL_LIMITER,
+        },
+    )
 
 
 # --------------------------------------------------------------------------- #
