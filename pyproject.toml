@@ -17,7 +17,7 @@ dependencies = [
 plot = ["matplotlib>=3.7"]
 export = ["openpyxl>=3.1"]
 desktop = ["matplotlib>=3.7", "openpyxl>=3.1"]
-dev = ["pytest>=7.4", "matplotlib>=3.7", "openpyxl>=3.1"]
+dev = ["pytest>=7.4", "pytest-xdist>=3.5", "matplotlib>=3.7", "openpyxl>=3.1"]
 
 [tool.setuptools]
 packages = [
@@ -30,6 +30,12 @@ packages = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The suite is CPU-bound and embarrassingly parallel: every test that touches the
+# filesystem writes under `tmp_path`, and the shared fixtures (the real XDF, the
+# real bin, the historical output bins) are read-only, so workers cannot collide.
+# Serially it runs ~15 min; on 8 workers, ~2 min. Pass `-n0` to run in one process
+# when debugging a single test — parallel output interleaves and hides live stdout.
+addopts = ["-n", "auto"]
 markers = [
     "tunerpro: parity test gated on a captured tunerpro_oracle.json (skipped by default on Mac)",
 ]
