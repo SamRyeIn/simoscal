@@ -58,6 +58,7 @@ from simoscal.tune.profile import (
     resolve,
 )
 from simoscal.tune.profiles import BASE_PROFILES, PROFILES, SC8S50, SCGA05
+from simoscal.tune.project import TuneError, _open_shared_space
 from simoscal.tune.profiles.switchpatch_2933 import SWITCH_PATCH_2933
 from simoscal.xdf import XdfParseError, parse_xdf
 from simoscal.checksum import SC8S50_STRUCTURE
@@ -129,13 +130,19 @@ def _require(*paths: Path) -> None:
 def a05_cal() -> CalFile:
     """The A05 bin opened against its own base XDF. Read-only; never edited.
 
-    Opened under A05's own structure. Resolution only inspects names and shapes,
-    so the structure does not change any assertion here — but handing this
-    fixture SC8S50's layout, as it did before U5, made every test that touches it
-    read as though the wrong car's constants were in play.
+    Opened the way the profile says to open it: A05's own structure, and the
+    rebase its CAL-relative XDF needs. Resolution only inspects names and shapes,
+    so neither changes a resolution assertion — but a fixture opened any other
+    way reads as though the wrong car's constants were in play, and the tests
+    that do read *values* through it would be reading padding.
     """
     _require(A05_BIN, A05_XDF)
-    return CalFile.open(str(A05_XDF), str(A05_BIN), structure=ck.SCGA05_STRUCTURE)
+    return CalFile.open(
+        str(A05_XDF), str(A05_BIN), structure=ck.SCGA05_STRUCTURE,
+        base_offset=SCGA05.xdf_base_offset,
+        float_bug_symbols=SCGA05.float_bug_symbols,
+        stock_references=SCGA05.stock_references,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -169,47 +176,138 @@ def test_f1_a05_patch_xdf_uses_a_third_base_offset() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# F2 — preflight recognises the car and still refuses the *pairing*
+# F2 — preflight holds the XDF to the convention the profile declares
 # --------------------------------------------------------------------------- #
-# These were "A05 is inspect-only because nothing maps it". Since U5 something
-# does map it, and the refusal moved to a different and more specific reason:
-# `SCGa05_cal.xdf` declares ``BASEOFFSET 0`` for addresses that are CAL-relative
-# to 0x220000, so it names every table correctly and reads every one of them
-# from the wrong place. The claims below are the ones that survived the change —
-# the bin is never writable through this file, the refusal says why, and nothing
-# on either file is modified — plus the new one, that the reason is now the
-# faulty definition rather than an unrecognised car.
-def test_f2_a05_is_recognised_but_never_writable_through_this_xdf() -> None:
+# These began as "A05 is inspect-only because nothing maps it", became "A05 is
+# blocked because its XDF addresses the wrong part of the bin", and are now
+# neither. `SCGa05_cal.xdf` is not faulty: it numbers its tables from the start
+# of the calibration block, which is a second legitimate convention and the one
+# its `_cal` name announces. SCGA05 declares that convention, every read and
+# write is rebased by the CAL file offset, and the pairing is READY.
+#
+# What survives from the blocked era is the gate itself, and it is the more
+# important half: preflight still refuses any XDF whose header disagrees with
+# the profile's declaration. The library never infers the convention from the
+# file — a new definition file has to be read and declared by a human before
+# anything is written through it.
+def _xdf_with_base_offset(tmp_path: Path, source: Path, offset: str) -> Path:
+    """A copy of ``source`` whose BASEOFFSET header declares ``offset``.
+
+    Tampering with the header is the only way to reach the refusal now that the
+    real file is accepted, and it is the right stand-in: an XDF that resolves
+    but counts from somewhere unexpected is exactly the case the gate is for.
+    """
+    text = source.read_text(encoding="utf-8", errors="surrogateescape")
+    old = '<BASEOFFSET offset="0" subtract="0" />'
+    assert old in text, "SCGa05_cal.xdf no longer declares BASEOFFSET 0"
+    out = tmp_path / f"rebased_{offset}.xdf"
+    out.write_text(
+        text.replace(old, f'<BASEOFFSET offset="{offset}" subtract="0" />'),
+        encoding="utf-8", errors="surrogateescape",
+    )
+    return out
+
+
+def test_f2_a05_is_ready_and_writable_through_its_declared_convention() -> None:
     _require(A05_BIN, A05_XDF)
     v = preflight(A05_BIN, A05_XDF)
+    assert v.status == "READY"
+    assert v.ok_to_edit is True
+    assert v.writable is True
+    assert v.profile_name == "SCGA05"
+    assert v.profile_matched is True
+    assert v.bin_sha256 == _sha(A05_BIN)
+
+
+def test_f2_the_values_behind_that_verdict_are_this_car_s(a05_cal) -> None:
+    """READY has to mean the numbers are real, not that the names lined up.
+
+    Resolution matches on symbol and shape and would have said yes at either
+    base offset, so it is no evidence at all here. These are the values the
+    rebase produces, and they are the kind a calibration holds rather than the
+    kind padding does.
+    """
+    rpm = a05_cal.get("ldp_n_ip_put_sp").values.ravel()
+    assert list(rpm) == [2000.0, 3000.0, 4000.0, 5000.0, 5750.0, 6500.0]
+    # Two scalars this XDF scales correctly, quoted in the profile's docstring.
+    assert a05_cal.get("C_PRS_IM_SP_MAX").values.ravel()[0] == pytest.approx(
+        2399.96, abs=0.01
+    )
+    assert a05_cal.get("IP_PUT_AMP_DIF_MAX_PRS_DIF_THR").values.ravel()[
+        0
+    ] == pytest.approx(1799.97, abs=0.01)
+
+
+def test_f2_an_xdf_that_counts_from_somewhere_else_is_still_refused(
+    tmp_path: Path,
+) -> None:
+    """The gate, on the case it exists for.
+
+    Every table still resolves — only the header changed — so this is precisely
+    the failure resolution cannot see.
+    """
+    _require(A05_BIN, A05_XDF)
+    tampered = _xdf_with_base_offset(tmp_path, A05_XDF, "0x200000")
+    v = preflight(A05_BIN, tampered)
     assert v.status == BLOCKED
     assert v.ok_to_edit is False
     assert v.writable is False
-    # The profile resolved — that is what changed — but resolution is not
+    # The profile resolved — that is the point — but resolution is not
     # permission, and the two must stay separately readable off the verdict.
     assert v.profile_name == "SCGA05"
     assert v.profile_matched is False
     assert v.advanced["profile_resolved"] is True
-    assert v.bin_sha256 == _sha(A05_BIN)
 
 
-def test_f2_the_refusal_names_the_offset_disagreement_in_both_directions() -> None:
+def test_f2_the_refusal_names_the_disagreement_in_both_directions(
+    tmp_path: Path,
+) -> None:
     """A refusal has to say *what* did not match, or it cannot be acted on.
 
-    Here that means both numbers: what the XDF claims and what the bin holds.
-    One of them alone is not actionable — "the base offset is wrong" leaves the
-    reader with no way to tell which file to replace.
+    Here that means both numbers: what this file declares and what the profile
+    expects. One of them alone is not actionable — "the base offset is wrong"
+    leaves the reader with no way to tell which file to replace.
     """
     _require(A05_BIN, A05_XDF)
-    v = preflight(A05_BIN, A05_XDF)
-    assert v.advanced["xdf_base_offset"] == "0x0"
-    assert v.advanced["profile_cal_file_offset"] == "0x220000"
+    tampered = _xdf_with_base_offset(tmp_path, A05_XDF, "0x200000")
+    v = preflight(A05_BIN, tampered)
+    assert v.advanced["xdf_base_offset"] == "0x200000"
+    assert v.advanced["expected_xdf_base_offset"] == "0x0"
+    assert v.advanced["xdf_addresses_cal_relative"] is True
     blob = " ".join(v.reasons)
-    assert "0x0" in blob and "0x220000" in blob
+    assert "0x200000" in blob
     # And it must say the consequence, because "wrong offset" reads like a
     # cosmetic complaint: the danger is that a write lands where no checksum
     # looks, so the bad bin builds and flashes without a single warning.
     assert "flash" in blob.lower()
+
+
+def test_f2_the_declaration_is_a_check_not_a_licence_to_rebase(
+    tmp_path: Path,
+) -> None:
+    """Declaring the convention must not mean "accept whatever the file says".
+
+    A file declaring the CAL file offset is *self-consistent* against a full bin
+    — it is the other legitimate convention — and it is still refused here,
+    because SCGA05 was authored against the CAL-relative one. Accepting both
+    would mean the profile's declaration decided nothing.
+    """
+    _require(A05_BIN, A05_XDF)
+    v = preflight(A05_BIN, _xdf_with_base_offset(tmp_path, A05_XDF, "0x220000"))
+    assert v.status == BLOCKED
+
+
+def test_f2_sc8s50_is_held_to_the_other_convention(real_bin, real_xdf) -> None:
+    """The same gate on the car that uses the full-bin convention.
+
+    SC8S50 declares no rebase, so its expected base offset is the CAL file
+    offset and its real XDF passes unchanged — the check is symmetric, not an
+    A05 special case.
+    """
+    assert SC8S50.xdf_addresses_cal_relative is False
+    assert SC8S50.expected_xdf_base_offset == SC8S50_STRUCTURE.cal_file_offset
+    assert SC8S50.xdf_base_offset is None
+    assert preflight(real_bin, real_xdf).status == "READY"
 
 
 def test_f2_the_xdf_really_does_read_the_wrong_bytes() -> None:
@@ -358,18 +456,20 @@ def test_f4b_bintoolz_patch_parses_but_resolves_nothing() -> None:
     assert len(excinfo.value.misses) == len(SWITCH_PATCH_2933.names())
 
 
-def test_f4c_a_refused_verdict_makes_no_switch_patch_claim() -> None:
+def test_f4c_a_refused_verdict_makes_no_switch_patch_claim(tmp_path: Path) -> None:
     """On a refused bin, preflight must not claim anything about a switch patch.
 
-    Detection never runs: the refusal short-circuits first. Since U5 the
-    short-circuit is the base-offset guard rather than a profile miss, which
-    makes the silence *more* necessary rather than less — the patch XDF for this
-    car does declare the right base offset, so a detector reached through the
-    faulty base XDF could return a confident answer about a bin nothing else
-    here will touch.
+    Detection never runs: the refusal short-circuits first. The short-circuit
+    here is the base-offset gate, which makes the silence *more* necessary
+    rather than less — the patch XDF is untouched and declares its own offset
+    correctly, so a detector reached past a base XDF that counts from the wrong
+    place could return a confident answer about a pairing nothing will touch.
     """
     _require(A05_BIN, A05_XDF, A05_PATCH_SIMOSCAL)
-    v = preflight(A05_BIN, A05_XDF, switch_patch_xdf=A05_PATCH_SIMOSCAL)
+    v = preflight(
+        A05_BIN, _xdf_with_base_offset(tmp_path, A05_XDF, "0x200000"),
+        switch_patch_xdf=A05_PATCH_SIMOSCAL,
+    )
     assert v.status == BLOCKED
     assert v.switch_patch_present is None
     advanced = v.advanced or {}
@@ -658,6 +758,59 @@ def test_f6_ae1_opening_and_saving_the_a05_bin_changes_nothing(tmp_path) -> None
     assert out.read_bytes() == A05_BIN.read_bytes()
 
 
+def test_f6_an_a05_edit_lands_in_the_table_and_nowhere_else(tmp_path) -> None:
+    """The end of the whole port, and the claim the rebase actually has to earn.
+
+    Reading plausible values proves the addresses are right; only a write proves
+    they are right *and* nothing else moved. The byte audit is the check the
+    base-offset gate exists to protect: at the file's declared offset this edit
+    would have landed 0x220000 short, in bytes CAL_CRC does not cover, and the
+    saved bin would have verified clean while holding an unchanged table.
+    """
+    _require(A05_BIN, A05_XDF)
+    cal = CalFile.open(
+        str(A05_XDF), str(A05_BIN), structure=ck.SCGA05_STRUCTURE,
+        base_offset=SCGA05.xdf_base_offset,
+        float_bug_symbols=SCGA05.float_bug_symbols,
+        stock_references=SCGA05.stock_references,
+    )
+    view = cal.get("IP_PUT_SP")
+    before = view.values.copy()
+    view.set(before + 100.0)
+    out = tmp_path / "a05_edited.bin"
+    cal.save(out, correct_checksums=True)
+
+    original, edited = A05_BIN.read_bytes(), out.read_bytes()
+    changed = [i for i in range(len(original)) if original[i] != edited[i]]
+    runs: list[list[int]] = []
+    for i in changed:
+        if runs and i == runs[-1][1] + 1:
+            runs[-1][1] = i
+        else:
+            runs.append([i, i])
+
+    emb = cal.model.get("IP_PUT_SP").z.embedded
+    table_at = ck.SCGA05_STRUCTURE.cal_file_offset + emb.address
+    extent = emb.rows * emb.cols * (emb.elem_bits // 8)
+    crc_at = ck.SCGA05_STRUCTURE.cal_file_offset + 0x304
+    assert [tuple(r) for r in runs] == [
+        (crc_at, crc_at + 3),
+        (table_at, table_at + extent - 1),
+    ], "only the corrected CAL CRC and the edited table may differ"
+
+    reopened = CalFile.open(
+        str(A05_XDF), str(out), structure=ck.SCGA05_STRUCTURE,
+        base_offset=SCGA05.xdf_base_offset,
+    )
+    # Read back off the saved file, not the in-memory buffer. Tolerance is the
+    # 16-bit store's own quantisation, not slack in the check.
+    assert np.allclose(reopened.get("IP_PUT_SP").values, before + 100.0, atol=0.01)
+    assert all(
+        c.can_verify and not c.is_stale and c.stored == c.computed
+        for c in reopened.verify_checksums()
+    )
+
+
 def test_f6_both_a05_checksums_verify_under_the_declared_structure() -> None:
     """The declared spec must reproduce what discovery finds, not merely resemble it."""
     _require(A05_BIN)
@@ -836,3 +989,53 @@ def test_f6_shared_names_are_filed_under_the_same_heading() -> None:
 
 def test_f6_every_a05_table_is_filed_somewhere() -> None:
     assert SCGA05.ungrouped() == []
+
+
+# --------------------------------------------------------------------------- #
+# F7 — two XDFs over one buffer, each written in its own convention
+# --------------------------------------------------------------------------- #
+def test_f7_the_two_a05_files_use_different_conventions() -> None:
+    """The measurement behind the test below, stated on its own.
+
+    Nothing says a car's base and patch definitions are authored the same way,
+    and on this car they are not.
+    """
+    _require(A05_XDF, A05_PATCH_BINTOOLZ)
+    assert parse_xdf(str(A05_XDF)).base_offset == 0
+    assert parse_xdf(str(A05_PATCH_BINTOOLZ)).base_offset == 0x220000
+
+
+def test_f7_a_shared_space_agrees_on_where_addresses_land_not_on_headers() -> None:
+    """Both A05 files resolve to base 0x220000, so they may share one buffer.
+
+    Comparing what the two files *declare* would refuse this pair — 0 against
+    0x220000 — and that is the only pairing this car has. What has to match is
+    where each file's addresses land, and it does.
+    """
+    _require(A05_BIN, A05_XDF, A05_PATCH_BINTOOLZ)
+    base = CalFile.open(
+        str(A05_XDF), str(A05_BIN), structure=ck.SCGA05_STRUCTURE,
+        base_offset=SCGA05.xdf_base_offset,
+        float_bug_symbols=SCGA05.float_bug_symbols,
+    )
+    space = _open_shared_space(
+        "patch", Profile(name="A05PATCH", xdf=A05_PATCH_BINTOOLZ.name),
+        A05_PATCH_BINTOOLZ, base,
+    )
+    assert space.cal.base_offset == 0x220000 == base.base_offset
+    assert space.cal.binimage is base.binimage, "must be the same bytes, not a copy"
+
+
+def test_f7_a_shared_xdf_that_lands_elsewhere_is_still_refused() -> None:
+    """The guard survives the loosening: agreement is required, just measured right."""
+    _require(A05_BIN, A05_XDF, S50_XDF)
+    base = CalFile.open(
+        str(A05_XDF), str(A05_BIN), structure=ck.SCGA05_STRUCTURE,
+        base_offset=SCGA05.xdf_base_offset,
+        float_bug_symbols=SCGA05.float_bug_symbols,
+    )
+    # SC8S50's XDF lands at 0x200000 — a real offset, and the wrong one here.
+    with pytest.raises(TuneError, match="effective base offset"):
+        _open_shared_space(
+            "wrong", Profile(name="X", xdf=S50_XDF.name), S50_XDF, base,
+        )

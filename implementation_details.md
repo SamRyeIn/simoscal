@@ -39,8 +39,9 @@ implementation consequence here.
 
 `simoscal` parses an XDF and a Simos18 bin, edits tables in physical units, and
 writes a minimal-diff, checksum-verified bin. It does not flash an ECU and does
-not communicate with a vehicle. The write path is SC8S50-only: a valid but
-non-SC8S50 layout is inspect-only.
+not communicate with a vehicle. The write path covers the calibrations a shipped
+profile maps — `SC8S50` and `SCGA05` today; a valid layout no profile matches is
+inspect-only.
 
 Python is authoritative for:
 

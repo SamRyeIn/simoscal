@@ -167,6 +167,7 @@ class Tune:
         try:
             base_cal = CalFile.open(
                 str(xdf), str(working_bin), structure=structure_of(working_bin),
+                base_offset=profile.xdf_base_offset,
                 float_bug_symbols=profile.float_bug_symbols,
                 stock_references=profile.stock_references,
             )
@@ -448,17 +449,49 @@ def _open_shared_space(
 ) -> TableSpace:
     """Bind another XDF to the *same* byte buffer as ``base_cal``.
 
-    Refuses if the two XDFs disagree about the addressable region or the base
-    offset — sharing a buffer across differing address arithmetic would write
-    the right value to the wrong place.
+    Refuses if the two XDFs would not put the same address in the same place —
+    sharing a buffer across differing address arithmetic writes the right value
+    to the wrong place.
+
+    What must agree is where each file's addresses *land*, not what each file's
+    header says. The two are the same thing until a base profile declares a
+    rebase, and then they are not: A05's base XDF is written against the
+    extracted CAL block and declares ``BASEOFFSET 0``, while its switch-patch XDF
+    is written against the whole bin and declares ``0x220000``. Both resolve to
+    ``0x220000``, so they may share a buffer — and comparing the declared values
+    would have refused the only pairing that car has.
     """
     model = parse_xdf(str(xdf))
-    base = base_cal.model
-    mismatch = [
-        f"{field}: {getattr(base, field)!r} vs {getattr(model, field)!r}"
-        for field in ("region_start", "region_size", "base_offset", "base_subtract")
-        if getattr(base, field) != getattr(model, field)
-    ]
+    mismatch: list[str] = []
+    if base_cal.model.base_subtract != model.base_subtract:
+        mismatch.append(
+            f"base_subtract: {base_cal.model.base_subtract!r} vs "
+            f"{model.base_subtract!r}"
+        )
+    # This space gets no declaration of its own, so its declared offset *is* its
+    # effective one; it has to match where the base space actually reads.
+    if model.base_offset != base_cal.base_offset:
+        mismatch.append(
+            f"effective base offset: {base_cal.base_offset:#x} vs "
+            f"{model.base_offset:#x}"
+        )
+    # Region, likewise on effective terms. The bytes this space may touch are the
+    # base space's — it shares that buffer — so the requirement is that this XDF
+    # agrees they are addressable at all, not that it declares the same window.
+    # A05's base XDF declares [0x0, 0x7d000), CAL-scoped like its addresses and
+    # too small to hold its own highest table, so equality here would compare two
+    # statements in different coordinate systems.
+    binimage = base_cal.binimage
+    if (
+        model.region_start > binimage.region_start
+        or model.region_start + model.region_size < binimage.region_end
+    ):
+        mismatch.append(
+            f"addressable region: the base space reads "
+            f"[{binimage.region_start:#x}, {binimage.region_end:#x}) but this XDF "
+            f"declares only [{model.region_start:#x}, "
+            f"{model.region_start + model.region_size:#x})"
+        )
     if mismatch:
         raise TuneError(
             f"cannot share one bin between the base XDF and {xdf.name}: "
@@ -470,6 +503,11 @@ def _open_shared_space(
     # patch XDF also defines.
     cal = CalFile(
         model, base_cal.binimage, structure=base_cal.structure,
+        # The check above proves the two files *declare* the same base offset;
+        # this makes them *use* the same one. They address one shared buffer, so
+        # an override applied to the base and not to this space would put the
+        # two XDFs' identical addresses in different places in the same bin.
+        base_offset=base_cal.base_offset,
         float_bug_symbols=(base_cal.float_bug_symbols or frozenset())
         | profile.float_bug_symbols,
         stock_references={**base_cal.stock_references, **profile.stock_references},

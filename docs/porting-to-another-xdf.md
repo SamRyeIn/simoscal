@@ -129,12 +129,12 @@ at `0x200400` reads `0x20000` before A05's CAL block starts, which lands in a
 region holding part-number strings. ECM3 is at CAL-relative `0x400` on both
 cars.
 
-## 7. The A05 base XDF declares a wrong `BASEOFFSET`
+## 7. Two address conventions, and holding a file to the one it uses
 
 `SCGa05_cal.xdf` declares `BASEOFFSET offset="0"`, but its addresses are
 CAL-relative — 4,048 of them, spanning `0x96F` to `0x8F8C3`, all inside the
-`0x9FC00` CAL block. Taken literally, every read lands near the start of the
-file instead of in the calibration:
+`0x9FC00` CAL block. Taken literally against a full 4 MB bin, every read lands
+near the start of the file instead of in the calibration:
 
 ```
 ID_PORT_SP x-axis, declared address 0x1336, 10 x u8, value = raw * 32 rpm
@@ -145,34 +145,71 @@ ID_PORT_SP x-axis, declared address 0x1336, 10 x u8, value = raw * 32 rpm
 
 The second is an rpm breakpoint axis. The first is padding.
 
-This is a defect in that XDF file, not a property of the car: the A05 *switch
-patch* XDF, for the same bin, correctly declares `BASEOFFSET 0x220000`. Profile
-resolution matches on name and shape and so is unaffected, but **any value read
-through this XDF at its declared offset is meaningless**. A port must not treat
-a declared `BASEOFFSET` as authoritative — cross-check it against the CAL block
-offset discovered from the file.
+The first reading of this was "that XDF is faulty". It is not. The file numbers
+its tables from the start of the **calibration block** rather than the start of
+the bin — the `_cal` in its name — which is a second legitimate convention, and
+the one you get from any definition written against an extracted CAL block.
+`SC8S50.V1.0.xdf` uses the other: it declares `0x200000` and is written against
+a whole bin. Both files are internally consistent; what varies is which image
+they were authored for.
 
-**This cross-check is now code, not procedure.** Once a profile declares a
-`StructureSpec`, preflight has a second, independent opinion about where the CAL
-block starts, and it compares the two before calling a bin writable:
+Three signals tell the conventions apart, and they agree:
+
+| Signal                             | Full-bin (`SC8S50.V1.0.xdf`) | CAL-relative (`SCGa05_cal.xdf`)    |
+|------------------------------------|------------------------------|------------------------------------|
+| declared `BASEOFFSET`              | `0x200000` = CAL file offset | `0`                                |
+| address span vs `cal_block_length` | exceeds it                   | `0xad4..0x8f8c3`, inside `0x9FC00` |
+| values at the declared offset      | real calibration             | padding                            |
+
+Measured on A05: rebased by `0x220000`, 214 of 270 candidate breakpoint axes
+read strictly monotonic against 3 at the declared base, and `C_PRS_IM_SP_MAX` —
+Maximum requested intake-manifold pressure setpoint reads 2399.96 hPa against 0.
+
+**The library never infers which convention a file uses.** It could — the middle
+row of that table is a reliable structural tell — but a wrong guess here decides
+where every write lands, so the convention is a *declaration* on the profile
+(`Profile.xdf_addresses_cal_relative`) sitting beside that car's other per-car
+facts, and `preflight` holds the file to it:
 
 ```
 preflight(3CN906259B__0002_SCGA05.bin, SCGa05_cal.xdf)
+  -> READY, profile_name=SCGA05, writable=True
+
+preflight(3CN906259B__0002_SCGA05.bin, <same file, BASEOFFSET 0x200000>)
   -> BLOCKED, profile_name=SCGA05, advanced.profile_resolved=True
-     "This XDF's tables match the SCGA05 profile, but it addresses the wrong
-      part of the bin — the definition file is faulty."
+     "This XDF's tables match the SCGA05 profile, but it does not count
+      addresses from where that profile expects."
 ```
 
-Recognition and permission are separate results here, and both are reported: the
-map is correct and the file is not. The reason it is `BLOCKED` rather than
-`INSPECT_ONLY` is that nothing read through this pairing is the car's — offering
-it read-only would be offering padding as calibration. And the reason the check
-is worth its lines is what the alternative looks like: `IP_PUT_SP` — Pressure up
-throttle setpoint is declared at `0x1F054`, so an edit through this file writes
-its boost grid to file `0x1F054` instead of `0x23F054`. That lands outside every
+Recognition and permission stay separate results, and both are reported. A file
+declaring anything other than what the profile expects is refused rather than
+accommodated — including one declaring `0x220000`, which is self-consistent for
+a full bin and still not the file SCGA05 was authored against. That is what
+stops the declaration becoming a licence to accept whatever arrives.
+
+Two things follow from the convention and are derived, not separately declared:
+
+- **The addressable region.** A CAL-relative XDF describes the CAL block in its
+  `REGION` header too, so its declared region is in the same short coordinates
+  and cannot bound reads into a full bin — `SCGa05_cal.xdf` declares
+  `[0x0, 0x7d000)`, which does not even contain its own highest table at
+  `0x8F8C3`. `CalFile.open` takes the region from the `StructureSpec` instead
+  whenever a base offset is overridden: a CAL-relative file may address the CAL
+  block and nothing else.
+- **Every reopen.** The build pipeline reopens the saved bin to read tables back,
+  audit bytes and render comparisons; each of those carries the base offset from
+  the `CalFile` the tune already holds, so a rebased space stays rebased all the
+  way through. `_open_shared_space` does the same, because a patch XDF sharing
+  one buffer with the base XDF must share its address arithmetic.
+
+Why the check earns its lines: `IP_PUT_SP` — Pressure up throttle setpoint is
+declared at `0x1F054`, so an edit through this file at its declared offset writes
+the boost grid to file `0x1F054` instead of `0x23F054`. That lands outside every
 range the CAL checksums cover, so `build()` would correct the checksums, verify
 them clean, and hand back a flashable bin with the boost table untouched and 48
-bytes of unrelated flash overwritten.
+bytes of unrelated flash overwritten. Rebased, the same edit produces exactly two
+changed byte runs — the CAL CRC at `0x220304` and the 48-byte table at `0x23F054`
+— and both checksums verify clean, which is what the acceptance test asserts.
 
 ## 8. Procedure for the next structure
 
@@ -181,12 +218,15 @@ bytes of unrelated flash overwritten.
 2. Run it on `bin/5G0906259L__0002.bin` too. If the SC8S50 result is not
    rediscovered exactly, the search is broken — fix it before believing
    anything it says about the new bin.
-3. Confirm the XDF's `BASEOFFSET` equals the discovered CAL file offset. If it
-   does not, the XDF is wrong; check a known breakpoint axis both ways as in
-   section 7 before deciding which to trust. Preflight enforces this once the
-   profile exists, so a mismatch you miss here surfaces as a `BLOCKED` verdict
-   rather than as wrong bytes — but finding it at this step saves writing a map
-   against a file you cannot use.
+3. Work out which address convention the XDF uses, by the three signals in
+   section 7 — declared `BASEOFFSET`, address span against `cal_block_length`,
+   and whether a known breakpoint axis reads as breakpoints or as padding. If it
+   is CAL-relative, the profile declares `xdf_addresses_cal_relative=True`; if
+   it is full-bin, it declares nothing and its `BASEOFFSET` must equal the
+   discovered CAL file offset. Do this before writing any specs: preflight
+   enforces the declaration once the profile exists, so getting it wrong
+   surfaces as a `BLOCKED` verdict rather than as wrong bytes, but a map written
+   against the wrong reading of the file is wasted either way.
 4. Only then write the profile's `StructureSpec`. A declared spec is worth
    having even though discovery works: it lets a bin that does not match the
    profile the user selected be caught, instead of being silently accepted
@@ -258,7 +298,14 @@ under the spec it was given. It used to return the data unchanged and raise
 nothing, which meant the caller held an uncorrected bin with no sign of it — on
 the one operation whose entire job is making a bin flash-ready.
 
-A fourth per-car fact arrived with the A05 map: **`Profile.unavailable`** —
+A fourth per-car fact is **`Profile.xdf_addresses_cal_relative`** — whether this
+car's XDF numbers its tables from the calibration block or from the whole bin
+(section 7). It is a declaration the file is checked against, never inferred from
+the file, because it decides where every write lands. `Profile.xdf_base_offset`
+derives the override to hand `CalFile.open`, which is `None` for the full-bin
+convention so that path is byte-for-byte what it was before this field existed.
+
+A fifth arrived with the A05 map: **`Profile.unavailable`** —
 logical names this car does not have, each with the reason. It exists because
 leaving a name out and declaring it absent produce the same profile but not the
 same knowledge: an omission cannot be told apart from an oversight, and the

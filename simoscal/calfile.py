@@ -159,7 +159,7 @@ class TableView:
         raw = writer.physical_to_raw(z, arr)
         off, length = writer.stage_full(
             z, self._cal.binimage,
-            base_offset=self._cal.model.base_offset,
+            base_offset=self._cal.base_offset,
             base_subtract=self._cal.model.base_subtract,
             raw_values=raw,
         )
@@ -177,7 +177,7 @@ class TableView:
         raw = writer.physical_to_raw(z, np.array([[value]], dtype=np.float64))
         off, length = writer.stage_cell(
             z, self._cal.binimage,
-            base_offset=self._cal.model.base_offset,
+            base_offset=self._cal.base_offset,
             base_subtract=self._cal.model.base_subtract,
             row=row, col=col, raw_value=np.asarray(raw).ravel()[0],
         )
@@ -195,7 +195,7 @@ class TableView:
         z = self._z_writable()
         off, length = writer.stage_full(
             z, self._cal.binimage,
-            base_offset=self._cal.model.base_offset,
+            base_offset=self._cal.base_offset,
             base_subtract=self._cal.model.base_subtract,
             raw_values=raw_values,
         )
@@ -207,7 +207,7 @@ class TableView:
         z = self._z_writable()
         off, length = writer.stage_cell(
             z, self._cal.binimage,
-            base_offset=self._cal.model.base_offset,
+            base_offset=self._cal.base_offset,
             base_subtract=self._cal.model.base_subtract,
             row=row, col=col, raw_value=raw_value,
         )
@@ -241,11 +241,33 @@ class CalFile:
         binimage: BinImage,
         *,
         structure: StructureSpec,
+        base_offset: Optional[int] = None,
         float_bug_symbols: Optional[frozenset[str]] = None,
         stock_references: Optional[Mapping[str, str]] = None,
     ) -> None:
         self.model = model
         self.binimage = binimage
+        #: The base offset actually used to turn this XDF's addresses into file
+        #: offsets. Normally the file's own ``BASEOFFSET``; a profile whose XDF
+        #: is written against the extracted CAL block rather than the whole bin
+        #: overrides it with that block's file offset. ``model.base_offset``
+        #: still reports what the file itself declared, so the two stay
+        #: separately readable — the override is applied, never backfilled into
+        #: the parsed evidence.
+        if base_offset is not None and model.base_subtract:
+            # Subtract mode means the XDF's addresses are ECU addresses to be
+            # taken *away* from the base, so a base offset means something else
+            # entirely there and an override cannot be applied on top of it. No
+            # shipped XDF uses subtract mode; refusing is what keeps that from
+            # becoming a silently wrong write the day one does.
+            raise ValueError(
+                "cannot override base_offset on an XDF that declares "
+                "BASEOFFSET subtract=1: its addresses are ECU addresses, not "
+                "offsets, so the override has no defined meaning"
+            )
+        self.base_offset = (
+            model.base_offset if base_offset is None else base_offset
+        )
         #: Where this car's CAL block sits and how it is addressed. Every
         #: checksum call this object makes passes it explicitly.
         self.structure = structure
@@ -270,6 +292,7 @@ class CalFile:
         bin_path: Union[str, Path],
         *,
         structure: StructureSpec,
+        base_offset: Optional[int] = None,
         float_bug_symbols: Optional[frozenset[str]] = None,
         stock_references: Optional[Mapping[str, str]] = None,
     ) -> "CalFile":
@@ -284,6 +307,15 @@ class CalFile:
         to prevent. Obtain one from a profile, or from
         :func:`~simoscal.checksum.discover_structure` on the bin's bytes.
 
+        ``base_offset`` overrides the XDF's own ``BASEOFFSET`` header. Omit it
+        and the file's declared value is used, which is right for an XDF written
+        against a whole bin. Supply it — from
+        :attr:`Profile.xdf_base_offset <simoscal.tune.Profile.xdf_base_offset>` —
+        for one written against the extracted CAL block, whose addresses are
+        short by that block's file offset. It is a caller's explicit statement
+        and never inferred here: this value decides where every read comes from
+        and every write lands.
+
         ``float_bug_symbols`` and ``stock_references`` are the other two per-car
         facts a profile supplies. Both may be omitted for a read-only open; a
         physical-unit write through a CalFile with no ``float_bug_symbols``
@@ -291,13 +323,29 @@ class CalFile:
         the guard.
         """
         model = parse_xdf(str(xdf_path))
+        if base_offset is None:
+            region_start, region_size = model.region_start, model.region_size
+        else:
+            # An XDF written against the extracted CAL block describes that
+            # block in its REGION header too, so its declared region is in the
+            # same short coordinates as its addresses and cannot bound reads
+            # into a full bin. `SCGa05_cal.xdf` declares [0x0, 0x7d000), which
+            # does not even contain its own highest table at 0x8f8c3.
+            #
+            # The structure is the right source: a CAL-relative file may address
+            # the CAL block and nothing else, so that block *is* the region.
+            # This is derived from the two facts the caller already stated —
+            # where the block starts and that addresses count from there — not
+            # inferred from the file, and it can only tighten the bound.
+            region_start = structure.cal_file_offset
+            region_size = structure.cal_block_length
         binimage = BinImage.from_path(
             bin_path,
-            region_start=model.region_start,
-            region_size=model.region_size,
+            region_start=region_start,
+            region_size=region_size,
         )
         return cls(
-            model, binimage, structure=structure,
+            model, binimage, structure=structure, base_offset=base_offset,
             float_bug_symbols=float_bug_symbols,
             stock_references=stock_references,
         )
@@ -307,7 +355,7 @@ class CalFile:
         return decode_physical(
             axis,
             self.binimage,
-            base_offset=self.model.base_offset,
+            base_offset=self.base_offset,
             base_subtract=self.model.base_subtract,
         )
 
@@ -315,7 +363,7 @@ class CalFile:
         return decode_raw(
             axis,
             self.binimage,
-            base_offset=self.model.base_offset,
+            base_offset=self.base_offset,
             base_subtract=self.model.base_subtract,
         )
 

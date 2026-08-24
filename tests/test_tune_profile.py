@@ -737,3 +737,88 @@ def test_grouping_names_the_profile_it_is_complaining_about() -> None:
         prof.apply_groups(
             "SCGA05", [TableSpec(name="a", key="A", description="d")], {},
         )
+
+
+# --------------------------------------------------------------------------- #
+# The XDF addressing convention, declared per car
+# --------------------------------------------------------------------------- #
+def test_the_two_shipped_profiles_declare_opposite_conventions() -> None:
+    """Both conventions are real and both are in use, which is the whole point.
+
+    `SC8S50.V1.0.xdf` numbers tables from the start of the bin; `SCGa05_cal.xdf`
+    numbers them from the start of the CAL block. Neither is a defect, and a
+    library that assumed either one would be wrong about the other car.
+    """
+    assert SC8S50.xdf_addresses_cal_relative is False
+    assert SC8S50.expected_xdf_base_offset == SC8S50.structure.cal_file_offset
+    assert SC8S50.xdf_base_offset is None, "a full-bin XDF needs no override"
+
+    assert SCGA05.xdf_addresses_cal_relative is True
+    assert SCGA05.expected_xdf_base_offset == 0
+    assert SCGA05.xdf_base_offset == SCGA05.structure.cal_file_offset
+
+
+def test_both_shipped_profiles_match_the_file_they_name() -> None:
+    """The declaration is only worth anything if it matches the real header."""
+    for profile, path in (
+        (SC8S50, Path(__file__).resolve().parents[1] / "xdf" / SC8S50.xdf),
+        (SCGA05, Path(__file__).resolve().parents[1] / "xdf" / SCGA05.xdf),
+    ):
+        if not path.is_file():
+            pytest.skip(f"{path.name} not present")
+        assert parse_xdf(str(path)).base_offset == profile.expected_xdf_base_offset
+
+
+def test_a_cal_relative_declaration_needs_a_structure_to_count_from() -> None:
+    """"Relative to the CAL block" is meaningless without one."""
+    with pytest.raises(ValueError, match="declares no structure"):
+        Profile(name="T", xdf="t.xdf", xdf_addresses_cal_relative=True)
+
+
+def test_the_convention_travels_with_the_structure_through_a_merge() -> None:
+    """A patch space shares the base space's bytes, so it shares its arithmetic.
+
+    The patch profile declares no structure and no convention; merging must take
+    the base profile's rather than silently resetting to the full-bin default,
+    which would put the merged profile's addresses 0x220000 away from the base
+    profile's on the same bin.
+    """
+    patch = Profile(name="P", xdf="p.xdf")
+    merged = SCGA05.merged_with(patch, name="M")
+    assert merged.xdf_addresses_cal_relative is True
+    assert merged.xdf_base_offset == SCGA05.structure.cal_file_offset
+    # And in the other direction, where the structure comes from `other`.
+    assert patch.merged_with(SCGA05, name="M2").xdf_addresses_cal_relative is True
+
+
+def test_a_profile_with_no_structure_expects_nothing() -> None:
+    """The switch patch is checked through whatever it is merged into."""
+    assert SWITCH_PATCH_2933.expected_xdf_base_offset is None
+    assert SWITCH_PATCH_2933.xdf_base_offset is None
+
+
+def test_an_override_is_refused_on_a_subtract_mode_xdf(tmp_path: Path) -> None:
+    """Subtract mode makes the addresses ECU addresses, not offsets.
+
+    An override has no defined meaning on top of that, so it is refused rather
+    than applied to the wrong quantity. No shipped XDF uses subtract mode; this
+    pins what happens the day one does.
+    """
+    xdf = Path(__file__).resolve().parents[1] / "xdf" / SCGA05.xdf
+    binp = Path(__file__).resolve().parents[1] / "bin" / "3CN906259B__0002_SCGA05.bin"
+    if not (xdf.is_file() and binp.is_file()):
+        pytest.skip("A05 files not present")
+    text = xdf.read_text(encoding="utf-8", errors="surrogateescape")
+    tampered = tmp_path / "subtract.xdf"
+    tampered.write_text(
+        text.replace(
+            '<BASEOFFSET offset="0" subtract="0" />',
+            '<BASEOFFSET offset="0" subtract="1" />',
+        ),
+        encoding="utf-8", errors="surrogateescape",
+    )
+    with pytest.raises(ValueError, match="subtract"):
+        CalFile.open(
+            str(tampered), str(binp), structure=SCGA05.structure,
+            base_offset=SCGA05.xdf_base_offset,
+        )

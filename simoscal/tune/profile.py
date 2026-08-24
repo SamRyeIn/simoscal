@@ -273,6 +273,26 @@ class Profile:
     #: in the bin but this car's XDF declares no editable table for it (an
     #: embedded axis with no standalone entry is the common case).
     unavailable: Mapping[str, str] = field(default_factory=dict)
+    #: Whether this car's XDF numbers its tables from the start of the
+    #: **calibration block** rather than the start of the whole bin.
+    #:
+    #: Both are legitimate conventions and the file states which it uses in its
+    #: ``BASEOFFSET`` header, but that statement is only meaningful next to the
+    #: image it was authored for. ``SC8S50.V1.0.xdf`` declares ``0x200000`` and
+    #: is written against a full 4 MB bin; ``SCGa05_cal.xdf`` declares ``0`` and
+    #: is written against the extracted CAL block alone — the ``_cal`` in its
+    #: name. Hand the second one a full bin and every address is short by the
+    #: CAL file offset: reads return padding and a write would land outside the
+    #: region the checksums cover, so the bin would build clean and flash wrong.
+    #:
+    #: This is a *declaration*, never an inference. The library could guess —
+    #: a CAL-relative file's addresses all fit inside ``cal_block_length``, and
+    #: a full-bin file's do not — but guessing where a write lands is the one
+    #: place this library must not be clever. Declaring it here states the
+    #: convention as a per-car fact next to that car's other per-car facts, and
+    #: leaves :func:`~simoscal.preflight.preflight` free to refuse any file whose
+    #: header disagrees with the declaration rather than quietly accommodating it.
+    xdf_addresses_cal_relative: bool = False
 
     def __post_init__(self) -> None:
         for name, spec in self.specs.items():
@@ -288,6 +308,41 @@ class Profile:
                 "mapped table and as unavailable — one of the two is wrong, and "
                 "guessing which would either hide a table or offer a missing one"
             )
+        if self.xdf_addresses_cal_relative and self.structure is None:
+            raise ValueError(
+                f"profile {self.name!r}: xdf_addresses_cal_relative says addresses "
+                "are relative to the CAL block, but the profile declares no "
+                "structure, so there is nothing that says where that block starts"
+            )
+
+    @property
+    def expected_xdf_base_offset(self) -> Optional[int]:
+        """The ``BASEOFFSET`` this profile's XDF must declare, or ``None``.
+
+        ``None`` for a profile with no structure (the switch patch), which is
+        checked against whatever base profile it is merged into rather than on
+        its own. Otherwise it follows directly from the convention: a
+        CAL-relative file declares ``0``, a full-bin file declares the CAL block's
+        file offset. A file declaring anything else is not the file this profile
+        was authored against, whatever its tables are named.
+        """
+        if self.structure is None:
+            return None
+        return 0 if self.xdf_addresses_cal_relative else self.structure.cal_file_offset
+
+    @property
+    def xdf_base_offset(self) -> Optional[int]:
+        """The base offset to *use* for this XDF's addresses, or ``None``.
+
+        Pass to :meth:`~simoscal.CalFile.open` as ``base_offset``. ``None`` means
+        "no override" — the file's own header is already right for a full bin, so
+        nothing is imposed on it and behaviour is exactly as before this field
+        existed. For a CAL-relative file it is the CAL block's file offset, which
+        is what its addresses are counted from.
+        """
+        if self.structure is None or not self.xdf_addresses_cal_relative:
+            return None
+        return self.structure.cal_file_offset
 
     @property
     def float_bug_symbols(self) -> frozenset[str]:
@@ -397,6 +452,13 @@ class Profile:
             structure=self.structure if self.structure is not None else other.structure,
             stock_references={**self.stock_references, **other.stock_references},
             unavailable=unavailable,
+            # The convention travels with the structure, because it is only
+            # meaningful beside one: whichever profile said where the CAL block
+            # is also said how its XDF counts from there.
+            xdf_addresses_cal_relative=(
+                self.xdf_addresses_cal_relative if self.structure is not None
+                else other.xdf_addresses_cal_relative
+            ),
         )
 
 

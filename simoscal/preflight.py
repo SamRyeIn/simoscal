@@ -474,53 +474,70 @@ def preflight(
             advanced=advanced,
         )
 
-    # -- the XDF must address the CAL block the profile declares ------------ #
+    # -- the XDF must count from where the profile says it counts ---------- #
     # Profile resolution matches on symbol and shape, which says nothing about
     # *where* the XDF reads. A definition file can name every table correctly,
     # declare every shape correctly, and still point every address at the wrong
-    # part of the bin — `SCGa05_cal.xdf` does exactly that, declaring
-    # ``BASEOFFSET 0`` for addresses that are CAL-relative to 0x220000. Reads
-    # through it return padding; a write lands 0x220000 short of its table, in
-    # bytes no CAL checksum covers, so the bin builds clean and flashes wrong.
+    # part of the bin.
     #
-    # The profile's own `StructureSpec` is the independent second opinion: it
-    # says where this car's CAL block starts, measured from the bin. If the XDF
-    # disagrees, one of the two is wrong and neither reading nor editing is
-    # safe, so this is BLOCKED rather than INSPECT_ONLY — "you may look but not
-    # touch" would still be offering values that are not the car's.
+    # Two conventions are legitimate and both appear in files we hold:
+    # `SC8S50.V1.0.xdf` numbers its tables from the start of the whole bin and
+    # declares BASEOFFSET 0x200000; `SCGa05_cal.xdf` numbers them from the start
+    # of the extracted CAL block and declares 0. Neither is faulty — but a file
+    # of the second kind handed a full bin reads every table 0x220000 short, in
+    # bytes no CAL checksum covers, so an edit would build clean and flash wrong.
+    #
+    # Which convention a car's XDF uses is a per-car fact, declared on the
+    # profile beside that car's other per-car facts, and this gate holds the file
+    # to it. That direction matters: the library is not deciding what the file
+    # means, it is checking the file is the one the profile was authored
+    # against. A file declaring anything else is refused rather than
+    # accommodated, so a third convention has to be read and declared by a human
+    # before anything is written through it.
     #
     # ``profile`` came from BASE_PROFILES, whose membership rule *is* "declares a
     # structure", so this is always present — but read it once rather than
-    # reaching through the Optional four times below.
+    # reaching through the Optional below.
     structure = profile.structure
     assert structure is not None, "a base profile always declares a structure"
-    # With ``base_subtract`` the XDF's addresses are ECU addresses, so the file
-    # offset of CAL-relative zero is the CAL base address minus the declared
-    # base; without it the declared base *is* that file offset. No shipped XDF
-    # uses subtract mode, but deriving the same quantity both ways means the
-    # check does not quietly stop applying if one ever does.
-    declared_cal_offset = (
-        structure.cal_base_address - model.base_offset
-        if model.base_subtract else model.base_offset
-    )
-    if declared_cal_offset != structure.cal_file_offset:
+    expected_base = profile.expected_xdf_base_offset
+    # Subtract mode would make the XDF's addresses ECU addresses rather than
+    # offsets, so the comparison below would be against the wrong quantity. No
+    # shipped XDF uses it; it is refused here rather than mis-compared.
+    if model.base_subtract or model.base_offset != expected_base:
+        if profile.xdf_addresses_cal_relative:
+            expectation = (
+                f"The {profile.name} profile was authored against a definition "
+                f"file that numbers tables from the start of the calibration "
+                f"block, which declares BASEOFFSET 0."
+            )
+        else:
+            expectation = (
+                f"The {profile.name} profile was authored against a definition "
+                f"file that numbers tables from the start of the whole bin, "
+                f"which declares BASEOFFSET {expected_base:#x}."
+            )
         return _blocked(
             bin_path=bin_path, xdf_path=xdf_path,
             summary=(
                 f"This XDF's tables match the {profile.name} profile, but it "
-                "addresses the wrong part of the bin — the definition file is "
-                "faulty."
+                "does not count addresses from where that profile expects."
             ),
             reasons=(
-                f"The XDF's declared base offset puts the calibration block at "
-                f"{declared_cal_offset:#x}, but the {profile.name} calibration "
-                f"block is at {structure.cal_file_offset:#x} in this bin.",
-                "Every value read through this file would come from the wrong "
-                "address, and every write would land there too — outside the "
-                "region the checksums protect, so the result would build and "
-                "flash without complaint.",
-                "Use a definition file whose BASEOFFSET matches the calibration "
-                "block; the tables themselves are correctly named here.",
+                expectation,
+                (
+                    "This file declares BASEOFFSET "
+                    f"{model.base_offset:#x}"
+                    + (" with subtract=1" if model.base_subtract else "")
+                    + "."
+                ),
+                "Every value read through it would come from the wrong address, "
+                "and every write would land there too — outside the region the "
+                "checksums protect, so the result would build and flash without "
+                "complaint.",
+                "Use the definition file this profile names, or declare the new "
+                "convention on the profile after confirming what its addresses "
+                "are relative to.",
             ),
             bin_size=bin_size, bin_sha256=bin_hash, xdf_sha256=xdf_hash,
             region_start=region_start, region_size=region_size,
@@ -534,7 +551,9 @@ def preflight(
                 "profile_resolved": True,
                 "xdf_base_offset": f"{model.base_offset:#x}",
                 "xdf_base_subtract": model.base_subtract,
+                "expected_xdf_base_offset": f"{expected_base:#x}",
                 "profile_cal_file_offset": f"{structure.cal_file_offset:#x}",
+                "xdf_addresses_cal_relative": profile.xdf_addresses_cal_relative,
             },
         )
 

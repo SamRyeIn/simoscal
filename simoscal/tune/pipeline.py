@@ -324,6 +324,7 @@ def run_gates(
     verify_cal = CalFile.open(
         str(tune.space(BASE_SPACE).xdf), str(bin_path),
         structure=tune.space(BASE_SPACE).cal.structure,
+        base_offset=tune.space(BASE_SPACE).cal.base_offset,
     )
     checksums = tuple(verify_cal.verify_checksums())
     checksum_state = _checksum_state(checksums)
@@ -416,7 +417,8 @@ def _readback(tune: Tune, bin_path: Path) -> tuple[str, ...]:
         cal = caches.get(space_name)
         if cal is None:
             cal = caches[space_name] = CalFile.open(
-                str(space.xdf), str(bin_path), structure=space.cal.structure
+                str(space.xdf), str(bin_path), structure=space.cal.structure,
+                base_offset=space.cal.base_offset,
             )
         expected = entry.after
         if expected is None:
@@ -468,10 +470,12 @@ def _compare_plots(
         space = tune.space(space_name)
         if space_name not in before_cals:
             before_cals[space_name] = CalFile.open(
-                str(space.xdf), str(reference_bin), structure=space.cal.structure
+                str(space.xdf), str(reference_bin), structure=space.cal.structure,
+                base_offset=space.cal.base_offset,
             )
             after_cals[space_name] = CalFile.open(
-                str(space.xdf), str(bin_path), structure=space.cal.structure
+                str(space.xdf), str(bin_path), structure=space.cal.structure,
+                base_offset=space.cal.base_offset,
             )
         try:
             written = compare_tables(

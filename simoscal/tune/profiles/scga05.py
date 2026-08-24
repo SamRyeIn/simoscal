@@ -21,14 +21,19 @@ Three findings drove the differences, and each is noted at the spec:
 
 .. warning::
 
-   ``SCGa05_cal.xdf`` declares ``BASEOFFSET 0`` while its addresses are
-   CAL-relative to ``0x220000``, so **values read through it at its declared
-   offset are meaningless** — mostly padding, and for tables past the declared
-   region, an out-of-bounds error. Profile resolution matches on name and shape
-   and is unaffected, which is exactly why the defect needs catching somewhere
-   else: :func:`~simoscal.preflight.preflight` cross-checks the XDF's declared
-   base offset against :attr:`Profile.structure`'s CAL file offset and refuses
-   the pair when they disagree. See ``docs/porting-to-another-xdf.md`` § 7.
+   ``SCGa05_cal.xdf`` numbers its tables from the start of the **calibration
+   block**, not the start of the bin: it declares ``BASEOFFSET 0`` for addresses
+   relative to ``0x220000``. Read at the declared offset against a full 4 MB bin
+   every value is meaningless — mostly padding, and out of bounds past the
+   declared region. The profile declares that convention
+   (:attr:`Profile.xdf_addresses_cal_relative`) and every read and write through
+   it is rebased by the CAL file offset.
+
+   Profile resolution matches on name and shape and is blind to all of this,
+   which is why the convention is checked separately:
+   :func:`~simoscal.preflight.preflight` holds the file to the profile's
+   declaration and refuses any XDF whose header disagrees, rather than inferring
+   what a new file must have meant. See ``docs/porting-to-another-xdf.md`` § 7.
 """
 
 from __future__ import annotations
@@ -496,6 +501,16 @@ SCGA05 = Profile(
     # `Profile.stock_references`.
     stock_references={},
     unavailable=UNAVAILABLE,
+    # `SCGa05_cal.xdf` is written against the extracted calibration block, not
+    # the whole bin — the `_cal` in its name — so it declares BASEOFFSET 0 and
+    # every address is relative to the CAL block at 0x220000. Measured, not
+    # assumed: rebased by 0x220000, 214 of 270 candidate breakpoint axes read
+    # strictly monotonic where 3 do at the declared base, and
+    # `C_PRS_IM_SP_LIM` — Maximum requested intake-manifold pressure setpoint
+    # reads 271696.0 as float32 against 0. Every address in the file
+    # (0xad4..0x8f8c3) also fits inside the 0x9FC00 block, which is the
+    # structural signature of this convention.
+    xdf_addresses_cal_relative=True,
 )
 
 __all__ = [
