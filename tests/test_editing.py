@@ -353,3 +353,62 @@ def test_the_ghost_is_absent_rather_than_wrong_when_unavailable() -> None:
     tune = _open_base()
     tune._source_snapshot = b""
     assert table_detail(tune, "put_setpoint").source_values is None
+
+
+@requires_base
+def test_every_ghost_reads_through_one_decoder_per_space() -> None:
+    """The whole catalog's ghosts cost one copy of the source buffer, not 70.
+
+    ``BinImage`` owns its bytes, so wrapping the snapshot copies the whole bin.
+    Building one wrapper per *table* — as this path used to — cost a 4 MB copy
+    each, and ``CalFile._views``/``TableView._cal`` form a reference cycle, so
+    refcounting never freed them: they accumulated until a cyclic-GC pass
+    happened to run. On a tablet that is the difference between 4 MB and ~300.
+    """
+    tune = _open_base()
+    decoder = tune.source_space()
+    assert decoder is not None
+    for name in tune.space().tables.names():
+        assert table_detail(tune, name).source_values is not None
+    assert tune.source_space() is decoder, "a second decoder was built"
+
+
+@requires_base
+def test_the_ghost_decodes_to_what_an_independent_read_of_the_source_finds() -> None:
+    """The shared decoder must not change the answer, only the cost of it."""
+    from simoscal.binimage import BinImage
+    from simoscal.calfile import CalFile
+
+    tune = _open_base()
+    space = tune.space()
+    model = space.cal.model
+    for name in ("put_setpoint", "pedal_threshold_full_load"):
+        independent = CalFile(
+            model,
+            BinImage(tune.source_snapshot,
+                     region_start=model.region_start, region_size=model.region_size),
+            structure=space.cal.structure,
+        ).get(space.tables[name].spec.key).values
+        ghost = np.asarray(table_detail(tune, name).source_values, dtype=float)
+        assert np.allclose(ghost.ravel(), np.asarray(independent, dtype=float).ravel())
+
+
+@requires_base
+def test_replacing_the_snapshot_replaces_the_ghost_rather_than_outliving_it() -> None:
+    """A cached decoder must never answer for a snapshot that is no longer there."""
+    tune = _open_base()
+    assert table_detail(tune, "put_setpoint").source_values is not None
+    tune._source_snapshot = b""
+    assert tune.source_space() is None
+    assert table_detail(tune, "put_setpoint").source_values is None
+
+
+@requires_patch
+def test_each_table_space_gets_its_own_ghost_decoder_over_the_one_image() -> None:
+    """Spaces share the live buffer, so they share the ghost image — not the model."""
+    tune = _open_patched()
+    base, patch = tune.source_space(), tune.source_space(PATCH_SPACE)
+    assert base is not None and patch is not None and base is not patch
+    assert base.binimage is patch.binimage
+    patch_table = next(iter(tune.space(PATCH_SPACE).tables.names()))
+    assert table_detail(tune, patch_table, space=PATCH_SPACE).source_values is not None

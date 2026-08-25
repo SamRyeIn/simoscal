@@ -33,6 +33,7 @@ from typing import (
 import numpy as np
 
 from .. import btp
+from ..binimage import BinImage
 from ..calfile import CalFile, structure_of
 from ..model import FloatBugGuardError, RawRangeError, SimosCalError
 from ..safety import EditRangeWarning
@@ -123,6 +124,11 @@ class Tune:
         #: saving and treats a failure as a failed build.
         self.post_checks: list[PostCheck] = []
         self._domains: dict[str, object] = {}
+        # Lazily-built read-only decoders over ``_source_snapshot`` — see
+        # :meth:`source_space`. Built at most once per space, because the
+        # snapshot is captured here and never reassigned.
+        self._source_image: Optional[BinImage] = None
+        self._source_spaces: dict[str, Optional[CalFile]] = {}
         # The shared buffer before any write — the patched stock the build
         # starts from. Captured here (construction precedes every write) so the
         # audit can tell a legitimate restore-to-stock (candidate byte equals
@@ -134,11 +140,70 @@ class Tune:
             )
         except (TuneError, KeyError, AttributeError):  # pragma: no cover
             self._source_snapshot = b""
+        #: The snapshot the cached decoders were built over, by identity. The
+        #: snapshot is write-once in normal use; keying on it means a caller
+        #: that replaces it (a test blanking the ghost, say) gets decoders that
+        #: agree with the new value rather than stale ones that outlived it.
+        self._source_key: object = self._source_snapshot
 
     @property
     def source_snapshot(self) -> bytes:
         """The patched stock buffer the build started from, before any write."""
         return self._source_snapshot
+
+    def source_space(self, name: str = BASE_SPACE) -> Optional["CalFile"]:
+        """``name``'s tables as the *source* buffer held them — the stock ghost.
+
+        A read-only :class:`~simoscal.CalFile` over :attr:`source_snapshot`,
+        decoded through the same XDF model the live space uses, so a ghost value
+        and a working value are the same quantity decoded the same way. Returns
+        ``None`` when there is no snapshot — a recovered session, which replayed
+        its journal onto the source bin rather than opening it fresh.
+
+        **Built at most once per space, and that is the point.** The snapshot is
+        the whole bin; wrapping it costs a full copy of it, because
+        :class:`~simoscal.binimage.BinImage` owns its bytes. Building one per
+        *table*, as reading a ghost used to, made listing a 70-table catalog
+        cost 70 copies of a 4 MB buffer — and they were not even transient:
+        ``CalFile._views`` and ``TableView._cal`` form a reference cycle, so
+        refcounting never freed them and they piled up until a cyclic-GC pass
+        happened to run. One decoder per space, held for the tune's life, is
+        4 MB once and no cycle churn at all.
+
+        Every space shares the live buffer (:func:`_open_shared_space` binds
+        each extra XDF to the base space's image), so they share one ghost image
+        too — each space differs only in the model reading it.
+        """
+        if self._source_key is not self._source_snapshot:
+            self._source_key = self._source_snapshot
+            self._source_image = None
+            self._source_spaces.clear()
+        if name in self._source_spaces:
+            return self._source_spaces[name]
+
+        result: Optional[CalFile] = None
+        try:
+            table_space = self.space(name)
+            if self._source_snapshot:
+                if self._source_image is None:
+                    model = self.space(BASE_SPACE).cal.model
+                    self._source_image = BinImage(
+                        self._source_snapshot,
+                        region_start=model.region_start,
+                        region_size=model.region_size,
+                    )
+                result = CalFile(
+                    table_space.cal.model,
+                    self._source_image,
+                    structure=table_space.cal.structure,
+                )
+        except Exception:  # noqa: BLE001 - a missing ghost must never break a read
+            # Same policy as the caller in ``catalog``: a ghost is a nicety, and
+            # losing an editing surface because its optional reference copy
+            # would not open would be the worse failure.
+            result = None
+        self._source_spaces[name] = result
+        return result
 
     # -- construction -------------------------------------------------------- #
     @classmethod

@@ -7,7 +7,9 @@ not have — the calibration's bytes — has to be out of it. Those two sentence
 the whole design.
 
 **What travels.** Every table the profile resolves, with its current physical
-values and its decoded axes; the edit journal as it stands; whatever datalogs
+values and its decoded axes — plus, for the tables this session has edited, what
+the *imported* bin held, since that is the calibration any datalog in the bundle
+was actually recorded on. Then the edit journal as it stands; whatever datalogs
 were picked, as the analysis battery's own findings document; the safety brief
 :mod:`simoscal.advice.brief` renders for this car; and the provenance that says
 which calibration all of it is about.
@@ -43,7 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
-from ..tune.catalog import catalog
+from ..tune.catalog import catalog, table_detail
 from ..tune.journal import journal_summary
 from .brief import safety_brief
 from .schema import SCHEMA_VERSION
@@ -189,13 +191,17 @@ def _table_section(tune) -> list[dict]:
     the boost maps could not recommend anything about boost at all. Each table
     carries its ``owner``, so which call would write it is still stated.
 
-    The stock ghost (:attr:`TableInfo.source_values`) is left out on purpose.
-    The journal already reports before-and-after for everything this session
-    changed, so the ghost would be a second copy of the same fact — bought by
-    decoding a second full buffer for every table on a tablet.
+    ``source_values`` — what the *imported* bin held — is carried only where it
+    differs from the working values, which is to say only for tables this
+    session has edited. That is the grid the logs were actually recorded on, so
+    an answering side reasoning from a log needs it; on every other table it
+    would be a byte-for-byte duplicate of ``values``, and a bundle twice the size
+    for no second fact. The journal says what moved in prose; this says it as
+    numbers.
     """
     out = []
-    for info in catalog(tune, include_domain_owned=True):
+    for summary in catalog(tune, include_domain_owned=True):
+        info = table_detail(tune, summary.name, space=summary.space)
         table = {
             "space": info.space,
             "name": info.name,
@@ -223,6 +229,8 @@ def _table_section(tune) -> list[dict]:
                 "label": axis.label,
                 "values": list(axis.values),
             }
+        if info.source_values is not None and info.source_values != info.values:
+            table["source_values"] = info.source_values
         out.append(table)
     return out
 

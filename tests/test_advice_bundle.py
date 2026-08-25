@@ -124,6 +124,27 @@ def test_a_session_with_two_edits_exports_both_of_them_and_the_whole_catalog(bas
     assert payload["safety_brief"].strip()
 
 
+def test_an_edited_table_carries_the_grid_the_logs_were_recorded_on(base_tune):
+    """`source_values` is the imported bin — the calibration that was flashed.
+
+    Only where it differs from the working values, which is only where this
+    session edited. Everywhere else it would be a byte-for-byte duplicate of
+    `values` and a bundle twice the size for no second fact.
+    """
+    payload = bundle(base_tune, provenance=PROVENANCE)
+    assert all("source_values" not in t for t in payload["tables"])
+
+    stock = float(base_tune.values(GRID)[0][0])
+    apply_op(base_tune, GRID, EditOp.SET, selection=Selection.cells([(0, 0)]),
+             value=stock + 0.05, intent="move one cell")
+
+    tables = _by_name(bundle(base_tune, provenance=PROVENANCE))
+    edited = tables[("base", GRID)]
+    assert edited["source_values"][0][0] == pytest.approx(stock)
+    assert edited["values"][0][0] != edited["source_values"][0][0]
+    assert sum("source_values" in t for t in tables.values()) == 1
+
+
 def test_the_bundle_carries_domain_owned_tables_too(base_tune):
     """A courier that could not see the boost maps could not advise on boost.
 

@@ -176,34 +176,22 @@ def _nested(values: np.ndarray) -> tuple:
 def _source_values(tune: Tune, space: str, name: str) -> Optional[tuple]:
     """The table's values in the buffer the build started from, or ``None``.
 
-    Decoded from :attr:`~simoscal.tune.project.Tune.source_snapshot` — the
-    patched-stock bytes captured before any write — through the *same* XDF model
-    the live space uses, so the ghost and the working values are the same
-    quantity decoded the same way.
+    Read through :meth:`~simoscal.tune.project.Tune.source_space` — one
+    read-only decoder per table space, built once and reused — so listing a
+    whole catalog's ghosts costs one copy of the source buffer rather than one
+    per table. That decoder holds the decode cache too, so asking twice for one
+    table's ghost decodes it once.
 
     Every failure path returns ``None`` rather than raising or guessing. A ghost
     is a nicety; a table detail that could not be read at all because its
     optional reference copy would not decode is a real editing surface lost to a
     decoration.
     """
-    snapshot = getattr(tune, "source_snapshot", b"")
-    if not snapshot:
-        return None
     try:
-        from ..binimage import BinImage
-        from ..calfile import CalFile
-
-        table_space = tune.space(space)
-        model = table_space.cal.model
-        image = BinImage(
-            snapshot,
-            region_start=model.region_start,
-            region_size=model.region_size,
-        )
-        view = CalFile(
-            model, image, structure=table_space.cal.structure
-        ).get(table_space.tables[name].spec.key)
-        return _nested(view.values)
+        cal = tune.source_space(space)
+        if cal is None:
+            return None
+        return _nested(cal.get(tune.space(space).tables[name].spec.key).values)
     except Exception:  # noqa: BLE001 - a missing ghost must never break the read
         return None
 
