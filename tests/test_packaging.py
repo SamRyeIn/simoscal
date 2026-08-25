@@ -312,3 +312,32 @@ def test_plot_extra_does_not_require_openpyxl() -> None:
         "the plot extra must not import the xlsx-only openpyxl dependency.\n"
         f"STDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
     )
+
+
+def test_every_non_python_file_in_the_package_is_shipped() -> None:
+    """A data file inside ``simoscal/`` must be covered by ``package-data``.
+
+    Otherwise it is importable in a source checkout and absent from a real
+    install — the same "invisible where it is hardest to notice" failure the
+    package list guards, one directory down. The safety brief's authored half is
+    read at runtime on a device that pip-installed this library from a checkout,
+    so an uncovered file there ships a brief with its general half missing.
+    """
+    import fnmatch
+
+    declared = _pyproject()["tool"]["setuptools"].get("package-data", {})
+    pkg_root = CODE_ROOT / "simoscal"
+    uncovered = []
+    for path in sorted(pkg_root.rglob("*")):
+        if not path.is_file() or path.suffix in (".py", ".pyc"):
+            continue
+        if "__pycache__" in path.parts or ".egg-info" in str(path):
+            continue
+        package = ".".join(path.parent.relative_to(CODE_ROOT).parts)
+        patterns = list(declared.get(package, ())) + list(declared.get("*", ()))
+        if not any(fnmatch.fnmatch(path.name, p) for p in patterns):
+            uncovered.append(str(path.relative_to(CODE_ROOT)))
+    assert not uncovered, (
+        "data files inside the package that no package-data pattern ships: "
+        f"{uncovered}"
+    )

@@ -29,6 +29,13 @@ packages = [
     "simoscal.tune.profiles",
 ]
 
+# The safety brief's authored half is prose a person edits, read at runtime and
+# embedded in an exported bundle. The Android engine pip-installs this library
+# from a checkout, so a file that is not package data simply is not there on the
+# device — the brief would ship silently missing its general half.
+[tool.setuptools.package-data]
+"simoscal.advice" = ["*.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The suite is CPU-bound and embarrassingly parallel: every test that touches the
