@@ -144,10 +144,7 @@ def _buffer_bytes(tune: Tune) -> bytes:
 
 def _invalidate_views(tune: Tune) -> None:
     """Drop every cached decode, including profile-held TableView objects."""
-    for space in tune.spaces.values():
-        for name in space.tables.names():
-            space.tables[name].view.invalidate()
-        space.cal._views.clear()
+    tune.invalidate_views()
 
 
 def _sha256_bytes(data: bytes) -> str:

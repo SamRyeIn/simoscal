@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Mapping, Optional, Sequence
 
 from ..journal import EditEntry
-from ._common import Domain, nearest_index
+from ._common import Domain, dry_runnable, nearest_index
 
 __all__ = ["Ignition"]
 
@@ -24,6 +24,7 @@ __all__ = ["Ignition"]
 class Ignition(Domain):
     """Reached as ``tune.ignition``."""
 
+    @dry_runnable
     def retard_cells(
         self,
         targets: Mapping[tuple[float, float], float],
@@ -73,6 +74,7 @@ class Ignition(Domain):
             ))
         return tuple(entries)
 
+    @dry_runnable
     def offset_cells(
         self,
         deltas: Mapping[tuple[float, float], float],

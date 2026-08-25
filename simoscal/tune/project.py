@@ -23,9 +23,12 @@ from __future__ import annotations
 import shutil
 import tempfile
 import warnings
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Optional, Sequence, Union
+from typing import (
+    Callable, Iterable, Iterator, Mapping, Optional, Sequence, Union,
+)
 
 import numpy as np
 
@@ -226,6 +229,21 @@ class Tune:
         axis = self.table(name, space=space).view.axis_values(which)
         return None if axis is None else np.asarray(axis, dtype=np.float64).ravel()
 
+    def invalidate_views(self) -> None:
+        """Drop every cached decode, so the next read comes off the buffer.
+
+        A :class:`~simoscal.calfile.TableView` caches what it decoded, and two
+        objects hold views of the same table — the ``CalFile``'s own cache and
+        the :class:`~simoscal.tune.profile.ResolvedProfile`'s. Anything that
+        moves bytes underneath them (an undo, a session recovery, a dry run
+        rolling back) must clear **both**, or a stale decode outlives the bytes
+        it came from and the caller is told a value the bin no longer holds.
+        """
+        for space in self.spaces.values():
+            for name in space.tables.names():
+                space.tables[name].view.invalidate()
+            space.cal._views.clear()
+
     # -- writing (the one place bytes are staged) ----------------------------- #
     def write(
         self,
@@ -343,6 +361,61 @@ class Tune:
             space=space, name=name, label=label, key=key,
             kind=kind, verdict=verdict, intent=intent, detail=detail,
         ))
+
+    # -- speculative edits ----------------------------------------------------- #
+    @contextmanager
+    def dry_run(self) -> Iterator["Tune"]:
+        """Run edits for real inside the block, then undo every trace of them.
+
+        The one mechanism behind every ``dry_run=`` keyword in the tune API.
+        Edits inside the block take the ordinary path — the same guards, the
+        same encode, the same journal entry, the same exception on a refusal —
+        and on the way out the buffer, the edit ledger, the journal, the
+        registered post-checks and the decode caches are all put back where
+        they were. What the caller keeps is the *result object* the edit
+        returned; what the session keeps is nothing.
+
+        Running the real path and rewinding, rather than simulating it, is the
+        point: a second validation implementation would be a second thing to
+        keep in step with the guards, and the day it drifted the preview would
+        say "this is safe" about an edit the real path refuses. There is
+        nothing to drift here — it is the same code.
+
+        Only the declared region is restored, because
+        :meth:`~simoscal.BinImage.write` refuses to stage a byte outside it, so
+        no edit can have moved one.
+
+        Nesting is safe: an inner block rewinds to where it started, which is
+        wherever the outer block had got to.
+        """
+        images: list[tuple] = []
+        seen: set[int] = set()
+        marks: list[tuple] = []
+        for space in self.spaces.values():
+            cal = space.cal
+            marks.append((cal, cal.edit_mark()))
+            image = cal.binimage
+            if id(image) in seen:
+                continue
+            seen.add(id(image))
+            images.append(
+                (image, image.read(image.region_start, image.region_size))
+            )
+
+        journal_mark = self.journal.mark()
+        checks_mark = len(self.post_checks)
+        recipe_report = self.recipe_report
+        try:
+            yield self
+        finally:
+            for image, region in images:
+                image.write(image.region_start, region)
+            for cal, mark in marks:
+                cal.rollback_edits(mark)
+            self.journal.rollback_to(journal_mark)
+            del self.post_checks[checks_mark:]
+            self.recipe_report = recipe_report
+            self.invalidate_views()
 
     # -- domain facades -------------------------------------------------------- #
     def _domain(self, name: str, factory):

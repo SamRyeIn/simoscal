@@ -19,7 +19,9 @@ import numpy as np
 
 from ..journal import KIND_AXIS, EditEntry
 from ..units import hpa_from_psi, psi_from_hpa
-from ._common import Domain, float_bug_write, guarded_ceiling, require_shape
+from ._common import (
+    Domain, dry_runnable, float_bug_write, guarded_ceiling, require_shape,
+)
 
 __all__ = ["Boost"]
 
@@ -28,6 +30,7 @@ class Boost(Domain):
     """Reached as ``tune.boost``."""
 
     # -- the requested boost curve ------------------------------------------ #
+    @dry_runnable
     def put_ceiling_hpa(self, hpa: float, *, intent: str = "") -> EditEntry:
         """Flatten the full-load row of the PUT setpoint to ``hpa`` absolute.
 
@@ -47,6 +50,7 @@ class Boost(Domain):
                     "left untouched"),
         )
 
+    @dry_runnable
     def put_ceiling_psi(
         self, psi: float, *, rounding: str = "nearest", intent: str = ""
     ) -> EditEntry:
@@ -62,6 +66,7 @@ class Boost(Domain):
             intent=intent or f"park the full-load boost setpoint at {psi:g} psi gauge",
         )
 
+    @dry_runnable
     def put_curve_hpa(
         self, curve: Sequence[float], *, intent: str = ""
     ) -> EditEntry:
@@ -90,6 +95,7 @@ class Boost(Domain):
             ),
         )
 
+    @dry_runnable
     def put_rpm_axis(
         self, breakpoints: Sequence[float], *, intent: str = ""
     ) -> EditEntry:
@@ -117,6 +123,7 @@ class Boost(Domain):
         )
 
     # -- the caps that can defeat that curve --------------------------------- #
+    @dry_runnable
     def pressure_quotient_max(
         self, plateau: float, *, low_rpm: Optional[float] = None, intent: str = ""
     ) -> EditEntry:
@@ -146,6 +153,7 @@ class Boost(Domain):
             detail=f"{shape_note}; watch turbo speed and rail pressure in the logs",
         )
 
+    @dry_runnable
     def manifold_pressure_max(self, hpa: float, *, intent: str = "") -> EditEntry:
         """Raise the maximum requested intake-manifold pressure setpoint.
 
@@ -162,6 +170,7 @@ class Boost(Domain):
             ),
         )
 
+    @dry_runnable
     def overboost_threshold(self, hpa: float, *, intent: str = "") -> EditEntry:
         """Raise the P0234 overpressure diagnosis threshold, never lower it.
 

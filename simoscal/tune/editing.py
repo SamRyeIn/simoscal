@@ -32,7 +32,7 @@ Two classes of table are refused outright:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Optional, Sequence, Union
 
@@ -129,12 +129,21 @@ class Selection:
 
 @dataclass(frozen=True)
 class EditResult:
-    """The outcome of one applied operation, including requested-vs-encoded."""
+    """The outcome of one applied operation, including requested-vs-encoded.
+
+    On a dry run every field means what it always means — ``encoded`` is what
+    the bin really held, read back off the buffer, before the buffer was put
+    back. The one difference is ``dry_run``: :attr:`entry` then describes the
+    entry that *would* have been journaled and is not in the journal, so a
+    caller must not treat it as a record of something that happened.
+    """
 
     entry: EditEntry
     requested: np.ndarray     # the full target array we asked to write
     encoded: np.ndarray       # what the bin actually holds now (re-decoded)
     warning: str
+    #: True when the edit was rewound: nothing was journaled and no byte moved.
+    dry_run: bool = False
 
     @property
     def quantized(self) -> bool:
@@ -209,6 +218,7 @@ def apply_op(
     value: Optional[float] = None,
     array: Optional[Sequence] = None,
     intent: str = "",
+    dry_run: bool = False,
 ) -> EditResult:
     """Apply ``op`` to ``name`` over ``selection`` and journal it, atomically.
 
@@ -218,7 +228,39 @@ def apply_op(
     :class:`EditRejected` — leaving the table and journal untouched — on a bad
     selection, a non-reversible table, a division by zero, a non-finite result,
     or a guard rejection.
+
+    With ``dry_run=True`` the edit is answered rather than made: it runs the
+    identical path — same guards, same encode, same :class:`EditRejected` with
+    the same message — inside :meth:`~simoscal.tune.project.Tune.dry_run`, so
+    the result describes exactly what a real call would do and the session is
+    left as it was. That is what lets a preview be trusted: it is not a model
+    of the edit path, it *is* the edit path.
     """
+    if not dry_run:
+        return _apply_op(
+            tune, name, op, space=space, selection=selection, value=value,
+            array=array, intent=intent,
+        )
+    with tune.dry_run():
+        result = _apply_op(
+            tune, name, op, space=space, selection=selection, value=value,
+            array=array, intent=intent,
+        )
+    return replace(result, dry_run=True)
+
+
+def _apply_op(
+    tune: Tune,
+    name: str,
+    op: Union[EditOp, str],
+    *,
+    space: str = "base",
+    selection: Optional[Selection] = None,
+    value: Optional[float] = None,
+    array: Optional[Sequence] = None,
+    intent: str = "",
+) -> EditResult:
+    """The edit itself. Both entry points run this and only this."""
     op = EditOp(op)
     resolved = tune.table(name, space=space)
     # A domain-owned table is refused before anything is computed. Its
@@ -295,13 +337,13 @@ def apply_op(
     # Atomic write. A guard rejection journals a blocked entry and leaves the
     # table byte-identical; we roll that entry back so the failed edit leaves no
     # trace — the definition of atomic here.
-    n_before = len(tune.journal)
+    n_before = tune.journal.mark()
     entry = tune.write(
         name, target, space=space, kind=KIND_AXIS if is_axis else KIND_CELLS,
         intent=intent or f"{op.value} over {_describe(sel)}",
     )
     if entry.verdict == VERDICT_BLOCKED:
-        del tune.journal._entries[n_before:]
+        tune.journal.rollback_to(n_before)
         raise EditRejected(f"{resolved.label}: {entry.detail or 'guard rejected the edit'}")
 
     encoded = np.asarray(tune.values(name, space=space), dtype=np.float64)

@@ -235,6 +235,24 @@ class Journal:
         self._entries.append(entry)
         return entry
 
+    def mark(self) -> int:
+        """How many entries have been recorded — a point to roll back to."""
+        return len(self._entries)
+
+    def rollback_to(self, mark: int) -> None:
+        """Drop every entry recorded after ``mark``.
+
+        The journal is otherwise append-only, and deliberately so: an edit that
+        happened but left no entry is the failure mode the whole build gate
+        exists to prevent. This is the one sanctioned way back, for the two
+        cases where the edit provably did *not* happen — a guard rejection that
+        left the table byte-identical (:func:`~simoscal.tune.editing.apply_op`)
+        and a dry run whose bytes are restored with it
+        (:meth:`~simoscal.tune.project.Tune.dry_run`). Both put the buffer back
+        in the same breath, so the journal and the bytes stay in step.
+        """
+        del self._entries[mark:]
+
     @property
     def entries(self) -> tuple[EditEntry, ...]:
         return tuple(self._entries)

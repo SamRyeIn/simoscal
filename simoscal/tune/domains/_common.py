@@ -11,7 +11,9 @@ every domain call is journaled by construction.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+import functools
+import inspect
+from typing import TYPE_CHECKING, Callable, Optional, TypeVar
 
 import numpy as np
 
@@ -28,7 +30,55 @@ from ..profile import TAG_FLOAT_BUG
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..project import Tune
 
-__all__ = ["Domain", "float_bug_write", "guarded_ceiling"]
+__all__ = ["Domain", "dry_runnable", "float_bug_write", "guarded_ceiling"]
+
+F = TypeVar("F", bound=Callable)
+
+
+def dry_runnable(method: F) -> F:
+    """Give a domain edit call a ``dry_run=`` keyword.
+
+    With ``dry_run=True`` the call runs unchanged inside
+    :meth:`~simoscal.tune.project.Tune.dry_run`: every guard it has, the same
+    encode, the same exception and message on a refusal, the same returned
+    :class:`~simoscal.tune.journal.EditEntry` — and then the session is rewound
+    so nothing was journaled and no byte moved.
+
+    A decorator rather than a parameter each method threads by hand, because
+    the property being claimed is *equivalence*: the dry path and the real path
+    must disagree about nothing except whether state moved. Twenty-eight
+    hand-written branches would be twenty-eight chances to diverge; here the
+    body is literally the same code either way, and the only thing that varies
+    is what happens around it.
+
+    The entry it hands back describes an edit that did **not** happen. A caller
+    showing it to a person is showing a prediction — an accurate one, since it
+    came off the real buffer before the rewind — not a record.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, dry_run: bool = False, **kwargs):
+        if not dry_run:
+            return method(self, *args, **kwargs)
+        with self._tune.dry_run():
+            return method(self, *args, **kwargs)
+
+    wrapper.__signature__ = _signature_with_dry_run(method)
+    return wrapper  # type: ignore[return-value]
+
+
+def _signature_with_dry_run(method: Callable) -> inspect.Signature:
+    """``method``'s signature plus a keyword-only ``dry_run: bool = False``."""
+    sig = inspect.signature(method)
+    params = list(sig.parameters.values())
+    extra = inspect.Parameter(
+        "dry_run", inspect.Parameter.KEYWORD_ONLY, default=False, annotation=bool,
+    )
+    at = next(
+        (i for i, prm in enumerate(params) if prm.kind is prm.VAR_KEYWORD),
+        len(params),
+    )
+    params.insert(at, extra)
+    return sig.replace(parameters=params)
 
 
 class Domain:

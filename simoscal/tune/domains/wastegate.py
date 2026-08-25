@@ -23,7 +23,7 @@ from typing import Mapping, Optional, Sequence
 import numpy as np
 
 from ..journal import KIND_AXIS, EditEntry
-from ._common import Domain
+from ._common import Domain, dry_runnable
 
 __all__ = ["Wastegate", "WG_CLOSED", "WG_OPEN"]
 
@@ -34,6 +34,7 @@ WG_OPEN, WG_CLOSED = 0.0, 1.0
 class Wastegate(Domain):
     """Reached as ``tune.wastegate``."""
 
+    @dry_runnable
     def overlay(
         self,
         deltas: Mapping[tuple[int, int], float],
@@ -113,6 +114,7 @@ class Wastegate(Domain):
             )
         return tuple(entries)
 
+    @dry_runnable
     def exh_flow_axis_last(self, value: float, *, intent: str = "") -> EditEntry:
         """Move the last exhaust-flow-factor breakpoint of the shared x axis.
 

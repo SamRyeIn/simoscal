@@ -42,7 +42,7 @@ from ..profiles.switchpatch_2933 import (
     SLOTS,
 )
 from ..units import AMBIENT_HPA, hpa_from_psi, psi_from_hpa
-from ._common import Domain, require_shape
+from ._common import Domain, dry_runnable, require_shape
 
 __all__ = ["PATCH_SPACE", "SwitchPatch"]
 
@@ -58,6 +58,7 @@ class SwitchPatch(Domain):
     space = PATCH_SPACE
 
     # -- per-slot boost caps -------------------------------------------------- #
+    @dry_runnable
     def slot_curve(
         self,
         slot: int,
@@ -113,6 +114,7 @@ class SwitchPatch(Domain):
             ),
         )
 
+    @dry_runnable
     def slot_rpm_axis(
         self, breakpoints: Sequence[float], *, intent: str = ""
     ) -> EditEntry:
@@ -140,6 +142,7 @@ class SwitchPatch(Domain):
         )
 
     # -- traction control ------------------------------------------------------ #
+    @dry_runnable
     def traction_control(
         self,
         *,
@@ -211,6 +214,7 @@ class SwitchPatch(Domain):
             })
         return tuple(out)
 
+    @dry_runnable
     def set_slot_flag(
         self,
         key: str,

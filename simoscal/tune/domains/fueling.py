@@ -29,7 +29,7 @@ import numpy as np
 
 from ..journal import KIND_AXIS, EditEntry
 from ..sop_bridge import positional_axis_match
-from ._common import Domain, nearest_index, require_shape
+from ._common import Domain, dry_runnable, nearest_index, require_shape
 
 __all__ = ["Fueling", "LAMBDA_FL_LEAN_MAX", "LAMBDA_FL_RICH_MIN"]
 
@@ -54,6 +54,7 @@ LAMBDA_FL_RICH_MIN = 0.50
 class Fueling(Domain):
     """Reached as ``tune.fueling``."""
 
+    @dry_runnable
     def rebreakpoint_lambda_axes(
         self,
         *,
@@ -93,6 +94,7 @@ class Fueling(Domain):
             ))
         return tuple(entries)
 
+    @dry_runnable
     def lambda_grid(
         self,
         cells,
@@ -153,6 +155,7 @@ class Fueling(Domain):
                     "re-breakpoint the axes first."
                 )
 
+    @dry_runnable
     def lambda_floors(
         self, value: float, *, tables: Optional[Sequence[str]] = None,
         intent: str = "",
@@ -180,6 +183,7 @@ class Fueling(Domain):
             ))
         return tuple(entries)
 
+    @dry_runnable
     def full_load_enrichment(
         self,
         values,
@@ -281,6 +285,7 @@ class Fueling(Domain):
             return None
         return float(axis[index])
 
+    @dry_runnable
     def pedal_threshold(self, percent: float, *, intent: str = "") -> EditEntry:
         """Flatten the full-load pedal threshold, in percent.
 

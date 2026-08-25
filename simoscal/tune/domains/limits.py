@@ -35,7 +35,7 @@ import numpy as np
 from ..profile import TAG_KG_PER_STROKE
 from ..journal import EditEntry
 from ..project import TuneError
-from ._common import Domain, float_bug_write, guarded_ceiling
+from ._common import Domain, dry_runnable, float_bug_write, guarded_ceiling
 
 __all__ = ["Limits", "MG_PER_KG"]
 
@@ -46,6 +46,7 @@ MG_PER_KG = 1_000_000.0
 class Limits(Domain):
     """Reached as ``tune.limits``."""
 
+    @dry_runnable
     def airmass_cap_mg(self, mg_per_stroke: float, *, intent: str = "") -> EditEntry:
         """Set the maximum allowed airmass setpoint, in **mg/stk**.
 
@@ -89,6 +90,7 @@ class Limits(Domain):
             ),
         )
 
+    @dry_runnable
     def intake_air_max(
         self, mg_per_stroke: float, *, intent: str = "",
         tables: Sequence[str] = ("intake_air_max_vvl0", "intake_air_max_vvl1"),
@@ -112,6 +114,7 @@ class Limits(Domain):
             ))
         return tuple(entries)
 
+    @dry_runnable
     def torque_reference_max(self, nm: float, *, intent: str = "") -> EditEntry:
         """Flatten the maximum reference indicated engine torque, in Nm."""
         values = self._values("torque_reference_max")
@@ -124,6 +127,7 @@ class Limits(Domain):
         )
 
     # -- the coherent multi-table limiters ------------------------------------ #
+    @dry_runnable
     def rev_limits(
         self,
         *,
@@ -207,6 +211,7 @@ class Limits(Domain):
             ))
         return tuple(entries)
 
+    @dry_runnable
     def static_rev_limit(
         self, rpm: float, *, tables: Optional[Sequence[str]] = None,
         intent: str = "",
@@ -309,6 +314,7 @@ class Limits(Domain):
                 continue
         return min(values) if values else None
 
+    @dry_runnable
     def speed_limiter(
         self, kmh: float, *, tables: Optional[Sequence[str]] = None,
         intent: str = "",
@@ -375,10 +381,12 @@ class Limits(Domain):
             )
 
     # -- generic escapes, still journaled ------------------------------------ #
+    @dry_runnable
     def raise_ceiling(self, name: str, target: float, *, intent: str = "") -> EditEntry:
         """Raise any mapped limiter to ``target``, never lowering a higher cell."""
         return guarded_ceiling(self._tune, name, target, intent=intent)
 
+    @dry_runnable
     def float_bug_value(self, name: str, value: float, *, intent: str = "") -> EditEntry:
         """Write a float-bug-tagged table past its display maximum, deliberately."""
         return float_bug_write(self._tune, name, value, intent=intent)

@@ -377,6 +377,22 @@ class CalFile:
     def _record_edit(self, offset: int, length: int) -> None:
         self._edited_ranges.append((offset, length))
 
+    def edit_mark(self) -> int:
+        """How many byte ranges have been staged — a point to roll back to."""
+        return len(self._edited_ranges)
+
+    def rollback_edits(self, mark: int) -> None:
+        """Forget the edit ranges staged after ``mark``.
+
+        Only sound when the bytes those ranges named have been put back too;
+        the one caller that can promise that is
+        :meth:`~simoscal.tune.project.Tune.dry_run`, which restores the buffer
+        in the same step. Leaving the ledger un-rewound would make a
+        speculative edit look, to :attr:`edited` and to the stale-checksum
+        warning, exactly like one that really happened.
+        """
+        del self._edited_ranges[mark:]
+
     @property
     def edited(self) -> bool:
         """Whether any edit has been staged into the bin this session."""
