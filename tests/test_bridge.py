@@ -1732,7 +1732,104 @@ def test_advice_review_needs_a_known_session(tmp_path: Path):
     assert err_code(env) == ErrorCode.UNKNOWN_SESSION.value
 
 
-def test_adding_the_courier_op_left_bridge_version_alone(session: str):
-    """Additive, like every op since V8: an older app simply never names it."""
+# --------------------------------------------------------------------------- #
+# advice_bundle — the context that leaves the device
+# --------------------------------------------------------------------------- #
+def test_advice_bundle_writes_one_file_under_staging_and_reports_it(
+    session: str, tmp_path: Path,
+):
+    res = ok_result(call(
+        "advice_bundle", session_id=session, staging_dir=str(tmp_path),
+    ))
+    path = Path(res["path"])
+    assert path.is_file()
+    # a fresh directory of its own under staging/bundles, for the reason a build
+    # gets one: a shared content URI must not be rewritten behind the grant
+    assert path.parent.parent == tmp_path / "bundles"
+    assert res["sha256"] == _sha256(path)
+    assert res["bytes"] == path.stat().st_size
+    assert res["summary"]["profile"] == "SC8S50"
+    assert res["summary"]["tables"] > 0
+    # read-only: exporting journals nothing
+    assert res["can_undo"] is False
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["provenance"]["bin_sha256"] == bridge._SESSIONS[session].provenance["bin_sha256"]
+    assert payload["safety_brief"].strip()
+
+
+def test_advice_bundle_exports_the_same_session_state_byte_identically(
+    session: str, tmp_path: Path,
+):
+    """D7 — through the wire, so the op's own composition is covered too."""
+    first = ok_result(call("advice_bundle", session_id=session, staging_dir=str(tmp_path)))
+    second = ok_result(call("advice_bundle", session_id=session, staging_dir=str(tmp_path)))
+    assert first["path"] != second["path"]
+    assert first["sha256"] == second["sha256"]
+
+
+def test_advice_bundle_carries_a_verified_log(session: str, tmp_path: Path, r04_log_dir: Path):
+    logs = sorted(r04_log_dir.glob("simostools-*.csv"))[:1]
+    if not logs:
+        pytest.skip("no CSV in the R04 log folder")
+    res = ok_result(call(
+        "advice_bundle", session_id=session, staging_dir=str(tmp_path),
+        logs=[{
+            "log_path": str(logs[0]), "log_sha256": _sha256(logs[0]),
+            "display_name": "R04 pull",
+        }],
+    ))
+    assert res["summary"]["logs"] == ["R04 pull"]
+    payload = json.loads(Path(res["path"]).read_text(encoding="utf-8"))
+    assert payload["logs"]["logs"][0]["name"] == "R04 pull"
+
+
+def test_advice_bundle_refuses_a_changed_log_before_writing_anything(
+    session: str, tmp_path: Path,
+):
+    """HASH_MISMATCH, and no partial file: verification precedes every write."""
+    log = tmp_path / "log.csv"
+    log.write_text("Time (s),RPM (rpm)\n0.0,1000\n", encoding="utf-8")
+    stale = _sha256(log)
+    log.write_text("Time (s),RPM (rpm)\n0.0,2000\n", encoding="utf-8")
+
+    staging = tmp_path / "staging"
+    env = call(
+        "advice_bundle", session_id=session, staging_dir=str(staging),
+        logs=[{"log_path": str(log), "log_sha256": stale}],
+    )
+    assert err_code(env) == ErrorCode.HASH_MISMATCH.value
+    assert not staging.exists()
+
+
+def test_advice_bundle_refuses_a_name_that_is_not_a_bare_file_name(
+    session: str, tmp_path: Path,
+):
+    env = call(
+        "advice_bundle", session_id=session, staging_dir=str(tmp_path),
+        name="../escaped.json",
+    )
+    assert err_code(env) == ErrorCode.BAD_PARAMS.value
+    assert not (tmp_path.parent / "escaped.json").exists()
+
+
+def test_advice_bundle_needs_a_known_session(tmp_path: Path):
+    env = call("advice_bundle", session_id="nope", staging_dir=str(tmp_path))
+    assert err_code(env) == ErrorCode.UNKNOWN_SESSION.value
+
+
+def test_advice_bundle_holds_no_bin_or_xdf_bytes(session: str, tmp_path: Path, files: dict):
+    res = ok_result(call("advice_bundle", session_id=session, staging_dir=str(tmp_path)))
+    data = Path(res["path"]).read_bytes()
+    for source in (files["bin_path"], files["xdf_path"]):
+        raw = Path(source).read_bytes()
+        for fraction in (0.25, 0.5, 0.75):
+            start = int(len(raw) * fraction)
+            assert raw[start:start + 256] not in data
+
+
+def test_adding_the_courier_ops_left_bridge_version_alone(session: str):
+    """Additive, like every op since V8: an older app simply never names them."""
     assert BRIDGE_VERSION == 1
-    assert "advice_review" in ok_result(call("bridge_info"))["ops"]
+    ops = ok_result(call("bridge_info"))["ops"]
+    assert "advice_review" in ops and "advice_bundle" in ops

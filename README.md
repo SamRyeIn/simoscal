@@ -270,6 +270,28 @@ can drift from it. The Pedal screen deliberately gets no op: its maps are
 ordinary independent grids, so it rides on `catalog`/`table_detail`/`edit`. A
 screen is not a reason for an op; an invariant is.
 
+The `advice_bundle` / `advice_review` pair is the courier for "Tune with Claude":
+the session's context leaves the device as one file, a person asks Claude
+anywhere, and the answer comes back as a recommendations file. Both ops are
+read-only. `advice_bundle` writes one deterministic JSON file — every resolved
+table with its current physical values and axes (domain-owned ones included, or
+nothing could be recommended about boost), the journal, any verified datalogs as
+the analysis battery's own findings, the per-car safety brief, and provenance
+naming the profile, its `StructureSpec` and its address convention. The bin and
+the XDF cross as hashes only; their bytes never enter a bundle, and a test
+asserts it against the real files. The same session state exported twice is
+byte-identical, which is what makes a back-test reproducible.
+
+`advice_review` replays an imported file through the **real** edit path inside
+`Tune.dry_run()`, so the guards that answer are the guards that would refuse a
+typed edit and the session is left exactly as it was. It returns three lists —
+queued (with the dry-run preview, so a client draws the real effect rather than
+the claimed one), dropped (carrying the guard's own refusal, never rendered as a
+suggestion), and malformed (counted apart, because a file the schema cannot read
+and advice the engine will not take mean different things to whoever is improving
+the answering side). Nothing in `simoscal.advice` trusts the file: passing the
+schema means it is *readable*, and the replay is what makes it safe.
+
 ## API surface
 
 ### `CalFile`

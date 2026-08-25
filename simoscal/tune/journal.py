@@ -39,6 +39,8 @@ __all__ = [
     "VERDICT_SKIPPED",
     "VERDICT_SUPERSEDED",
     "VERDICT_UNCHANGED",
+    "entry_summary",
+    "journal_summary",
     "summarize",
 ]
 
@@ -395,3 +397,61 @@ class Journal:
         for entry in self._entries:
             offsets |= entry.declared
         return frozenset(offsets)
+
+
+# --------------------------------------------------------------------------- #
+# rendering the journal as flat text
+# --------------------------------------------------------------------------- #
+def entry_summary(entry: EditEntry) -> dict:
+    """One entry as flat, JSON-safe text — never the numpy before/after arrays.
+
+    ``before``/``after`` are :meth:`EditEntry.before_text` and ``after_text``,
+    which narrow to the rows that actually moved: a whole-grid ``min..max``
+    hides a one-row edit completely, and one row is exactly what the boost
+    editor writes. ``scope`` is :meth:`EditEntry.scope_text` for the same reason
+    — the kind alone does not say *which* rows.
+
+    ``touched`` reports whether bytes measurably moved, so a reader can tell an
+    edit that changed the buffer from one that met its target already. It is the
+    entry's own measurement, never inferred from the verdict.
+
+    It lives here rather than in a caller because two of them now render the
+    journal — the bridge's ``journal`` op and the advice bundle — and a second
+    copy of this mapping would be a second place for a field to be forgotten.
+    """
+    return {
+        "space": entry.space,
+        "label": entry.label,
+        "name": entry.name,
+        "kind": entry.kind,
+        "scope": entry.scope_text(),
+        "verdict": entry.verdict,
+        "units": getattr(entry, "units", "") or "",
+        "intent": entry.intent,
+        "detail": entry.detail or "",
+        "warning": entry.warning or "",
+        "before": entry.before_text(),
+        "after": entry.after_text(),
+        "cells_changed": entry.cells_changed,
+        "touched": entry.touched_bytes,
+    }
+
+
+def journal_summary(journal: Journal) -> list[dict]:
+    """Every entry as :func:`entry_summary`, with superseded skips marked.
+
+    ``superseded_by`` marks a bulk-recipe skip that a later applied write in the
+    same session covers, so a ``skipped`` row and an ``applied`` row for the one
+    table cannot read as a contradiction — the same substitution ``report.md``
+    and the HTML report make.
+    """
+    superseded = journal.superseded()
+    out = []
+    for index, entry in enumerate(journal):
+        summary = entry_summary(entry)
+        writers = superseded.get(index)
+        if writers:
+            summary["verdict"] = VERDICT_SUPERSEDED
+            summary["superseded_by"] = ", ".join(dict.fromkeys(w.name for w in writers))
+        out.append(summary)
+    return out

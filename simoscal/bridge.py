@@ -88,7 +88,7 @@ from .tune import (
     table_detail,
 )
 from .tune.domains.switchpatch import PATCH_SPACE
-from .tune.journal import VERDICT_SUPERSEDED
+from .tune.journal import entry_summary, journal_summary
 from .tune.profiles import PROFILES, patch_profile_for
 from .tune.recovery import RecoveryError
 
@@ -282,34 +282,13 @@ def _history_state(sess: _Session) -> dict:
 
 
 def _entry_summary(entry) -> dict:
-    """A journal entry as flat UI text — never the numpy before/after arrays.
+    """One journal entry as flat UI text.
 
-    ``before``/``after`` are :meth:`~simoscal.tune.journal.EditEntry.before_text`
-    and ``after_text``, which narrow to the rows that actually moved: a whole-grid
-    ``min..max`` hides a one-row edit completely, and one row is exactly what the
-    boost editor writes. ``scope`` is ``scope_text()`` for the same reason — the
-    kind alone does not say *which* rows.
-
-    ``touched`` reports whether bytes measurably moved, so the app can tell an
-    edit that changed the buffer from one that met its target already. It is the
-    entry's own measurement, never inferred from the verdict.
+    The mapping itself lives on the journal (:func:`~simoscal.tune.journal.entry_summary`)
+    because the advice bundle renders the same entries; this stays as the name
+    the ops here call so the wire shape has one owner, not two.
     """
-    return {
-        "space": entry.space,
-        "label": entry.label,
-        "name": entry.name,
-        "kind": entry.kind,
-        "scope": entry.scope_text(),
-        "verdict": entry.verdict,
-        "units": getattr(entry, "units", "") or "",
-        "intent": entry.intent,
-        "detail": entry.detail or "",
-        "warning": entry.warning or "",
-        "before": entry.before_text(),
-        "after": entry.after_text(),
-        "cells_changed": entry.cells_changed,
-        "touched": entry.touched_bytes,
-    }
+    return entry_summary(entry)
 
 
 # --------------------------------------------------------------------------- #
@@ -805,19 +784,9 @@ def _op_journal(params: dict) -> dict:
     """
     sess = _session(params)
     journal = sess.tune.journal
-    superseded = journal.superseded()
-
-    entries = []
-    for index, entry in enumerate(journal):
-        summary = _entry_summary(entry)
-        writers = superseded.get(index)
-        if writers:
-            summary["verdict"] = VERDICT_SUPERSEDED
-            summary["superseded_by"] = ", ".join(dict.fromkeys(w.name for w in writers))
-        entries.append(summary)
 
     return {
-        "entries": entries,
+        "entries": journal_summary(journal),
         # `summary_counts` rather than `counts`: a skip a later write superseded
         # was not held back, and must not be tallied among the ones that were.
         "counts": journal.summary_counts(),
@@ -1254,6 +1223,96 @@ def _op_lambda_fl_edit(params: dict) -> dict:
     }
 
 
+def _op_advice_bundle(params: dict) -> dict:
+    """Export the whole session as one file for someone to ask Claude about. Read-only.
+
+    Whole-session by decision, not by convenience: whoever answers has no bin,
+    no XDF and no app, so every table the profile resolves travels with its
+    current physical values, alongside the journal, whatever logs were picked,
+    the safety brief rendered for this car, and the provenance that says which
+    calibration all of it describes. What does not travel is the calibration
+    itself — the bin's and the XDF's bytes never enter a bundle, only their
+    hashes.
+
+    Every log is verified before anything is rendered, so a file that changed
+    since it was imported fails with nothing written.
+
+    **Where it lands follows the build's rule, and for the build's reason.** The
+    bundle goes into a fresh directory of its own under ``staging_dir/bundles/``
+    and never onto a path an earlier export used: once its bytes have been
+    handed to another app as a content URI, a later export must not rewrite the
+    file behind that grant (CR-20260813-02). ``name`` is validated as a bare
+    filename component for the same reason ``bin_name`` is — a name carrying a
+    path separator is refused rather than resolving outside the staging tree
+    (CR-20260813-05).
+
+    Nothing here can move a byte or journal an entry; it reads a session and
+    writes a description of it.
+    """
+    from .advice.bundle import bundle, logs_section, write_bundle
+    from .analysis import AnalysisError
+    from .tune.build_service import filename_component
+
+    sess = _session(params)
+    staging_dir = Path(_require(params, "staging_dir"))
+    raw_name = params.get("name") or "bundle.json"
+    if not isinstance(raw_name, str):
+        raise BridgeError(ErrorCode.BAD_PARAMS, "name must be a string")
+    try:
+        name = filename_component(raw_name, what="name", whose="advice_bundle")
+    except ValueError as exc:
+        raise BridgeError(
+            ErrorCode.BAD_PARAMS,
+            "that bundle name cannot be used as a file name",
+            advanced=str(exc),
+        )
+
+    logs = None
+    names: list[str] = []
+    if params.get("logs"):
+        paths, display = _verified_logs(params)
+        names = [display.get(str(p), p.stem) for p in paths]
+        try:
+            logs = logs_section(paths, names=display)
+        except AnalysisError as exc:
+            raise BridgeError(
+                ErrorCode.ANALYSIS_ERROR,
+                "those datalogs could not be read",
+                advanced=str(exc),
+            ) from exc
+
+    notes = params.get("notes", "")
+    payload = bundle(
+        sess.tune,
+        provenance=sess.provenance,
+        logs=logs,
+        log_names=names,
+        notes=notes if isinstance(notes, str) else "",
+    )
+
+    export_dir = staging_dir / "bundles" / uuid.uuid4().hex[:12]
+    dest = export_dir / name
+    try:
+        export_dir.mkdir(parents=True, exist_ok=False)
+        if dest.resolve().parent != export_dir.resolve():
+            raise OSError(f"{dest} does not resolve inside {export_dir}")
+        written = write_bundle(payload, dest)
+    except OSError as exc:
+        raise BridgeError(
+            ErrorCode.TUNE_ERROR,
+            "the bundle could not be written",
+            advanced=str(exc),
+        ) from exc
+
+    return {
+        "path": str(written.path),
+        "sha256": written.sha256,
+        "bytes": written.bytes_written,
+        "summary": written.summary,
+        **_history_state(sess),
+    }
+
+
 def _op_advice_review(params: dict) -> dict:
     """Replay an imported recommendations file against the session, dry.
 
@@ -1412,9 +1471,12 @@ OPS: dict[str, Callable[[dict], dict]] = {
     "limiters_edit": _op_limiters_edit,
     "lambda_fl": _op_lambda_fl,
     "lambda_fl_edit": _op_lambda_fl_edit,
-    # The courier. Read-only: it replays an imported recommendations file through
-    # the real edit path with dry_run=True and journals nothing. Additive on the
-    # same reasoning as every op above, so BRIDGE_VERSION is unchanged.
+    # The courier. Both read-only — `advice_bundle` writes a description of the
+    # session and never a bin; `advice_review` replays an imported
+    # recommendations file through the real edit path with dry_run=True and
+    # journals nothing. Additive on the same reasoning as every op above, so
+    # BRIDGE_VERSION is unchanged.
+    "advice_bundle": _op_advice_bundle,
     "advice_review": _op_advice_review,
 }
 

@@ -68,6 +68,7 @@ __all__ = [
     "TableRef",
     "build_report",
     "build_revision",
+    "filename_component",
 ]
 
 #: The report model's version. The Kotlin bridge (V6) pins against this, so a
@@ -284,9 +285,9 @@ def build_revision(
     resolving somewhere outside the staging tree (CR-20260813-05).
     """
     staging_dir = Path(staging_dir)
-    revision_part = _filename_component(revision, what="revision")
+    revision_part = filename_component(revision, what="revision")
     name = (
-        _filename_component(bin_name, what="bin_name")
+        filename_component(bin_name, what="bin_name")
         if bin_name
         else f"{revision_part}.bin"
     )
@@ -317,37 +318,37 @@ def build_revision(
     return report
 
 
-def _filename_component(value: str, *, what: str) -> str:
+def filename_component(value: str, *, what: str, whose: str = "build_revision") -> str:
     """Return ``value`` iff it is a bare, path-safe filename component.
 
-    Raises rather than sanitizing. Both of this function's inputs originate
-    outside the engine — ``revision`` is typed by a person, ``bin_name`` reaches
-    Android as an untrusted ``OpenableColumns.DISPLAY_NAME`` a document provider
-    chose — and a silently-rewritten name is exactly the kind of quiet
+    Raises rather than sanitizing. Every caller's input originates outside the
+    engine — ``revision`` is typed by a person, ``bin_name`` reaches Android as
+    an untrusted ``OpenableColumns.DISPLAY_NAME`` a document provider chose, and
+    a bundle's name comes the same way — and a silently-rewritten name is exactly the kind of quiet
     substitution this library refuses everywhere else. ``"../escaped.bin"`` is a
     loud failure, not a file called ``escaped.bin``.
     """
     if not isinstance(value, str):
-        raise ValueError(f"build_revision: {what} must be a string, got {type(value).__name__}")
+        raise ValueError(f"{whose}: {what} must be a string, got {type(value).__name__}")
     if not value or value != value.strip():
         # Trimming would be a silent rewrite, and a trailing space in a file name
         # is its own small hazard downstream.
         raise ValueError(
-            f"build_revision: {what} {value!r} is empty or padded with whitespace"
+            f"{whose}: {what} {value!r} is empty or padded with whitespace"
         )
     if value in (".", ".."):
-        raise ValueError(f"build_revision: {what} {value!r} is not a file name")
+        raise ValueError(f"{whose}: {what} {value!r} is not a file name")
     if "\x00" in value:
-        raise ValueError(f"build_revision: {what} contains a NUL byte")
+        raise ValueError(f"{whose}: {what} contains a NUL byte")
     separators = {"/", os.sep, os.altsep} - {None}
     if any(sep in value for sep in separators):
         raise ValueError(
-            f"build_revision: {what} {value!r} contains a path separator; it "
+            f"{whose}: {what} {value!r} contains a path separator; it "
             "must be a bare file name"
         )
     if Path(value).is_absolute() or Path(value).name != value:
         raise ValueError(
-            f"build_revision: {what} {value!r} is not a bare file name"
+            f"{whose}: {what} {value!r} is not a bare file name"
         )
     return value
 

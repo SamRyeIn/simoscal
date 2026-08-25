@@ -6,12 +6,17 @@ file is trusted: it is validated against :mod:`simoscal.advice.schema` and then
 replayed through the library's real edit guards with ``dry_run=True`` before a
 human is shown anything. Refusals never render as suggestions.
 
-Everything in this package is pure by design — no I/O, no session, no numpy in
-the public surface, and nothing imported from :mod:`simoscal.bridge`. The
-schema has to be readable by whoever is *answering*, which may be a model with
-no session in front of it, and it is versioned independently of
-``BRIDGE_VERSION`` because a file authored outside the app will change shape
-faster than the app's protocol does.
+Nothing in this package imports :mod:`simoscal.bridge`. What this module
+re-exports is the schema alone — pure, with no I/O, no session and no numpy —
+because it has to be readable by whoever is *answering*, which may be a model
+with no session and no scientific stack in front of it. It is versioned
+independently of ``BRIDGE_VERSION`` because a file authored outside the app will
+change shape faster than the app's protocol does.
+
+The heavier halves are imported from their own modules rather than from here, so
+that stays true: :mod:`~simoscal.advice.bundle` and :mod:`~simoscal.advice.brief`
+describe an open :class:`~simoscal.tune.project.Tune`, and
+:mod:`~simoscal.advice.review` replays against one.
 
 Passing validation means a file is *readable*. It never means its advice is
 safe — the dry-run replay is what means that.
