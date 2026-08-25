@@ -601,6 +601,33 @@ scaling). **Tuning-decision** risk — whether a given boost/timing target is sa
 for this engine on this fuel — is the human's judgment and is out of scope for
 Phase 1.
 
+## More than one car — profiles and file structures
+
+The library is no longer single-calibration. A `Profile` carries everything that
+is a fact about *one* car — its table map, its `StructureSpec` (where the CAL
+block and both checksums live), which tables carry the float-bug tag, which
+stock values guidance may quote, which logical names this car does not have,
+whether its XDF numbers tables from the calibration block or the whole bin, and
+which tables each domain method writes together. There is no module-level
+"current structure" and no default: `SC8S50` is one declared instance among
+several.
+
+`preflight(bin, xdf)` tries every registered profile and reports which matched;
+`writable` follows from that match. Two profiles matching one file raises
+`AmbiguousProfileError` rather than picking one — editing under the wrong car's
+safety rules is the substitution preflight exists to prevent. A file no profile
+matches is `INSPECT_ONLY`, and the refusal names the software the file declares
+itself to be.
+
+Two calibrations are mapped today: `SC8S50` (`5G0906259L_0002`, validated over
+sixteen tune revisions on a real car) and `SCGA05` (`3CN906259B_0002`,
+**bench-verified only — opened, read, edited and byte-audited, never flashed or
+driven**). Nothing in the library distinguishes those two states, so do not read
+`READY` as "someone has tuned this".
+
+Porting a third is documented step by step in
+[`docs/porting-to-another-xdf.md`](docs/porting-to-another-xdf.md).
+
 ## Tests
 
 ```bash
@@ -613,7 +640,13 @@ cd Code
 ./.venv/bin/python -m pytest tests/test_acceptance_btp.py -v      # AE1–AE7 (BTP patching)
 ./.venv/bin/python -m pytest tests/test_acceptance_analysis.py -v # R01/R04 log-analysis replay
 ./.venv/bin/python -m pytest tests/test_acceptance_tune.py -v     # AE1 (R13 ≡ R12, byte-identical)
+./.venv/bin/python -m pytest tests/test_acceptance_foreign.py -v  # AE1–AE8 (second file structure)
 ```
+
+Note that **AE numbering is scoped per effort**, not global: each
+`test_acceptance_*.py` declares its own AE1–AEn list in its module docstring, so
+`test_ae4_*` means something different in each file. Read the docstring before
+reading the numbers.
 
 `test_btp.py` (synthetic fixtures) and `test_acceptance_btp.py` (real files) skip
 cleanly when the vendored `BinToolz-main/` tree, the real switch patch, or the
@@ -654,7 +687,8 @@ agnostic comparison composites (Phase 3); check / apply / remove of BinToolz
 `.btp` patches with confined-diff post-verification and checksum reporting
 (`simoscal.btp`, wrapping BinToolz); a read-only, findings-only log-analysis
 battery over SimosTools datalog folders with evidence plots and per-table
-coverage maps (`simoscal.analysis`).
+coverage maps (`simoscal.analysis`); **more than one calibration file
+structure** — see below.
 **Out:** flashing (SimosTools/VW_Flash), checksum *recompute* beyond the
 optional correction path, CBOOT/ASW editing, `.btp` *creation* (`patchCreate`)
 and BinToolz's ignore-data CAL-skip mode, FRF→BIN extraction,

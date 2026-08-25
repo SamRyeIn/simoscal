@@ -231,11 +231,14 @@ changed byte runs — the CAL CRC at `0x220304` and the 48-byte table at `0x23F0
    having even though discovery works: it lets a bin that does not match the
    profile the user selected be caught, instead of being silently accepted
    because it happens to be a valid bin of some other car.
-5. Set it as the profile's `structure=`, and settle the profile's other two
-   per-car facts at the same time (section 9): which tables carry
-   `TAG_FLOAT_BUG`, and which — if any — stock values the SOP guidance may
-   quote. Declaring none of the latter is the correct answer until someone has
-   actually read them off this car's bin.
+5. Set it as the profile's `structure=`, and settle the profile's other per-car
+   facts at the same time (section 9): which tables carry `TAG_FLOAT_BUG`,
+   which — if any — stock values the SOP guidance may quote, and the
+   `table_sets` the domain methods will reach for. Declaring no stock references
+   is the correct answer until someone has actually read them off this car's
+   bin. The table sets are not optional in the same way: a domain call whose
+   meaning is "write these together" raises on a car that has not declared its
+   set, so a missing one surfaces the first time that method is used.
 6. Add the profile to `PROFILES` in `simoscal/tune/profiles/__init__.py`. That
    is the whole registration: `BASE_PROFILES` — what preflight tries — is
    derived from it by "has a `structure`", so step 5 is what makes the new car
@@ -322,6 +325,43 @@ worded differently because they have different fixes — *absent from the
 calibration* (no definition file could supply it) versus *absent from this XDF*
 (the data is in the bin, embedded in the map that uses it, with no standalone
 table to bind). A05 has five of each.
+
+A sixth arrived with the domain migration: **`Profile.table_sets`** — which
+tables a domain method writes *together*. `tune.limits.speed_limiter()` writes
+four tables holding one number; `tune.fueling.lambda_floors()` writes this car's
+floors; `tune.ignition.retard_cells()` writes its nine base grids. Those tuples
+used to live as module globals in `profiles/sc8s50.py` and were used directly as
+`tables=` defaults by four domain modules, so every domain call on any bin
+quietly asserted SC8S50's table sets — and `bridge.py`'s Limiters screen
+rendered SC8S50's names whatever car was open.
+
+Sets are validated when the profile is constructed: an empty set raises (it
+cannot be told apart from a forgotten one), and every member must be a name the
+profile maps or declares `unavailable`, so a typo fails at import rather than at
+some later revision's call site. A domain reaches a set through one of two
+accessors, and which one is a judgement about consequence:
+
+- `Domain._table_set(name)` is **required** — it decides what gets written, so a
+  car that has not declared it must fail loudly. `Profile.table_set()` raises
+  with the profile named and its declared sets listed, and never falls back.
+- `Domain._optional_table_set(name)` returns `()` when the car declares none —
+  for sets that only sharpen what a journal entry *says*. It must never gate a
+  write.
+
+`static_rev_limit` is the worked example of the second. All four transmission
+variants are written on every car, but *which one the ECU resolves* is a per-car
+fact: SC8S50 declares `static_rev_limit_active = ("static_rev_limit_dct",)` and
+its journal names the live variant; A05 declares none, and its journal says all
+four were written and which one applies is not established for this car. Before
+this, the domain hardcoded `name.endswith("_dct")` and told every car it was
+writing "the variant this car's ECU actually reads".
+
+> The distinction to hold when porting: **structural guards are universal,
+> calibration advice is per-car.** A boost cap is still refused for exceeding the
+> base ceiling on any car — that is arithmetic against the bin in hand. Stoich,
+> the wastegate's physical [0, 1] range and the XDF's own encodable range are
+> likewise universal and stay in the domain modules. What must not travel is
+> anything learned on one car's hardware.
 
 ## 9a. What the A05 map actually measured
 
