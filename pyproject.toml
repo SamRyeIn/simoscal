@@ -22,6 +22,7 @@ dev = ["pytest>=7.4", "pytest-xdist>=3.5", "matplotlib>=3.7", "openpyxl>=3.1"]
 [tool.setuptools]
 packages = [
     "simoscal",
+    "simoscal.advice",
     "simoscal.analysis",
     "simoscal.tune",
     "simoscal.tune.domains",
