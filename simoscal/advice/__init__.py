@@ -24,6 +24,7 @@ from .schema import (
     CONFIDENCE_LEVELS,
     Change,
     OPERATIONS,
+    MalformedRecord,
     Problem,
     Provenance,
     RISK_TIERS,
@@ -37,8 +38,10 @@ from .schema import (
     TableRef,
     dumps,
     parse,
+    parse_partial,
     to_obj,
     validate,
+    validate_partial,
 )
 
 __all__ = [
@@ -46,6 +49,7 @@ __all__ = [
     "CONFIDENCE_LEVELS",
     "Change",
     "OPERATIONS",
+    "MalformedRecord",
     "Problem",
     "Provenance",
     "RISK_TIERS",
@@ -59,6 +63,8 @@ __all__ = [
     "TableRef",
     "dumps",
     "parse",
+    "parse_partial",
     "to_obj",
     "validate",
+    "validate_partial",
 ]

@@ -1600,3 +1600,139 @@ def test_the_engines_rev_limiter_has_no_write_path_at_all(session: str):
         selection={"kind": "all"}, value=7200.0,
     )
     assert err_code(env) == ErrorCode.EDIT_REJECTED.value
+
+
+# --------------------------------------------------------------------------- #
+# advice_review — the courier's gate
+# --------------------------------------------------------------------------- #
+def _advice_file(tmp_path: Path, session: str, records: list, **over) -> dict:
+    """Write a recommendations file and return it as verified path + hash."""
+    payload = {
+        "schema_version": 1,
+        "provenance": over.pop("provenance", None) or _session_provenance(session),
+        "recommendations": records,
+    }
+    payload.update(over)
+    path = tmp_path / "advice.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return {"advice_path": str(path), "advice_sha256": _sha256(path)}
+
+
+def _session_provenance(session: str) -> dict:
+    prov = bridge._SESSIONS[session].provenance
+    return {
+        "profile": prov["profile"],
+        "bin_sha256": prov["bin_sha256"],
+        "xdf_sha256": prov["xdf_sha256"],
+    }
+
+
+def _advice_record(session: str, name: str, value: float, *, id: str = "rec-1") -> dict:
+    detail = ok_result(call("table_detail", session_id=session, name=name))["table"]
+    return {
+        "id": id,
+        "table": {
+            "name": name,
+            "id": str(detail["key"]),
+            "description": detail["description"],
+        },
+        "change": {
+            "space": "base",
+            "operation": "set",
+            "selection": {"kind": "cells", "args": [[0, 0]]},
+            "value": value,
+        },
+        "intent": f"adjust {name}",
+        "evidence": "pull #3, rows 188-204, knock count 3",
+        "risk": "performance",
+        "confidence": "medium",
+        "prediction": "the next pull shows the change",
+    }
+
+
+def test_session_provenance_carries_the_xdf_hash(session: str, files: dict):
+    """The courier matches a reply to a session by both file hashes."""
+    prov = bridge._SESSIONS[session].provenance
+    assert prov["xdf_sha256"] == files["xdf_sha256"]
+
+
+def test_advice_review_queues_a_valid_recommendation(session: str, tmp_path: Path):
+    current = ok_result(call("table_detail", session_id=session, name="pressure_quotient_max"))
+    first = current["table"]["values"][0][0]
+    advice = _advice_file(tmp_path, session, [
+        _advice_record(session, "pressure_quotient_max", first + 0.02),
+    ])
+    res = ok_result(call("advice_review", session_id=session, **advice))
+
+    assert res["counts"] == {"queued": 1, "dropped": 0, "malformed": 0, "total": 1}
+    (item,) = res["queued"]
+    assert item["routed_via"] == "bridge op `edit`"
+    assert item["table"]["label"].startswith("`")
+    assert item["preview"]["encoded"] and item["preview"]["requested"]
+    # read-only: the review journaled nothing
+    assert res["can_undo"] is False
+
+
+def test_advice_review_drops_the_airmass_trap_without_queueing_it(session: str, tmp_path: Path):
+    """AE2, through the wire: the refusal is returned, the suggestion is not."""
+    advice = _advice_file(tmp_path, session, [
+        _advice_record(session, "airmass_setpoint_max", 2000.0, id="trap"),
+    ])
+    res = ok_result(call("advice_review", session_id=session, **advice))
+    assert res["counts"]["queued"] == 0
+    assert res["queued"] == []
+    assert "kg/stk" in res["dropped"][0]["reason"]
+
+
+def test_advice_review_counts_malformed_apart_from_dropped(session: str, tmp_path: Path):
+    bad = _advice_record(session, "pressure_quotient_max", 1.0, id="bad")
+    bad["evidence"] = ""
+    advice = _advice_file(tmp_path, session, [bad])
+    res = ok_result(call("advice_review", session_id=session, **advice))
+    assert res["counts"] == {"queued": 0, "dropped": 0, "malformed": 1, "total": 1}
+    assert res["malformed"][0]["problems"][0]["field"] == "evidence"
+
+
+def test_advice_review_refuses_a_reply_for_a_different_bin(session: str, tmp_path: Path):
+    advice = _advice_file(
+        tmp_path, session,
+        [_advice_record(session, "pressure_quotient_max", 1.0)],
+        provenance={"profile": "SC8S50", "bin_sha256": "0" * 64, "xdf_sha256": "1" * 64},
+    )
+    env = call("advice_review", session_id=session, **advice)
+    assert err_code(env) == ErrorCode.ADVICE_REJECTED.value
+    assert "different calibration" in env["error"]["advanced"]
+
+
+def test_advice_review_refuses_an_unreadable_file_with_a_stable_code(session: str, tmp_path: Path):
+    path = tmp_path / "advice.json"
+    path.write_text("{not json", encoding="utf-8")
+    env = call(
+        "advice_review", session_id=session,
+        advice_path=str(path), advice_sha256=_sha256(path),
+    )
+    assert err_code(env) == ErrorCode.ADVICE_REJECTED.value
+    assert "not valid JSON" in env["error"]["advanced"]
+
+
+def test_advice_review_verifies_the_files_hash(session: str, tmp_path: Path):
+    advice = _advice_file(tmp_path, session, [])
+    Path(advice["advice_path"]).write_text('{"schema_version": 1}', encoding="utf-8")
+    env = call("advice_review", session_id=session, **advice)
+    assert err_code(env) == ErrorCode.HASH_MISMATCH.value
+
+
+def test_advice_review_needs_a_known_session(tmp_path: Path):
+    path = tmp_path / "advice.json"
+    path.write_text("{}", encoding="utf-8")
+    env = call(
+        "advice_review", session_id="nope",
+        advice_path=str(path), advice_sha256=_sha256(path),
+    )
+    assert err_code(env) == ErrorCode.UNKNOWN_SESSION.value
+
+
+def test_adding_the_courier_op_left_bridge_version_alone(session: str):
+    """Additive, like every op since V8: an older app simply never names it."""
+    assert BRIDGE_VERSION == 1
+    assert "advice_review" in ok_result(call("bridge_info"))["ops"]

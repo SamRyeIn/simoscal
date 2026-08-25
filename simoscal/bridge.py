@@ -67,6 +67,7 @@ from typing import Any, Callable, Optional
 import numpy as np
 
 from . import __version__
+from .advice.schema import AdviceRejected
 from .preflight import Verdict, preflight
 from .tune import (
     SC8S50,
@@ -118,6 +119,7 @@ class ErrorCode(str, Enum):
     PREFLIGHT_BLOCKED = "PREFLIGHT_BLOCKED"  # (reserved) not used to gate here
     UNKNOWN_SESSION = "UNKNOWN_SESSION"  # session_id not in the registry
     EDIT_REJECTED = "EDIT_REJECTED"      # a guard/selection refused the edit
+    ADVICE_REJECTED = "ADVICE_REJECTED"  # a recommendations file could not be read
     RECOVERY_ERROR = "RECOVERY_ERROR"    # a recovery record could not be restored
     PROFILE_ERROR = "PROFILE_ERROR"      # the XDF does not resolve the profile
     TUNE_ERROR = "TUNE_ERROR"            # opening/editing the tune failed loudly
@@ -411,6 +413,7 @@ def _op_session_create(params: dict) -> dict:
         "bin_path": str(bin_path),
         "bin_sha256": params["bin_sha256"],
         "xdf_path": str(xdf_path),
+        "xdf_sha256": params["xdf_sha256"],
         "has_switch_patch": patch_xdf is not None,
     }
     _SESSIONS[sid] = _Session(sid, tune, provenance)
@@ -485,6 +488,7 @@ def _op_session_recover(params: dict) -> dict:
         "profile": tune.space("base").profile.name,
         "bin_path": str(tune.source_bin),
         "bin_sha256": source["bin_sha256"],
+        "xdf_sha256": raw_xdfs["base"]["sha256"],
         "recovered": True,
         "has_switch_patch": PATCH_SPACE in tune.spaces,
     }
@@ -1250,6 +1254,119 @@ def _op_lambda_fl_edit(params: dict) -> dict:
     }
 
 
+def _op_advice_review(params: dict) -> dict:
+    """Replay an imported recommendations file against the session, dry.
+
+    Read-only in the strongest sense the library can offer: every recommendation
+    that passes the schema is replayed through the **real** edit path inside
+    :meth:`Tune.dry_run`, so the guards that answer are the guards that would
+    refuse a typed edit, and the session is left exactly as it was. Nothing here
+    can journal, and nothing here can move a byte.
+
+    Three lists come back. ``queued`` carries the dry-run preview so the UI draws
+    the real effect rather than the claimed one; ``dropped`` carries the guard's
+    own refusal and is never rendered as a suggestion; ``malformed`` is counted
+    apart from ``dropped`` because a file the schema cannot read and advice the
+    engine will not take mean different things to whoever is improving the
+    answering side.
+
+    A file whose provenance does not match this session is refused wholesale
+    before any replay: its cells are not the cells it thinks they are.
+    """
+    from .advice.review import review
+
+    sess = _session(params)
+    path = _verified_path(params, "advice")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise BridgeError(
+            ErrorCode.ADVICE_REJECTED,
+            "the recommendations file could not be read as text",
+            advanced=str(exc),
+        )
+
+    try:
+        result = review(sess.tune, text, provenance=sess.provenance)
+    except AdviceRejected as exc:
+        raise BridgeError(
+            ErrorCode.ADVICE_REJECTED,
+            "this recommendations file could not be used",
+            advanced=str(exc),
+        )
+
+    return {
+        "schema_version": result.schema_version,
+        "summary": result.summary,
+        "counts": result.counts,
+        "queued": [
+            {
+                **_advice_record(item.recommendation),
+                "routed_via": item.routed_via,
+                "preview": {
+                    "before": _jsonify(item.preview.before),
+                    "requested": _jsonify(item.preview.requested),
+                    "encoded": _jsonify(item.preview.encoded),
+                    "quantized": bool(item.preview.quantized),
+                    "max_abs_quantization": float(item.preview.max_abs_quantization),
+                    "warning": item.preview.warning,
+                },
+                "overlaps": list(item.overlaps),
+                "note": item.note,
+            }
+            for item in result.queued
+        ],
+        "dropped": [
+            {
+                **_advice_record(item.recommendation),
+                "reason": item.reason,
+                "routed_via": item.routed_via,
+            }
+            for item in result.dropped
+        ],
+        "malformed": [
+            {
+                "index": item.index,
+                "id": item.id,
+                "problems": [
+                    {"where": p.where, "field": p.field, "message": p.message}
+                    for p in item.problems
+                ],
+            }
+            for item in result.malformed
+        ],
+        **_history_state(sess),
+    }
+
+
+def _advice_record(rec) -> dict:
+    """One recommendation as the UI needs it — both halves of the table's name."""
+    return {
+        "id": rec.id,
+        "table": {
+            "name": rec.table.name,
+            "id": rec.table.id,
+            "description": rec.table.description,
+            "label": rec.table.label,
+        },
+        "change": {
+            "space": rec.change.space,
+            "operation": rec.change.operation,
+            "selection": {
+                "kind": rec.change.selection.kind,
+                "args": _jsonify(rec.change.selection.args),
+            },
+            "value": rec.change.value,
+            "array": _jsonify(rec.change.array),
+        },
+        "intent": rec.intent,
+        "evidence": rec.evidence,
+        "risk": rec.risk,
+        "confidence": rec.confidence,
+        "prediction": rec.prediction,
+    }
+
+
 #: The closed op table. If an op is not here, it is not something the phone can do.
 OPS: dict[str, Callable[[dict], dict]] = {
     "bridge_info": _op_bridge_info,
@@ -1295,6 +1412,10 @@ OPS: dict[str, Callable[[dict], dict]] = {
     "limiters_edit": _op_limiters_edit,
     "lambda_fl": _op_lambda_fl,
     "lambda_fl_edit": _op_lambda_fl_edit,
+    # The courier. Read-only: it replays an imported recommendations file through
+    # the real edit path with dry_run=True and journals nothing. Additive on the
+    # same reasoning as every op above, so BRIDGE_VERSION is unchanged.
+    "advice_review": _op_advice_review,
 }
 
 

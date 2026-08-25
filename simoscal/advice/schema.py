@@ -62,6 +62,7 @@ __all__ = [
     "Change",
     "CONFIDENCE_LEVELS",
     "OPERATIONS",
+    "MalformedRecord",
     "Problem",
     "Provenance",
     "Recommendation",
@@ -75,8 +76,10 @@ __all__ = [
     "TableRef",
     "dumps",
     "parse",
+    "parse_partial",
     "to_obj",
     "validate",
+    "validate_partial",
 ]
 
 #: What this library writes and prefers to read.
@@ -171,6 +174,21 @@ class AdviceRejected(Exception):
 # --------------------------------------------------------------------------- #
 # records
 # --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class MalformedRecord:
+    """One record that could not be read, kept apart from the ones that could.
+
+    ``id`` is best-effort — the record's own ``id`` when it supplied a usable
+    one, ``""`` when that is the field that was wrong. ``index`` always
+    identifies it, so a malformed record can be reported even when it has no
+    name of its own.
+    """
+
+    index: int
+    id: str
+    problems: tuple[Problem, ...]
+
+
 @dataclass(frozen=True)
 class Provenance:
     """Which calibration the answer was written against.
@@ -494,19 +512,18 @@ def _provenance(problems: list, raw: Any) -> Provenance:
 # --------------------------------------------------------------------------- #
 # public surface
 # --------------------------------------------------------------------------- #
-def validate(payload: Any) -> tuple[Optional[RecommendationFile], list[Problem]]:
-    """Validate an already-decoded JSON object; never raises.
+def _envelope(payload: Any) -> tuple[Optional[tuple], list[Problem]]:
+    """Read the envelope only. Returns ``(parts, problems)``; ``parts`` is
+    ``None`` whenever anything about the envelope is wrong, in which case the
+    records were never looked at.
 
-    Returns the parsed file and an empty problem list, or ``None`` and every
-    problem found. :func:`parse` is the usual entry point; this exists for a
-    caller that already holds decoded JSON and wants the list rather than an
-    exception.
-
-    A version this library does not understand short-circuits: reporting the
-    fields of a document written to a schema we do not know would be reporting
-    noise, and would bury the one problem that matters.
+    Every envelope problem is fatal to the whole file, and deliberately so.
+    A version this library does not know means the fields underneath were
+    written to a schema nobody here understands; a provenance that cannot be
+    read means there is no way to tell which calibration the advice is about.
+    Reporting individual records under either condition would be reporting
+    noise on top of the one problem that matters.
     """
-    problems: list[Problem] = []
     if not isinstance(payload, dict):
         return None, [Problem("", "", "the recommendations file must be a JSON object")]
 
@@ -525,6 +542,7 @@ def validate(payload: Any) -> tuple[Optional[RecommendationFile], list[Problem]]
             "the file was not read further",
         )]
 
+    problems: list[Problem] = []
     _unknown_keys(problems, "", payload, _ENVELOPE_KEYS)
     provenance = _provenance(problems, payload.get("provenance"))
 
@@ -534,28 +552,107 @@ def validate(payload: Any) -> tuple[Optional[RecommendationFile], list[Problem]]
         summary = ""
 
     raw_records = payload.get("recommendations")
-    records: list[Recommendation] = []
     if raw_records is None:
         problems.append(Problem("recommendations", "recommendations", "missing required field 'recommendations'"))
     elif not isinstance(raw_records, list):
         problems.append(Problem("recommendations", "recommendations", "'recommendations' must be a list"))
-    else:
-        records = [_record(problems, i, raw) for i, raw in enumerate(raw_records)]
-        seen: dict[str, int] = {}
-        for i, rec in enumerate(records):
-            if not rec.id:
-                continue
-            if rec.id in seen:
-                problems.append(Problem(
-                    f"recommendations[{i}].id", "id",
-                    f"duplicate id {rec.id!r}; recommendations[{seen[rec.id]}] already used it",
-                ))
-            else:
-                seen[rec.id] = i
 
     if problems:
         return None, problems
-    return RecommendationFile(version, provenance, tuple(records), summary), []
+    return (version, provenance, summary, raw_records), []
+
+
+def _split_records(raw_records: list) -> tuple[list[Recommendation], list[MalformedRecord]]:
+    """Validate each record on its own, in order.
+
+    Records are independent: one that cannot be read says nothing about the
+    next. Keeping them separate is what lets a review count *malformed* apart
+    from *refused* — the two mean different things to whoever is improving the
+    answering side, and collapsing them hides which one is happening.
+    """
+    good: list[Recommendation] = []
+    malformed: list[MalformedRecord] = []
+    seen: dict[str, int] = {}
+    for index, raw in enumerate(raw_records):
+        problems: list[Problem] = []
+        rec = _record(problems, index, raw)
+        if rec.id and not problems:
+            if rec.id in seen:
+                problems.append(Problem(
+                    f"recommendations[{index}].id", "id",
+                    f"duplicate id {rec.id!r}; recommendations[{seen[rec.id]}] already used it",
+                ))
+            else:
+                seen[rec.id] = index
+        if problems:
+            raw_id = raw.get("id") if isinstance(raw, dict) else None
+            malformed.append(MalformedRecord(
+                index, raw_id if isinstance(raw_id, str) else "", tuple(problems),
+            ))
+        else:
+            good.append(rec)
+    return good, malformed
+
+
+def validate(payload: Any) -> tuple[Optional[RecommendationFile], list[Problem]]:
+    """Validate an already-decoded JSON object, all or nothing; never raises.
+
+    Returns the parsed file and an empty problem list, or ``None`` and every
+    problem found. :func:`parse` is the usual entry point; this exists for a
+    caller that already holds decoded JSON and wants the list rather than an
+    exception. Use :func:`validate_partial` when one bad record should not
+    disqualify the rest of the file.
+    """
+    parts, problems = _envelope(payload)
+    if parts is None:
+        return None, problems
+    version, provenance, summary, raw_records = parts
+    good, malformed = _split_records(raw_records)
+    if malformed:
+        return None, [p for record in malformed for p in record.problems]
+    return RecommendationFile(version, provenance, tuple(good), summary), []
+
+
+def validate_partial(payload: Any) -> tuple[RecommendationFile, tuple[MalformedRecord, ...]]:
+    """Validate record by record, keeping the readable ones.
+
+    The envelope is still all-or-nothing — a file whose version or provenance
+    cannot be read raises :class:`AdviceRejected`, because nothing under it can
+    be interpreted. Past that, each record stands alone: the returned file holds
+    every record that validated, and the second element accounts for each one
+    that did not, by index and id, with its own problems.
+
+    This is what a review needs. Rejecting a whole file because one record of
+    six was malformed would throw away five answers a person could act on, and
+    would report "the file was bad" where the useful thing to say is "record 3
+    was bad, and here is why".
+    """
+    parts, problems = _envelope(payload)
+    if parts is None:
+        raise AdviceRejected(problems)
+    version, provenance, summary, raw_records = parts
+    good, malformed = _split_records(raw_records)
+    return RecommendationFile(version, provenance, tuple(good), summary), tuple(malformed)
+
+
+def parse_partial(text: str) -> tuple[RecommendationFile, tuple[MalformedRecord, ...]]:
+    """:func:`validate_partial` over JSON text; malformed JSON still raises."""
+    return validate_partial(_decode(text))
+
+
+def _decode(text: str) -> Any:
+    """JSON text to an object, with the decoder's own position on failure.
+
+    One clear failure, never a traceback: the file is authored by a model that
+    will be handed this message to fix it.
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise AdviceRejected([Problem(
+            "", "",
+            f"the file is not valid JSON: {exc.msg} (line {exc.lineno}, column {exc.colno})",
+        )]) from None
 
 
 def parse(text: str) -> RecommendationFile:
@@ -565,14 +662,7 @@ def parse(text: str) -> RecommendationFile:
     JSON is one problem with the decoder's own position, not a traceback: the
     file is authored by a model that will be handed this message to fix it.
     """
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise AdviceRejected([Problem(
-            "", "",
-            f"the file is not valid JSON: {exc.msg} (line {exc.lineno}, column {exc.colno})",
-        )]) from None
-    parsed, problems = validate(payload)
+    parsed, problems = validate(_decode(text))
     if parsed is None:
         raise AdviceRejected(problems)
     return parsed

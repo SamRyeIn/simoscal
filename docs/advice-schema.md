@@ -193,3 +193,47 @@ turns fixing a file into a conversation.
 
 Malformed JSON is reported as one failure with the decoder's line and column —
 never a traceback.
+
+## What happens to a well-formed file
+
+Each record is replayed against the live session through the library's **real**
+edit path, with the write rewound afterwards. Three outcomes, counted
+separately:
+
+| Outcome       | Meaning                                                                    |
+|---------------|-----------------------------------------------------------------------------|
+| **queued**    | The guards accepted it. Shown to a person with a preview of the *real* effect — what the bin would actually hold, re-decoded, not what the record claimed. |
+| **dropped**   | The guards refused it, or the table has no write path. Never shown as a suggestion. The refusal reason comes back so the file can be improved. |
+| **malformed** | It failed this schema. Counted apart from *dropped*, because a bad file and bad advice are different problems. |
+
+Recommendations are replayed **independently against the session's current
+state**, not cumulatively. Two that each pass alone can still conflict when both
+are accepted; the review flags queued items whose cells overlap, but it will not
+resolve the conflict for you. Prefer one recommendation per coherent change.
+
+### Domain-owned tables take a value, not arithmetic
+
+Some tables are written by a call that knows an invariant no grid write can see
+— the per-slot boost grids (one curve tiled across every row), the road-speed
+limiter (four scalars written as one coherent set), the cylinder-cut trio
+(soft ≤ medium ≤ hard), the full-load enrichment map (a lean bound). A
+recommendation naming one of those is routed to that call automatically; you do
+not name the call, and there is no field for it.
+
+For those tables, use `set`, `fill`, or `paste` — an operation that states the
+values the table should end at. `add`, `mul`, `interpolate` and friends are
+dropped, because the owning call is given a result, not an expression.
+
+A few tables are refused outright even though a write path exists. The important
+one: `C_M_AIR_CYL_SP_MAX` — Maximum allowed airmass setpoint is labelled mg/stk
+and *stores kg/stk*, so a stated grid value is ambiguous between the two by a
+factor of a million — the factor that removes the limiter entirely. The courier
+will not guess. Do not recommend a change to it; say in `summary` what you would
+have changed and why, and leave the edit to the screen that knows the units.
+
+### `table.id` must match the calibration
+
+The `id` you give must be the same identifier the bundle's catalog reported for
+that logical `name`. A record pairing one table's name with another table's ID is
+dropped — otherwise the queue would show a person one table's name over another
+table's change.
