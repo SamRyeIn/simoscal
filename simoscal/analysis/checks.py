@@ -1,20 +1,20 @@
 """U4 — the v1 check battery.
 
-Nine check families implemented as :class:`~simoscal.analysis.registry.Check`
+Ten check families implemented as :class:`~simoscal.analysis.registry.Check`
 registry entries, with thresholds seeded from the human-reviewed R01/R04
 BasicsGuide logs, plus two calibration-aware variants (``needs_cal``). Each
 compute function reads its thresholds from the check's ``thresholds`` dict — so
 they are inspectable and print with the battery — and returns findings ranked
 High/Medium/Low with supporting evidence.
 
-The families: knock retard, boost tracking, wastegate duty, lambda, rail
-pressure + pump headroom, timing envelope, turbo/heat, torque limiter, and data
-quality (surfacing the U1 preflight as findings); the two cal-aware checks
-compare the manifold-pressure setpoint against the ``C_PRS_IM_SP_MAX`` ceiling
-and the logged PUT-vs-ambient differential against the P0234 overboost
-threshold. A High is emitted only for a genuine problem; clean states emit a Low
-informational finding (or nothing), never a false High — the acceptance gate in
-U6 depends on this.
+The families: knock retard, boost tracking (overshoot), boost shortfall,
+wastegate duty, lambda, rail pressure + pump headroom, timing envelope,
+turbo/heat, torque limiter, and data quality (surfacing the U1 preflight as
+findings); the two cal-aware checks compare the manifold-pressure setpoint
+against the ``C_PRS_IM_SP_MAX`` ceiling and the logged PUT-vs-ambient
+differential against the P0234 overboost threshold. A High is emitted only for
+a genuine problem; clean states emit a Low informational finding (or nothing),
+never a false High — the acceptance gate in U6 depends on this.
 
 Cross-channel reasoning (hardened after the R04 battery audit, see
 ``Logs/BasicsGuide_R04/battery_audit.md``): boost/wastegate co-occurrence is
@@ -43,6 +43,10 @@ __all__ = [
     "BOOST_HIGH_KPA",
     "BOOST_SUSTAINED_S",
     "BOOST_SUSTAINED_MEAN_KPA",
+    "SHORTFALL_WATCH_KPA",
+    "SHORTFALL_SUSTAINED_S",
+    "SHORTFALL_AREA_KPA_S",
+    "WG_I_CARRY_PCT",
     "WG_SATURATION_PCT",
     "WG_I_CLAMP_WATCH_PCT",
     "LAMBDA_WATCH",
@@ -67,6 +71,21 @@ BOOST_SUSTAINED_S = 0.5          # a zone above the watch line lasting this long
 BOOST_SUSTAINED_MEAN_KPA = 15.0  # ... and if its mean overshoot clears this, it is a
                                  # High even without a >=20 kPa instantaneous peak
                                  # (duration-weighted severity, per the R04 audit)
+
+SHORTFALL_WATCH_KPA = 5.0        # mean PUT-below-setpoint over a post-spool zone at/above
+                                 # this is a finding. Seeded from the R14 logs, whose
+                                 # 4000-6000 rpm shortfall (mean ~6 kPa) motivated R15
+SHORTFALL_SUSTAINED_S = 0.5      # ... and the zone must hold this long, so a single
+                                 # post-shift dip is not read as a shortfall
+SHORTFALL_AREA_KPA_S = 15.0      # mean depth x duration, the second route to qualifying: a
+                                 # shallow shortfall that holds through a whole pull is as
+                                 # actionable as a deeper brief one, and ranking on mean
+                                 # alone let a 0.8 s dip outrank a 4.8 s ridge. Over a ~5 s
+                                 # WOT pull this puts the floor near 3 kPa mean
+WG_I_CARRY_PCT = 5.0             # WG integral winding up by this many points across a
+                                 # shortfall zone == the closed loop is making up for a
+                                 # position feedforward that is commanding too little
+                                 # (R14 pull 1 wound -1.4% -> +16.6% over one pull)
 
 LAMBDA_WATCH = 0.03              # settled-WOT lean error above this is a watch (Medium)
 LAMBDA_HIGH = 0.05              # ... above this is a High lean finding
@@ -335,7 +354,7 @@ def _check_knock(ctx: CheckContext, check: Check) -> list[Finding]:
 
 
 # --------------------------------------------------------------------------- #
-# 2. Boost tracking
+# 2. Boost tracking — overshoot
 # --------------------------------------------------------------------------- #
 def _zone_desc(z: dict) -> str:
     """One-line human description of an overshoot zone."""
@@ -402,12 +421,233 @@ def _check_boost(ctx: CheckContext, check: Check) -> list[Finding]:
                         f"(below the +20 kPa High line){primary}",
                         evidence=ev, pull_refs=(peak_pull,))]
     return [Finding(check.id, Severity.LOW, check.title,
-                    f"boost tracks setpoint within +{peak_err:.1f} kPa",
+                    f"boost tracks setpoint within {peak_err:+.1f} kPa",
                     evidence=ev)]
 
 
 # --------------------------------------------------------------------------- #
-# 3. Wastegate duty
+# 3. Boost shortfall — the mirror of check 2
+# --------------------------------------------------------------------------- #
+def _post_spool_mask(ctx: CheckContext, pull: Pull) -> tuple[np.ndarray, bool]:
+    """``(mask, attained)`` — settled samples from first setpoint attainment on.
+
+    A pull spends its first second or two with PUT far below setpoint by
+    definition: that is spool, and reading it as a shortfall would put one in
+    every log ever recorded. Boost first *reaching* setpoint is the cheapest
+    honest marker that spool is over, and unlike a wastegate-saturation test it
+    needs no wastegate channel.
+
+    A pull that never reaches setpoint has no such marker, and there the whole
+    settled stretch counts — "never made target" is the finding in that case,
+    not a reason to skip the pull. ``attained`` says which of the two happened,
+    because a shortfall that follows attainment and one that never got there are
+    different claims.
+    """
+    settled = _settled_mask(ctx, pull)
+    mask = np.zeros(pull.n_samples, dtype=bool)
+    put = _col(ctx, pull, "put")
+    sp = _col(ctx, pull, "put_sp")
+    if put is None or sp is None or not np.any(settled):
+        return mask, False
+    err = put - sp
+    reached = np.flatnonzero(np.isfinite(err) & (err >= 0.0))
+    attained = bool(reached.size)
+    first = int(reached[0]) if attained else int(np.flatnonzero(settled)[0])
+    mask[first:] = True
+    return mask & settled, attained
+
+
+def _shortfall_zones(ctx: CheckContext, pull: Pull) -> list[dict]:
+    """Contiguous post-spool regions where PUT sits below setpoint, summarized.
+
+    A zone is any run of post-spool samples whose (median-of-3 smoothed) PUT is
+    *at all* below setpoint; the severity test is then on the zone's **mean and
+    duration**, not on a per-sample threshold. That ordering is deliberate: a
+    real shortfall wanders — R14's held 3-8 kPa under target for four seconds —
+    and a per-sample entry threshold chops one sustained condition into a dozen
+    fragments that each look like noise.
+
+    Each zone also carries what the wastegate was doing across it, when those
+    channels were logged: the integral's wind-up, how far the final command ran
+    above the position feedforward, and how much of the zone the gate spent
+    commanded shut. Those three are what separate "the feedforward is asking for
+    too little and the loop is covering it" from "there is no authority left".
+    """
+    put = _col(ctx, pull, "put")
+    sp = _col(ctx, pull, "put_sp")
+    if put is None or sp is None:
+        return []
+    post, attained = _post_spool_mask(ctx, pull)
+    if not np.any(post):
+        return []
+
+    short = _median3(sp - put)
+    mask = post & np.isfinite(short) & (short > 0.0)
+    rpm = _col(ctx, pull, "rpm")
+    lf = _logfile_for(ctx, pull)
+    dt = lf.quality.interval_median_s if lf is not None else float("nan")
+    if not np.isfinite(dt) or dt <= 0:
+        dt = 0.04
+    final = _col(ctx, pull, "wg_pos_final")
+    base = _col(ctx, pull, "wg_pos_base")
+    wg_i = _col(ctx, pull, "wg_i_value")
+
+    zones: list[dict] = []
+    for lo, hi in _contiguous_true(mask):
+        seg = short[lo : hi + 1]
+        seg = seg[np.isfinite(seg)]
+        if not seg.size:
+            continue
+        peak_i = lo + int(np.nanargmax(short[lo : hi + 1]))
+        duration = (hi - lo + 1) * dt
+        mean_kpa = float(np.mean(seg))
+        zone = {
+            "pull": pull.index,
+            "rpm_lo": float(rpm[lo]) if rpm is not None and np.isfinite(rpm[lo]) else None,
+            "rpm_hi": float(rpm[hi]) if rpm is not None and np.isfinite(rpm[hi]) else None,
+            "duration_s": duration,
+            "mean_kpa": mean_kpa,
+            "peak_kpa": float(np.max(seg)),
+            "peak_rpm": _rpm_at(ctx, pull, peak_i),
+            "n_samples": hi - lo + 1,
+            "sustained": duration >= SHORTFALL_SUSTAINED_S,
+            "area_kpa_s": mean_kpa * duration,
+            "qualifies": duration >= SHORTFALL_SUSTAINED_S and (
+                mean_kpa >= SHORTFALL_WATCH_KPA
+                or mean_kpa * duration >= SHORTFALL_AREA_KPA_S
+            ),
+            "attained_setpoint": attained,
+            "wg_i_start_pct": None,
+            "wg_i_end_pct": None,
+            "wg_i_gain_pct": None,
+            "wg_ff_gap_mean_pct": None,
+            "wg_final_max_pct": None,
+            "gate_shut_fraction": None,
+        }
+        if wg_i is not None:
+            wi = wg_i[lo : hi + 1]
+            live = np.flatnonzero(np.isfinite(wi))
+            if live.size:
+                start = float(wi[live[0]])
+                end = float(wi[live[-1]])
+                zone["wg_i_start_pct"] = start
+                zone["wg_i_end_pct"] = end
+                zone["wg_i_gain_pct"] = end - start
+        if final is not None:
+            fseg = final[lo : hi + 1]
+            fin = fseg[np.isfinite(fseg)]
+            if fin.size:
+                zone["wg_final_max_pct"] = float(np.max(fin))
+                zone["gate_shut_fraction"] = float(np.mean(fin >= WG_SATURATION_PCT))
+            if base is not None:
+                bseg = base[lo : hi + 1]
+                both = np.isfinite(fseg) & np.isfinite(bseg)
+                if np.any(both):
+                    zone["wg_ff_gap_mean_pct"] = float(np.mean(fseg[both] - bseg[both]))
+        zones.append(zone)
+    return zones
+
+
+def _shortfall_desc(z: dict) -> str:
+    """One-line human description of a shortfall zone."""
+    span = ""
+    if z["rpm_lo"] is not None and z["rpm_hi"] is not None:
+        span = f" at {z['rpm_lo']:.0f}-{z['rpm_hi']:.0f} rpm"
+    return (f"{'sustained' if z['sustained'] else 'brief'}{span}: mean -{z['mean_kpa']:.1f} / "
+            f"peak -{z['peak_kpa']:.1f} kPa over {z['duration_s']:.2f} s (pull {z['pull']})")
+
+
+def _check_boost_shortfall(ctx: CheckContext, check: Check) -> list[Finding]:
+    """PUT running *below* setpoint once spool is over — the R15 case.
+
+    Added after the courier back-test (``Docs/backtest/README.md``, finding 3):
+    the battery reported overshoot only, so the whole premise of R15 — a measured
+    4000-4500 rpm boost shortfall the wastegate integral was carrying — was
+    absent from its findings by construction, and no reader of them could have
+    reproduced that revision however well they reasoned. The raw signature was
+    already reaching the bundle inside the ``wastegate`` check's evidence
+    (``max_wg_final_pct`` at 99.9985); the finding was not.
+
+    Never a High. A shortfall costs power, not pistons, and the battery's
+    contract is that a High means something is being damaged or a diagnostic is
+    being tripped. What it does instead is separate the two shortfalls that want
+    opposite responses: one where the gate still has travel and the closed loop
+    is quietly covering for a position feedforward that commands too little
+    (raise the feedforward), and one where the gate is already commanded shut
+    (nothing in the controller can help — the request is above what the hardware
+    is flowing).
+    """
+    zones: list[dict] = []
+    for pull in ctx.pulls:
+        zones.extend(_shortfall_zones(ctx, pull))
+
+    if not zones:
+        # Either no post-spool samples at all, or PUT never sat below setpoint
+        # across any of them. Both are worth stating: an enumerable battery says
+        # "checked, nothing there" rather than going silent.
+        return [Finding(check.id, Severity.LOW, check.title,
+                        "no post-spool samples where PUT sits below setpoint",
+                        evidence={"zones": []})]
+
+    # Rank by the *area* of the shortfall — mean depth times how long it held.
+    # A 6 kPa ridge across four seconds is the actionable one; a 9 kPa dip
+    # lasting a tenth of a second is a shift artifact.
+    zones.sort(key=lambda z: (z["qualifies"], z["area_kpa_s"]), reverse=True)
+    worst = zones[0]
+    ev = {
+        "zones": zones,
+        "worst_mean_kpa": worst["mean_kpa"],
+        "worst_peak_kpa": worst["peak_kpa"],
+        "worst_duration_s": worst["duration_s"],
+        "worst_area_kpa_s": worst["area_kpa_s"],
+        "qualifying_pulls": sorted({z["pull"] for z in zones if z["qualifies"]}),
+        "attained_setpoint": worst["attained_setpoint"],
+    }
+
+    if not worst["qualifies"]:
+        return [Finding(check.id, Severity.LOW, check.title,
+                        f"boost tracks setpoint from below within -{worst['mean_kpa']:.1f} kPa mean "
+                        f"(worst zone {_shortfall_desc(worst)}) — under the "
+                        f"-{SHORTFALL_WATCH_KPA:.0f} kPa / {SHORTFALL_SUSTAINED_S:.1f} s and "
+                        f"{SHORTFALL_AREA_KPA_S:.0f} kPa.s lines",
+                        evidence=ev, pull_refs=(worst["pull"],))]
+
+    lead = "boost never reached setpoint: " if not worst["attained_setpoint"] else ""
+    span = ""
+    if worst["rpm_lo"] is not None and worst["rpm_hi"] is not None:
+        span = f" from {worst['rpm_lo']:.0f}-{worst['rpm_hi']:.0f} rpm"
+    head = (f"{lead}PUT runs {worst['mean_kpa']:.1f} kPa under setpoint on average "
+            f"(peak -{worst['peak_kpa']:.1f} kPa) for {worst['duration_s']:.2f} s{span} "
+            f"(pull {worst['pull']})")
+
+    shut = worst["gate_shut_fraction"]
+    gain = worst["wg_i_gain_pct"]
+    gap = worst["wg_ff_gap_mean_pct"]
+    if shut is not None and shut >= 0.5:
+        tail = (f"; the wastegate is commanded shut ({worst['wg_final_max_pct']:.1f}%) across "
+                f"{shut * 100:.0f}% of that span, so the closed loop has no travel left to "
+                "raise boost — the setpoint is above what the hardware is flowing there, and "
+                "no controller table will change that")
+    elif gain is not None and gain >= WG_I_CARRY_PCT:
+        gap_txt = (f" while the final command sits {gap:.1f} points above the position "
+                   f"feedforward (`wg_pos_base`)" if gap is not None else "")
+        tail = (f"; the wastegate integral winds from {worst['wg_i_start_pct']:.1f}% to "
+                f"{worst['wg_i_end_pct']:.1f}% across the zone{gap_txt} — the closed loop is "
+                "carrying a shortfall the position feedforward is leaving, so the feedforward "
+                "is commanding too little there")
+    elif gain is None and shut is None:
+        tail = ("; wastegate position and integral were not logged, so whether the loop still "
+                "had authority cannot be told from this log")
+    else:
+        tail = ("; the wastegate integral is not winding up and the gate is not shut, so the "
+                "loop is holding the error rather than fighting it")
+
+    return [Finding(check.id, Severity.MEDIUM, check.title, head + tail,
+                    evidence=ev, pull_refs=tuple(ev["qualifying_pulls"]) or (worst["pull"],))]
+
+
+# --------------------------------------------------------------------------- #
+# 4. Wastegate duty
 # --------------------------------------------------------------------------- #
 def _check_wastegate(ctx: CheckContext, check: Check) -> list[Finding]:
     """Wastegate authority, evaluated on the *same samples* as the overshoot.
@@ -507,7 +747,7 @@ def _check_wastegate(ctx: CheckContext, check: Check) -> list[Finding]:
 
 
 # --------------------------------------------------------------------------- #
-# 4. Lambda
+# 5. Lambda
 # --------------------------------------------------------------------------- #
 def _check_lambda(ctx: CheckContext, check: Check) -> list[Finding]:
     max_lean = None       # most-positive (lean) settled error
@@ -558,7 +798,7 @@ def _check_lambda(ctx: CheckContext, check: Check) -> list[Finding]:
 
 
 # --------------------------------------------------------------------------- #
-# 5. Rail pressure + pump headroom
+# 6. Rail pressure + pump headroom
 # --------------------------------------------------------------------------- #
 def _check_rail(ctx: CheckContext, check: Check) -> list[Finding]:
     worst_sag = None
@@ -619,7 +859,7 @@ def _sev_rank(sev: str) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# 6. Timing envelope
+# 7. Timing envelope
 # --------------------------------------------------------------------------- #
 _TIMING_MASK_DESC = "loaded WOT: airmass >= 900 mg/stk and TPS >= 60%"
 
@@ -673,7 +913,7 @@ def _check_timing(ctx: CheckContext, check: Check) -> list[Finding]:
 
 
 # --------------------------------------------------------------------------- #
-# 7. Turbo / heat
+# 8. Turbo / heat
 # --------------------------------------------------------------------------- #
 def _check_turbo_heat(ctx: CheckContext, check: Check) -> list[Finding]:
     def peak(cid):
@@ -730,7 +970,7 @@ def _check_turbo_heat(ctx: CheckContext, check: Check) -> list[Finding]:
 
 
 # --------------------------------------------------------------------------- #
-# 8. Torque limiter
+# 9. Torque limiter
 # --------------------------------------------------------------------------- #
 def _check_torque(ctx: CheckContext, check: Check) -> list[Finding]:
     lim_nonzero = 0
@@ -802,7 +1042,7 @@ def _check_torque(ctx: CheckContext, check: Check) -> list[Finding]:
 
 
 # --------------------------------------------------------------------------- #
-# 9. Data quality (surfaces the U1 preflight)
+# 10. Data quality (surfaces the U1 preflight)
 # --------------------------------------------------------------------------- #
 def _pull_row_ranges(ctx: CheckContext) -> dict[str, list[tuple[int, int]]]:
     out: dict[str, list[tuple[int, int]]] = {}
@@ -856,7 +1096,7 @@ def _check_data_quality(ctx: CheckContext, check: Check) -> list[Finding]:
 
 
 # --------------------------------------------------------------------------- #
-# 10. Calibration-aware boost ceiling (needs_cal)
+# 11. Calibration-aware boost ceiling (needs_cal)
 # --------------------------------------------------------------------------- #
 CAL_BOOST_CEILING_SYMBOL = "C_PRS_IM_SP_MAX"
 HPA_PER_KPA = 10.0               # C_PRS_IM_SP_MAX / P0234 thresholds store hPa; logs are kPa
@@ -913,7 +1153,7 @@ def _check_boost_cal(ctx: CheckContext, check: Check) -> list[Finding]:
 
 
 # --------------------------------------------------------------------------- #
-# 11. P0234 overboost threshold (needs_cal) — the check the R04 log crossed
+# 12. P0234 overboost threshold (needs_cal) — the check the R04 log crossed
 # --------------------------------------------------------------------------- #
 P0234_SYMBOL = "IP_PUT_AMP_DIF_MAX_PRS_DIF_THR"
 
@@ -991,6 +1231,15 @@ def default_battery() -> list[Check]:
                           "sustained_mean_kpa": BOOST_SUSTAINED_MEAN_KPA},
               description="PUT vs PUT setpoint overshoot, reported as contiguous "
                           "zones (transient spike vs sustained ridge)."),
+        Check("boost_shortfall", "Boost shortfall", ("put", "put_sp"), _check_boost_shortfall,
+              optional_channels=("rpm", "airmass", "tps", "torque", "torque_req",
+                                 "wg_pos_final", "wg_pos_base", "wg_i_value"),
+              thresholds={"watch_kpa": SHORTFALL_WATCH_KPA,
+                          "sustained_s": SHORTFALL_SUSTAINED_S,
+                          "area_kpa_s": SHORTFALL_AREA_KPA_S,
+                          "wg_i_carry_pct": WG_I_CARRY_PCT},
+              description="PUT running below setpoint once spool is over, split by "
+                          "whether the wastegate still has travel to correct it."),
         Check("wastegate", "Wastegate duty", ("wg_pos_final", "put", "put_sp"), _check_wastegate,
               optional_channels=("wg_pos_base", "wg_i_value", "wg_pd_value"),
               thresholds={"saturation_pct": WG_SATURATION_PCT,

@@ -25,6 +25,9 @@ class PullSpec:
     n: int = 60
     gear: float = 3.0
     put_overshoot: float = 0.0            # kPa added to actual PUT
+    put_shortfall: float = 0.0            # kPa subtracted from PUT over the pull's tail
+    put_shortfall_from: float = 0.3       # ... from this fraction of the pull onward
+    wg_i_windup: float = 0.0              # points the WG integral ramps across the pull
     knock: dict[int, float] = field(default_factory=dict)   # cylinder (1-4) -> retard deg
     lambda_error: float = 0.0             # added to actual lambda over the pull
     freeze: dict[str, float] = field(default_factory=dict)  # exact CSV header -> frozen value
@@ -49,6 +52,8 @@ def _pull_cols(spec: PullSpec, t0: float, *, gear_header: str, airmass_header: s
         n=spec.n, t0=t0, gear_header=gear_header, gear_value=spec.gear,
         airmass_header=airmass_header, dt=dt,
         put_overshoot=spec.put_overshoot, lambda_error=spec.lambda_error,
+        put_shortfall=spec.put_shortfall, put_shortfall_from=spec.put_shortfall_from,
+        wg_i_windup=spec.wg_i_windup,
         **(extra or {}),
     )
     for cyl, deg in spec.knock.items():

@@ -266,9 +266,11 @@ PLOT_SPECS: tuple[PlotSpec, ...] = (
         tip=(
             "Solid is what the turbo actually delivered; dashed is what the ECU "
             "asked for. Where the solid line runs above the dashed one, boost is "
-            "overshooting the setpoint — read the error panel underneath to see by "
-            "how much, and whether it is a brief spike on the way up or a ridge "
-            "that holds across the pull. A ridge is the one that matters."
+            "overshooting the setpoint; where it runs below, once the pull is past "
+            "spool, boost is falling short of it. Read the error panel underneath "
+            "to see by how much, and whether it is a brief spike or dip on the way "
+            "up or a ridge that holds across the pull. A ridge is the one that "
+            "matters, in either direction."
         ),
         panels=(
             PanelSpec(

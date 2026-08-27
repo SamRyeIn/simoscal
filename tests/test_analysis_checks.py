@@ -20,6 +20,11 @@ from simoscal.analysis import (
     load_logset,
     run_battery,
 )
+from simoscal.analysis.checks import (
+    SHORTFALL_AREA_KPA_S,
+    SHORTFALL_WATCH_KPA,
+    WG_I_CARRY_PCT,
+)
 from simoscal.analysis.registry import Check
 
 from tests.faultinject import PullSpec, build_folder
@@ -134,6 +139,101 @@ def test_boost_sustained_ridge_high_without_peak(tmp_path):
     boost = _by_id(result, "boost")[0]
     assert boost.severity == Severity.HIGH
     assert boost.evidence["peak_overshoot_kpa"] < 20.0
+
+
+# --------------------------------------------------------------------------- #
+# Boost shortfall (back-test finding 3 — the battery was overshoot-only)
+# --------------------------------------------------------------------------- #
+def test_shortfall_clean_base_reports_nothing_found(tmp_path):
+    """PUT tracking setpoint exactly is Low, and says so rather than going silent."""
+    result = _run(tmp_path, [PullSpec()])
+    sf = _by_id(result, "boost_shortfall")[0]
+    assert sf.severity == Severity.LOW
+    assert sf.evidence["zones"] == []
+
+
+def test_shortfall_spool_alone_is_not_a_finding(tmp_path):
+    """A pure overshoot pull must not produce a shortfall from its spool ramp."""
+    result = _run(tmp_path, [PullSpec(put_overshoot=25.0)])
+    assert _sev(result, "boost_shortfall") == Severity.LOW
+    # ... and the overshoot check still fires on the same log.
+    assert _sev(result, "boost") == Severity.HIGH
+
+
+def test_shortfall_sustained_is_medium_never_high(tmp_path):
+    result = _run(tmp_path, [PullSpec(put_shortfall=8.0)])
+    sf = _by_id(result, "boost_shortfall")[0]
+    assert sf.severity == Severity.MEDIUM
+    assert result.high_findings == []
+    zone = sf.evidence["zones"][0]
+    assert zone["qualifies"] is True
+    assert zone["mean_kpa"] == pytest.approx(8.0, abs=0.5)
+    # PUT reached setpoint before falling short, so this is a tracking shortfall.
+    assert zone["attained_setpoint"] is True
+
+
+def test_shortfall_below_the_lines_is_low(tmp_path):
+    """2 kPa over ~2 s clears neither the mean nor the area line."""
+    result = _run(tmp_path, [PullSpec(put_shortfall=2.0)])
+    sf = _by_id(result, "boost_shortfall")[0]
+    assert sf.severity == Severity.LOW
+    assert sf.evidence["zones"][0]["qualifies"] is False
+
+
+def test_shortfall_shallow_but_long_qualifies_on_area(tmp_path):
+    """A 4 kPa shortfall held across a whole pull is a finding on area alone."""
+    result = _run(tmp_path, [PullSpec(n=160, put_shortfall=4.0, put_shortfall_from=0.05)])
+    sf = _by_id(result, "boost_shortfall")[0]
+    assert sf.severity == Severity.MEDIUM
+    zone = sf.evidence["zones"][0]
+    assert zone["mean_kpa"] < SHORTFALL_WATCH_KPA
+    assert zone["area_kpa_s"] >= SHORTFALL_AREA_KPA_S
+
+
+def test_shortfall_never_attained_is_flagged_as_such(tmp_path):
+    """A whole-pull offset never reaches setpoint — a different claim, so labelled."""
+    result = _run(tmp_path, [PullSpec(put_overshoot=-8.0)])
+    sf = _by_id(result, "boost_shortfall")[0]
+    assert sf.severity == Severity.MEDIUM
+    assert sf.evidence["attained_setpoint"] is False
+
+
+def test_shortfall_integral_windup_names_the_feedforward(tmp_path):
+    """The R14/R15 signature: the loop winding up to cover the position feedforward."""
+    result = _run(tmp_path, [PullSpec(put_shortfall=8.0, wg_i_windup=20.0)], wastegate=True)
+    sf = _by_id(result, "boost_shortfall")[0]
+    assert sf.severity == Severity.MEDIUM
+    zone = sf.evidence["zones"][0]
+    assert zone["wg_i_gain_pct"] >= WG_I_CARRY_PCT
+    # Final sits above base in the clean fixture, so the gap is positive and the
+    # gate is nowhere near shut — this is the actionable branch, not the ceiling.
+    assert zone["wg_ff_gap_mean_pct"] > 0
+    assert zone["gate_shut_fraction"] == pytest.approx(0.0)
+
+
+def test_shortfall_gate_shut_is_reported_as_no_authority(tmp_path):
+    """Gate commanded shut across the zone: no controller table can help."""
+    result = _run(tmp_path, [PullSpec(put_shortfall=8.0,
+                                      freeze={"WG Pos Final (%)": 99.5})],
+                  wastegate=True)
+    sf = _by_id(result, "boost_shortfall")[0]
+    assert sf.severity == Severity.MEDIUM
+    assert sf.evidence["zones"][0]["gate_shut_fraction"] == pytest.approx(1.0)
+
+
+def test_shortfall_without_wastegate_channels_says_so(tmp_path):
+    """No WG channels: the finding still fires, with the authority fields empty."""
+    result = _run(tmp_path, [PullSpec(put_shortfall=8.0)])
+    zone = _by_id(result, "boost_shortfall")[0].evidence["zones"][0]
+    assert zone["wg_i_gain_pct"] is None
+    assert zone["gate_shut_fraction"] is None
+
+
+def test_shortfall_attributed_to_the_injected_pull_only(tmp_path):
+    result = _run(tmp_path, [PullSpec(), PullSpec(put_shortfall=8.0)])
+    sf = _by_id(result, "boost_shortfall")[0]
+    assert sf.evidence["qualifying_pulls"] == [2]
+    assert sf.pull_refs == (2,)
 
 
 # --------------------------------------------------------------------------- #

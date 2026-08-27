@@ -18,7 +18,7 @@ with the reason named (same policy as the ``needs_cal`` checks).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 
@@ -30,6 +30,7 @@ __all__ = [
     "CoverageResult",
     "DEFAULT_COVERAGE_SPECS",
     "compute_coverage",
+    "coverage_to_dict",
 ]
 
 
@@ -217,3 +218,53 @@ def compute_coverage(
         ))
 
     return results, skipped
+
+
+def cells_hit(counts) -> int:
+    """How many cells of a count grid were visited at least once."""
+    return int(np.count_nonzero(np.array(counts)))
+
+
+def coverage_to_dict(
+    results: Sequence[CoverageResult],
+    skipped: Sequence[Skipped],
+) -> dict:
+    """The JSON ``coverage`` section, with no plots and no filesystem.
+
+    Split out of the evidence layer so a caller with nothing to draw on — the
+    advice bundle, whose whole point is that the reader cannot plot — can carry
+    coverage without importing matplotlib. The evidence layer calls this and
+    then adds a ``plot`` key per table.
+
+    The ``skipped`` list travels with the results and is not optional. A reader
+    told which cells were visited also has to be told which tables could not be
+    answered for, or an absent table reads as an unvisited one.
+    """
+    return {
+        "results": [
+            {
+                "symbol": cov.symbol,
+                "description": cov.description,
+                "shape": list(cov.shape),
+                "x_channel": cov.x_channel,
+                "y_channel": cov.y_channel,
+                "x_breakpoints": cov.x_breakpoints,
+                "y_breakpoints": cov.y_breakpoints,
+                "counts_whole": cov.counts_whole,
+                "counts_wot": cov.counts_wot,
+                "total_whole": cov.total_whole,
+                "total_wot": cov.total_wot,
+                "cells_hit_whole": cells_hit(cov.counts_whole),
+                "cells_hit_wot": cells_hit(cov.counts_wot),
+            }
+            for cov in results
+        ],
+        "skipped": [
+            {
+                "symbol": s.check_id.removeprefix("coverage:"),
+                "reason": s.reason,
+                "missing_channels": list(s.missing_channels),
+            }
+            for s in skipped
+        ],
+    }

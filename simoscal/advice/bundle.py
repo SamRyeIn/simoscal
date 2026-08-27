@@ -55,6 +55,7 @@ __all__ = [
     "BundleFile",
     "bundle",
     "logs_section",
+    "source_calibration",
     "render",
     "summary_of",
     "write_bundle",
@@ -235,7 +236,13 @@ def _table_section(tune) -> list[dict]:
     return out
 
 
-def logs_section(paths: Sequence, *, names: Optional[Mapping[str, str]] = None) -> dict:
+def logs_section(
+    paths: Sequence,
+    *,
+    names: Optional[Mapping[str, str]] = None,
+    cal: Optional[Any] = None,
+    cal_notes: Sequence[str] = (),
+) -> dict:
     """The picked datalogs as the analysis battery's own findings document.
 
     The battery is the library's one description of what a log says — the same
@@ -243,20 +250,38 @@ def logs_section(paths: Sequence, *, names: Optional[Mapping[str, str]] = None) 
     ``python -m simoscal.analysis`` writes — so a bundle that re-summarised logs
     its own way would be a second opinion nobody maintains.
 
-    Two deliberate omissions. **No plot series**: the app's ``log_overlay`` and
+    **No plot series**, deliberately: the app's ``log_overlay`` and
     ``analyze_logs`` ops carry those because something is going to draw them,
     and here nothing is — it would be megabytes of samples for a reader who
-    cannot plot. **No calibration**: the cal-aware checks want the bin the logs
-    were *recorded on*, and this session's working buffer is a bin that has not
-    been flashed. They land in SKIPPED with their reason, which is the honest
-    answer; the table section carries the current calibration in full for anyone
-    wanting to reason about it directly.
+    cannot plot.
+
+    ``cal`` is the calibration the logs were **recorded on**, and passing it is
+    what makes the two ``needs_cal`` checks and the whole coverage section
+    computable. It used to be hard-coded to ``None`` on the reasoning that a
+    session's working buffer has not been flashed — true of the buffer, but the
+    courier's own prompt is *"I flashed this calibration and drove it, here are
+    the logs"*, and for that session the imported bin **is** the flashed one.
+    The back-test measured what the pessimistic default cost: three of four
+    answering sessions stopped one step short of an edit, twice saying in as many
+    words that they could not size a cell change without knowing which cells were
+    visited (``Docs/backtest/README.md``). Callers pass the *source* calibration
+    (:meth:`~simoscal.tune.project.Tune.source_space`), never the working buffer,
+    and say so in ``cal_notes`` — which is echoed into the document, because a
+    reader comparing a log against a calibration is owed the sentence saying
+    which one.
+
+    With no ``cal``, behaviour is exactly as before: both cal-aware checks and
+    every coverage table land in SKIPPED with their reason named. ``coverage`` is
+    present either way — a promised section that sometimes vanishes is worse than
+    one that is sometimes all skips.
 
     Imported lazily because the analysis package pulls numpy and the CSV reader,
     and a bundle exported with no logs should not pay for either.
     """
     from ..analysis import (
         CheckContext,
+        compute_coverage,
+        coverage_to_dict,
         default_battery,
         detect_pulls,
         findings_to_dict,
@@ -266,14 +291,50 @@ def logs_section(paths: Sequence, *, names: Optional[Mapping[str, str]] = None) 
 
     logset = load_logset_files(list(paths), names=dict(names or {}))
     pulls = detect_pulls(logset)
-    document = findings_to_dict(run_battery(default_battery(), CheckContext(
-        logset=logset, pulls=pulls, cal=None,
-    )))
+    ctx = CheckContext(logset=logset, pulls=pulls, cal=cal)
+    extra: dict[str, Any] = {"coverage": coverage_to_dict(*compute_coverage(ctx))}
+    if cal_notes:
+        extra["cal_notes"] = list(cal_notes)
+    document = findings_to_dict(run_battery(default_battery(), ctx), extra=extra)
     # The folder is a directory name on the exporting device — on Android a
     # content-addressed staging directory. It is not a fact about the logs and
     # would make one session's bundle device-dependent (D7).
     document.pop("folder", None)
     return document
+
+
+def source_calibration(tune) -> tuple[Optional[Any], list[str]]:
+    """``(cal, notes)`` — the calibration a session's bundled logs were driven on.
+
+    The *source* space, never the working buffer: the bin this session was opened
+    on, as it stood before any edit in this session. That is the calibration a
+    datalog picked into this session was actually recorded on, assuming the usual
+    loop — flash, drive, log, open the flashed bin to plan the next revision —
+    and the note says so in those words rather than leaving the reader to assume
+    it. A session that opened one bin and imported logs from a different one is
+    the case the note exists for: it names the bin by hash, so a reader who knows
+    otherwise can discount every cal-aware finding.
+
+    Returns ``(None, [])`` for a recovered session, which replayed its journal
+    onto the source bin rather than opening it fresh and so has no snapshot to
+    read. The cal-aware checks and coverage then SKIP, exactly as they did
+    before any of this was wired.
+    """
+    cal = None
+    try:
+        cal = tune.source_space()
+    except Exception:  # noqa: BLE001 - a bundle must export without a ghost
+        cal = None
+    if cal is None:
+        return None, []
+    return cal, [
+        "The calibration-aware checks and the coverage maps were run against "
+        "this session's imported bin as it stood before any edit in this session "
+        "(`provenance.bin_sha256`) — the calibration a log recorded on this "
+        "session's bin was driven on. If these logs came from some other bin, "
+        "every finding from `boost_cal`, `boost_p0234` and `coverage` is about "
+        "the wrong calibration and should be discounted.",
+    ]
 
 
 def _how_to_reply() -> dict:

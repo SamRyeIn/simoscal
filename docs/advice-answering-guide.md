@@ -100,20 +100,30 @@ The `logs` section is exactly what `python -m simoscal.analysis` writes: the sam
 checks, thresholds and pull detection, so you are reading the library's one
 description of what a log says rather than a summary written for you.
 
-| Key                | What it holds                                                                  |
-|--------------------|---------------------------------------------------------------------------------|
-| `pulls`            | Each detected pull: gear, rpm range, row range, peak boost, PUT error, knock, HPFP, lambda error, ambient conditions. |
-| `findings`         | Each check's verdict: `severity`, `title`, `message`, structured `evidence`, `pull_refs`. |
-| `skipped`          | Checks that did **not** run, each with its reason. Read this list.               |
-| `coverage`         | Which table cells the logged operating points actually visited.                  |
-| `battery` / `ran`  | Which checks exist and which of them ran.                                        |
-| `cal_resolved`     | Whether the cal-aware checks had a calibration.                                  |
+| Key               | What it holds                                                                                                                                                          |
+|-------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `pulls`           | Each detected pull: gear, rpm range, row range, peak boost, PUT error, knock, HPFP, lambda error, ambient conditions.                                                  |
+| `findings`        | Each check's verdict: `severity`, `title`, `message`, structured `evidence`, `pull_refs`.                                                                              |
+| `skipped`         | Checks that did **not** run, each with its reason. Read this list.                                                                                                     |
+| `logs[].channels` | The canonical channel ids each file carries. Check here before saying a channel is absent — a channel missing from the findings is not a channel missing from the log. |
+| `coverage`        | Which table cells the logged operating points actually visited: `results` per table, and a `skipped` list for the tables it could not answer for.                      |
+| `battery` / `ran` | Which checks exist and which of them ran.                                                                                                                              |
+| `cal_resolved`    | Whether the cal-aware checks had a calibration.                                                                                                                        |
+| `cal_notes`       | Which calibration that was, when there is one. Read it before you trust `boost_cal`, `boost_p0234` or `coverage`.                                                      |
 
-`cal_resolved` is normally **false** here, and that is deliberate: the cal-aware
-checks want the bin the logs were *recorded on*, and the session's working buffer
-has not been flashed. Those checks land in `skipped` with their reason. A finding
-that did not run is not a finding that passed — if the question you were asked
-depends on a skipped check, say so in `summary` instead of guessing.
+`cal_resolved` is normally **true**, and `cal_notes` says what was used: the
+session's imported bin as it stood before any edit made in that session — the
+calibration a log recorded on that bin was actually driven on. It is not the
+working buffer, so a table this session has already edited is compared against
+what was flashed, not against the pending change. Where `cal_resolved` is
+**false** the cal-aware checks and every coverage table are in `skipped` with
+their reason: a session recovered from its journal has no snapshot to read, and a
+session can also declare outright that its logs came from a different bin.
+
+A finding that did not run is not a finding that passed — if the question you
+were asked depends on a skipped check, say so in `summary` instead of guessing.
+And read `coverage.skipped` the same way: a table missing from `coverage.results`
+was not answered for, which is not the same as a table whose cells went unvisited.
 
 There are no plot series in a bundle. You have numbers, not pictures.
 
@@ -162,14 +172,22 @@ mistakes are common enough to name:
 - **Recommending against the symptom's table rather than the cause's.** A boost
   shortfall shows up as a pressure error; it is not necessarily fixed in a
   pressure table. Read the journal — the change that caused it may already be
-  in there.
+  in there. The `boost_shortfall` finding does part of this work for you: where
+  its evidence shows the wastegate integral winding up across the zone while the
+  final command runs above the position feedforward, the shortfall is the
+  feedforward's, and the pressure setpoint is the symptom. Where it shows the
+  gate already commanded shut, no controller table will help at all.
 - **Recommending against a limit when the setpoint is what binds.** A limit that
   never binds does nothing when you move it. If you cannot show from the logs
   that a limit is being reached, moving it changes nothing and spends a flash.
 
 Use `coverage` to check the cells you want to move were actually visited. A cell
 the car never operated in has no log evidence behind it, whatever you believe
-about its shape.
+about its shape. Coverage is computed for a curated set of tables only, and a
+table whose axis channels were not in the log is in `coverage.skipped` rather
+than `coverage.results` — so "not in coverage" means *not measured*, and the
+right move there is to reason from the findings' own evidence and say in
+`summary` which channel the next log needs.
 
 ### Size the change, do not guess it
 

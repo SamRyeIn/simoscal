@@ -34,6 +34,7 @@ from simoscal.advice.bundle import (
     bundle,
     logs_section,
     render,
+    source_calibration,
     summary_of,
     write_bundle,
 )
@@ -57,6 +58,7 @@ PATCHED_BIN = (
 )
 
 GRID = "pressure_quotient_max"
+GRID_SYMBOL = "IP_PQ_CHA_MAX"      # the same table, as `CalFile.get` addresses it
 
 PROVENANCE = {
     "profile": "SC8S50",
@@ -195,17 +197,19 @@ def test_a_picked_log_travels_as_the_batterys_own_findings(base_tune, r04_log_di
     assert "folder" not in logs
     # plot series are deliberately absent: nothing off-device is going to draw them
     assert "plots" not in logs
+    # but the channel list is present: a reader must be able to tell an absent
+    # channel from one no finding happened to mention.
+    assert "rpm" in logs["logs"][0]["channels"]
 
 
-def test_the_cal_aware_checks_skip_rather_than_judge_an_unflashed_buffer(
+def test_without_a_calibration_the_cal_aware_checks_skip_and_say_why(
     base_tune, r04_log_dir: Path
 ):
-    """The logs were recorded on a flashed bin; this session's buffer is not one.
+    """The opt-out path: no cal, so those checks and coverage SKIP, loudly.
 
-    Passing the working calibration would answer the cal-aware checks against
-    bytes that have never run in the car. They skip instead, with their reason
-    stated, and the table section carries the calibration in full for anyone who
-    wants to reason about it directly.
+    A session recovered from its journal has no source snapshot, and a session
+    can declare outright that its logs came from some other bin. Either way the
+    answer is the same and it is stated, not silent.
     """
     paths = sorted(r04_log_dir.glob("simostools-*.csv"))[:1]
     if not paths:
@@ -213,6 +217,60 @@ def test_the_cal_aware_checks_skip_rather_than_judge_an_unflashed_buffer(
     section = logs_section(paths)
     assert section["cal_resolved"] is False
     assert any(s["check_id"] for s in section["skipped"])
+    # coverage is present either way — a promised section that sometimes
+    # vanishes is worse than one that is sometimes all skips.
+    assert section["coverage"]["results"] == []
+    assert section["coverage"]["skipped"]
+    assert "cal_notes" not in section
+
+
+def test_the_logs_are_read_against_the_sessions_imported_bin(
+    base_tune, r04_log_dir: Path
+):
+    """Back-test findings 1 and 2: `cal=None` cost three of four usable answers.
+
+    The source space is the bin this session opened, before any edit made here —
+    the calibration a log picked into the session was driven on. Passing it is
+    what makes the two ``needs_cal`` checks and the coverage maps computable, and
+    the note that travels with it names which bin, so a reader whose logs came
+    from elsewhere can discount those findings.
+    """
+    paths = sorted(r04_log_dir.glob("simostools-*.csv"))[:1]
+    if not paths:
+        pytest.skip("no CSV in the R04 log folder")
+    cal, notes = source_calibration(base_tune)
+    assert cal is not None and notes
+    section = logs_section(paths, cal=cal, cal_notes=notes)
+
+    assert section["cal_resolved"] is True
+    assert "boost_cal" in section["ran"] and "boost_p0234" in section["ran"]
+    assert section["cal_notes"] == list(notes)
+    # At least one coverage table resolved, and the ones that did not say why.
+    assert section["coverage"]["results"]
+    for entry in section["coverage"]["results"]:
+        assert entry["x_breakpoints"] and entry["shape"]
+    for skip in section["coverage"]["skipped"]:
+        assert skip["reason"]
+
+
+def test_the_source_calibration_is_the_imported_bin_not_the_working_buffer(base_tune):
+    """An edit made in this session must not reach a log's calibration."""
+    before = float(base_tune.values(GRID)[0][0])
+    apply_op(base_tune, GRID, EditOp.SET, selection=Selection.cells([(0, 0)]),
+             value=before + 0.2, intent="move the ceiling after the log was recorded")
+    cal, _ = source_calibration(base_tune)
+    assert cal is not None
+    assert float(cal.get(GRID_SYMBOL).values[0][0]) == pytest.approx(before)
+
+
+def test_a_shortfall_finding_reaches_the_bundle(base_tune, r04_log_dir: Path):
+    """The check the back-test found missing has to be in a bundle's findings."""
+    paths = sorted(r04_log_dir.glob("simostools-*.csv"))[:1]
+    if not paths:
+        pytest.skip("no CSV in the R04 log folder")
+    section = logs_section(paths)
+    assert "boost_shortfall" in section["ran"]
+    assert any(f["check_id"] == "boost_shortfall" for f in section["findings"])
 
 
 # --------------------------------------------------------------------------- #

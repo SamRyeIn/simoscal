@@ -1782,6 +1782,29 @@ def test_advice_bundle_carries_a_verified_log(session: str, tmp_path: Path, r04_
     assert res["summary"]["logs"] == ["R04 pull"]
     payload = json.loads(Path(res["path"]).read_text(encoding="utf-8"))
     assert payload["logs"]["logs"][0]["name"] == "R04 pull"
+    # The logs are read against the session's imported bin, so the cal-aware
+    # checks and the coverage maps actually run (back-test findings 1 and 2).
+    assert payload["logs"]["cal_resolved"] is True
+    assert payload["logs"]["cal_notes"]
+    assert payload["logs"]["coverage"]["results"]
+
+
+def test_advice_bundle_can_declare_its_logs_came_from_another_bin(
+    session: str, tmp_path: Path, r04_log_dir: Path,
+):
+    """`logs_on_session_bin: false` sends the cal-aware checks back to SKIPPED."""
+    logs = sorted(r04_log_dir.glob("simostools-*.csv"))[:1]
+    if not logs:
+        pytest.skip("no CSV in the R04 log folder")
+    res = ok_result(call(
+        "advice_bundle", session_id=session, staging_dir=str(tmp_path),
+        logs_on_session_bin=False,
+        logs=[{"log_path": str(logs[0]), "log_sha256": _sha256(logs[0])}],
+    ))
+    payload = json.loads(Path(res["path"]).read_text(encoding="utf-8"))
+    assert payload["logs"]["cal_resolved"] is False
+    assert payload["logs"]["coverage"]["results"] == []
+    assert payload["logs"]["coverage"]["skipped"]
 
 
 def test_advice_bundle_refuses_a_changed_log_before_writing_anything(

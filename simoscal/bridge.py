@@ -1237,6 +1237,14 @@ def _op_advice_bundle(params: dict) -> dict:
     Every log is verified before anything is rendered, so a file that changed
     since it was imported fails with nothing written.
 
+    **The logs are read against the session's imported bin**, not against
+    nothing. The calibration-aware checks and the per-table coverage maps need
+    the bin a log was recorded on, and in the loop this op exists to serve —
+    flash, drive, log, open the flashed bin to plan the next revision — that is
+    the bin this session opened, before any edit made here. The bundle says so
+    in a note naming the bin by hash. A session whose logs came from some other
+    bin passes ``logs_on_session_bin: false`` and those checks SKIP instead.
+
     **Where it lands follows the build's rule, and for the build's reason.** The
     bundle goes into a fresh directory of its own under ``staging_dir/bundles/``
     and never onto a path an earlier export used: once its bytes have been
@@ -1249,7 +1257,7 @@ def _op_advice_bundle(params: dict) -> dict:
     Nothing here can move a byte or journal an entry; it reads a session and
     writes a description of it.
     """
-    from .advice.bundle import bundle, logs_section, write_bundle
+    from .advice.bundle import bundle, logs_section, source_calibration, write_bundle
     from .analysis import AnalysisError
     from .tune.build_service import filename_component
 
@@ -1272,8 +1280,17 @@ def _op_advice_bundle(params: dict) -> dict:
     if params.get("logs"):
         paths, display = _verified_logs(params)
         names = [display.get(str(p), p.stem) for p in paths]
+        # The cal-aware checks and the coverage maps read the session's *source*
+        # calibration — the imported bin before any edit here, which is the bin a
+        # log picked into this session was driven on. Passing None instead cost
+        # the back-test three of four usable answers; the note that travels with
+        # it says which bin it was, so a reader whose logs came from elsewhere can
+        # discount those findings. Opt out with `logs_on_session_bin: false`.
+        cal, cal_notes = (None, [])
+        if params.get("logs_on_session_bin", True):
+            cal, cal_notes = source_calibration(sess.tune)
         try:
-            logs = logs_section(paths, names=display)
+            logs = logs_section(paths, names=display, cal=cal, cal_notes=cal_notes)
         except AnalysisError as exc:
             raise BridgeError(
                 ErrorCode.ANALYSIS_ERROR,

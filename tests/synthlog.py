@@ -70,6 +70,9 @@ def clean_pull_columns(
     dt: float = 0.05,
     t0: float = 0.0,
     put_overshoot: float = 0.0,
+    put_shortfall: float = 0.0,
+    put_shortfall_from: float = 0.3,
+    wg_i_windup: float = 0.0,
     knock_cyl3: float = 0.0,
     lambda_error: float = 0.0,
     wheel_speeds: bool = False,
@@ -83,18 +86,28 @@ def clean_pull_columns(
     ``put_overshoot`` kPa added to actual PUT, ``knock_cyl3`` deg retard on
     cylinder 3, and ``lambda_error`` added to actual lambda.
 
+    ``put_shortfall`` kPa is subtracted from actual PUT over the *tail* of the
+    pull, from ``put_shortfall_from`` (a fraction of it) onward — so PUT reaches
+    setpoint first and falls short afterwards, which is the only shape the
+    shortfall check counts. A whole-pull offset (a negative ``put_overshoot``)
+    is the other case it must handle: boost that never made target at all.
+
     ``wheel_speeds`` adds the four per-wheel channels modeling a mild front-slip
     event in the middle third of the pull (front-driven, so FL/FR overrun RL/RR),
     giving the TC-activity plot a visible slip bump to draw. ``ign_table`` adds
     an ``Ign Table (°)`` reference channel a few degrees above delivered timing.
     ``wastegate`` adds ``WG Pos Final``/``WG Pos Base`` (final a touch above base)
     plus ``WG I Value``/``WG P-D Value`` (closed-loop trim terms; the integral sits
-    near zero by default and is driven to a clamp via ``freeze`` in tests).
+    near zero by default, is driven to a clamp via ``freeze`` in tests, and ramps
+    across the pull under ``wg_i_windup``).
     """
     time = [t0 + i * dt for i in range(n)]
     rpm = ramp(3000.0, 6500.0, n)
     put_sp = ramp(230.0, 250.0, n)
     put = [sp + put_overshoot for sp in put_sp]
+    if put_shortfall:
+        first = int(round(put_shortfall_from * n))
+        put = [v - put_shortfall if i >= first else v for i, v in enumerate(put)]
     lam_sp = const(0.85, n)
     lam = [sp + lambda_error for sp in lam_sp]
     # Airmass values follow the header's declared unit (mg/stk vs g/stk).
@@ -135,8 +148,11 @@ def clean_pull_columns(
         cols["WG Pos Base (%)"] = ramp(40.0, 70.0, n)
         cols["WG Pos Final (%)"] = ramp(45.0, 78.0, n)
         # A healthy integral sits near zero (small trim); a clamped one is driven
-        # strongly negative. Tests inject the clamp via ``freeze``.
-        cols["WG I Value (%)"] = const(-2.0, n)
+        # strongly negative (tests inject the clamp via ``freeze``), and a wound-up
+        # one ramps away from its resting trim across the pull — the closed loop
+        # steadily taking over from the position feedforward.
+        cols["WG I Value (%)"] = (ramp(-2.0, -2.0 + wg_i_windup, n) if wg_i_windup
+                                  else const(-2.0, n))
         cols["WG P-D Value (%)"] = const(0.0, n)
     if torque_lim:
         # No limiter active by default (code 0); tests inject a code via ``freeze``.

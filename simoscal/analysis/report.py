@@ -102,6 +102,12 @@ def _log_meta(result: BatteryResult) -> list[dict[str, Any]]:
             "n_gaps": len(q.gaps),
             "stuck_channels": list(q.stuck_channels),
             "unmapped_count": len(lf.unmapped_headers),
+            # The canonical channel ids this file actually carries. A reader with
+            # only the findings cannot otherwise tell an absent channel from an
+            # uninteresting one, and the back-test caught an answering session
+            # declining a sized edit because it could not confirm two channels
+            # were logged — they were (Docs/backtest/README.md).
+            "channels": sorted(lf.data.keys()),
         })
     return out
 

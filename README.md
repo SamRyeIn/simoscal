@@ -276,8 +276,14 @@ anywhere, and the answer comes back as a recommendations file. Both ops are
 read-only. `advice_bundle` writes one deterministic JSON file — every resolved
 table with its current physical values and axes (domain-owned ones included, or
 nothing could be recommended about boost), the journal, any verified datalogs as
-the analysis battery's own findings, the per-car safety brief, and provenance
-naming the profile, its `StructureSpec` and its address convention. The bin and
+the analysis battery's own findings *plus the per-table coverage maps*, the
+per-car safety brief, and provenance naming the profile, its `StructureSpec` and
+its address convention. The logs are read against the session's **imported** bin
+— the one that was flashed and driven, before any edit made in this session — so
+the calibration-aware checks and coverage actually run; a session whose logs came
+from a different bin passes `logs_on_session_bin: false` and they SKIP instead,
+with the reason named. The back-test that motivated this is
+`Docs/backtest/README.md` in the root repo. The bin and
 the XDF cross as hashes only; their bytes never enter a bundle, and a test
 asserts it against the real files. The same session state exported twice is
 byte-identical, which is what makes a back-test reproducible.
@@ -546,8 +552,8 @@ python -m simoscal.analysis --print-battery          # enumerate the battery, ru
 | `overlay_payload(ctx)` → `dict` | The detected pulls, each with its gauge-boost actual and setpoint traces, for drawing a logged pull behind the boost curves being edited. Organised by pull rather than by panel, and gear-trimmed. What the bridge's `log_overlay` op sends. |
 | `gear_trim_mask(ctx, pull)` → `ndarray` | Samples whose logged gear is the pull's attributed gear — drops the tail the DSG's gear channel mislabels before a shift lands. All-True when gear is unresolved. |
 | `detect_pulls(logset)` → `list[Pull]` | Segment WOT pulls + per-pull summary with environment context. |
-| `default_battery()` → `list[Check]` · `run_battery(checks, ctx)` → `BatteryResult` | The v1 battery (knock, boost, wastegate, lambda, rail, timing, turbo/heat, torque limiter, data quality, + a `needs_cal` boost-ceiling check) and its runner. |
-| `compute_coverage(ctx)` → `(results, skipped)` | Per-cell hit-count maps (whole-log + WOT-only) for the primary tuning tables via ECU-lookup simulation. |
+| `default_battery()` → `list[Check]` · `run_battery(checks, ctx)` → `BatteryResult` | The v1 battery (knock, boost overshoot, boost shortfall, wastegate, lambda, rail, timing, turbo/heat, torque limiter, data quality, + two `needs_cal` checks) and its runner. |
+| `compute_coverage(ctx)` → `(results, skipped)` · `coverage_to_dict(results, skipped)` → `dict` | Per-cell hit-count maps (whole-log + WOT-only) for the primary tuning tables via ECU-lookup simulation, and their plot-free JSON form — the same serialisation the advice bundle carries. |
 | `format_battery(checks)` → `str` | Print the enumerable battery (ids, channels, thresholds) without running it. |
 
 Output contract per folder: `analysis_findings.json` (sorted keys, fixed float
@@ -557,7 +563,8 @@ battery enumeration), and `plots/analysis_*.png`. Evidence plots follow one
 encoding rule — **quantity = line style, pull = color** (each pull an
 RPM-sorted solid line, setpoint/base/table dashed dark gray). The six per-check
 plots (`boost`, `knock`, `lambda`, `rail_pressure`, `turbo_heat`, `wastegate`)
-are referenced from their findings; three standalone plots are additive:
+are referenced from their findings — `boost` by two of them, since PUT against
+its setpoint is the evidence for a shortfall as much as for an overshoot; three standalone plots are additive:
 `ignition` (delivered vs table timing vs RPM), `overview_<log>` (one whole-log
 panel-stack per CSV vs time with detected pull windows shaded), and
 `tc_activity_<log>` (per CSV, inferring the switch-patch slip-based TC — wheel

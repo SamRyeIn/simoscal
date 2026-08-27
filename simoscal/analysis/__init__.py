@@ -73,6 +73,7 @@ from .coverage import (
     CoverageSpec,
     DEFAULT_COVERAGE_SPECS,
     compute_coverage,
+    coverage_to_dict,
 )
 from .evidence import AnalyzeResult, analyze_folder, resolve_bin, resolve_xdf
 from .series import (
@@ -129,6 +130,7 @@ __all__ = [
     "CoverageSpec",
     "DEFAULT_COVERAGE_SPECS",
     "compute_coverage",
+    "coverage_to_dict",
     "PLOT_SPECS",
     "PanelSpec",
     "PlotSpec",

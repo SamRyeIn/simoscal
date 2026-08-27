@@ -40,7 +40,7 @@ from typing import Callable, Optional
 import numpy as np
 
 from .checks import _KNOCK_CHANNELS, default_battery
-from .coverage import CoverageResult, compute_coverage
+from .coverage import CoverageResult, cells_hit, compute_coverage, coverage_to_dict
 from .log import load_logset
 from .pulls import detect_pulls
 from .registry import BatteryResult, CheckContext, run_battery
@@ -545,48 +545,28 @@ def _make_plots(ctx: CheckContext, folder: Path) -> dict[str, Path]:
     return out
 
 
-def _cells_hit(counts) -> int:
-    return int(np.count_nonzero(np.array(counts)))
-
-
 def _coverage_section(ctx, cov_results, cov_skipped, folder, plot_paths, make_plots) -> dict:
-    """Build the JSON ``coverage`` section, rendering a heatmap per table."""
+    """The JSON ``coverage`` section plus a rendered heatmap per table.
+
+    The section itself comes from :func:`~simoscal.analysis.coverage.coverage_to_dict`,
+    which the advice bundle also calls — one serialisation, so a bundle's
+    coverage and a folder's ``analysis_findings.json`` cannot describe the same
+    logs differently. All this layer adds is the ``plot`` key.
+    """
+    section = coverage_to_dict(cov_results, cov_skipped)
+    if not make_plots:
+        return section
     plot_dir = folder / _PLOTS_SUBDIR
-    if make_plots and cov_results:
+    if cov_results:
         plot_dir.mkdir(parents=True, exist_ok=True)
-    out_results = []
-    for cov in cov_results:
-        entry = {
-            "symbol": cov.symbol,
-            "description": cov.description,
-            "shape": list(cov.shape),
-            "x_channel": cov.x_channel,
-            "y_channel": cov.y_channel,
-            "x_breakpoints": cov.x_breakpoints,
-            "y_breakpoints": cov.y_breakpoints,
-            "counts_whole": cov.counts_whole,
-            "counts_wot": cov.counts_wot,
-            "total_whole": cov.total_whole,
-            "total_wot": cov.total_wot,
-            "cells_hit_whole": _cells_hit(cov.counts_whole),
-            "cells_hit_wot": _cells_hit(cov.counts_wot),
-        }
-        if make_plots:
-            path = plot_dir / f"analysis_coverage_{_sanitize(cov.symbol)}.png"
-            try:
-                if _plot_coverage(cov, path):
-                    entry["plot"] = f"{_PLOTS_SUBDIR}/{path.name}"
-            except Exception:
-                pass
-        out_results.append(entry)
-    return {
-        "results": out_results,
-        "skipped": [
-            {"symbol": s.check_id.removeprefix("coverage:"), "reason": s.reason,
-             "missing_channels": list(s.missing_channels)}
-            for s in cov_skipped
-        ],
-    }
+    for cov, entry in zip(cov_results, section["results"]):
+        path = plot_dir / f"analysis_coverage_{_sanitize(cov.symbol)}.png"
+        try:
+            if _plot_coverage(cov, path):
+                entry["plot"] = f"{_PLOTS_SUBDIR}/{path.name}"
+        except Exception:
+            pass
+    return section
 
 
 def _coverage_markdown(cov_results, cov_skipped) -> list[str]:
@@ -597,8 +577,8 @@ def _coverage_markdown(cov_results, cov_skipped) -> list[str]:
             n_cells = int(np.prod(cov.shape))
             rows.append([
                 cov.symbol,
-                f"{_cells_hit(cov.counts_whole)}/{n_cells}",
-                f"{_cells_hit(cov.counts_wot)}/{n_cells}",
+                f"{cells_hit(cov.counts_whole)}/{n_cells}",
+                f"{cells_hit(cov.counts_wot)}/{n_cells}",
                 str(cov.total_whole),
                 str(cov.total_wot),
             ])
@@ -621,10 +601,20 @@ def _coverage_markdown(cov_results, cov_skipped) -> list[str]:
     return L
 
 
+# Checks that read the same picture as another check. The boost plot draws PUT
+# against its setpoint and the signed error underneath, which is the shortfall
+# check's evidence exactly as much as the overshoot check's — rendering it twice
+# under two names would put two identical PNGs in the folder.
+_PLOT_ALIASES: dict[str, str] = {"boost_shortfall": "boost"}
+
+
 def _attach_plot_refs(result: BatteryResult, plot_paths: dict[str, Path]) -> BatteryResult:
+    def key(check_id: str) -> str:
+        return _PLOT_ALIASES.get(check_id, check_id)
+
     findings = tuple(
-        replace(f, plot_refs=(f"{_PLOTS_SUBDIR}/{plot_paths[f.check_id].name}",))
-        if f.check_id in plot_paths and not f.plot_refs else f
+        replace(f, plot_refs=(f"{_PLOTS_SUBDIR}/{plot_paths[key(f.check_id)].name}",))
+        if key(f.check_id) in plot_paths and not f.plot_refs else f
         for f in result.findings
     )
     return replace(result, findings=findings)
