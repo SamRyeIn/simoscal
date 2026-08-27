@@ -292,6 +292,15 @@ and advice the engine will not take mean different things to whoever is improvin
 the answering side). Nothing in `simoscal.advice` trusts the file: passing the
 schema means it is *readable*, and the replay is what makes it safe.
 
+Two documents carry the other half of that loop, and they are written for
+whoever is *answering* rather than for a caller of this library.
+[`docs/advice-schema.md`](docs/advice-schema.md) is the format a reply must
+meet, field by field, with the reason each closed set is closed.
+[`docs/advice-answering-guide.md`](docs/advice-answering-guide.md) is the
+method: how to read a bundle, how to get from a log finding to a sized change,
+and which rules cost a record if broken. The schema doc is the authority on
+shape; the guide is the authority on approach.
+
 ## API surface
 
 ### `CalFile`

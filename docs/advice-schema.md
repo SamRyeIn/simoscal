@@ -13,6 +13,11 @@ stakes; writing a *correct* one is the job.
 
 Implemented by `simoscal/advice/schema.py`. Current version: **1**.
 
+This document is the authority on *shape*. Its companion,
+[`advice-answering-guide.md`](advice-answering-guide.md), is the authority on
+*method* — how to read a bundle, how to get from a log finding to a sized
+change, and what to do when the honest answer is "nothing".
+
 ## Versioning
 
 `schema_version` is versioned **independently of `BRIDGE_VERSION`**: this file is
