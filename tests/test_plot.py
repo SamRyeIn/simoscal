@@ -386,11 +386,66 @@ def test_compare_heatmap_three_value_panels(tmp_path):
     assert _savefig_bytes(fig)
 
 
-def test_compare_tables_2d_writes_both_composites(tmp_path):
+def test_compare_figures_show_complete_bin_filenames_without_parent_paths(tmp_path):
+    a = _rt_2d([[1.0, 2.0], [3.0, 4.0]])
+    b = _rt_2d([[2.0, 3.0], [5.0, 4.0]])
+    delta = plot._delta(a, b)
+    names = {
+        "A: Complete_Reference_Name_R15.bin",
+        "B: Complete_Output_Name_R16.bin",
+    }
+
+    figures = (
+        plot._compare_heatmap_figure(
+            a, b, delta,
+            a_bin_name="/some/reference/Complete_Reference_Name_R15.bin",
+            b_bin_name="/some/output/Complete_Output_Name_R16.bin",
+        ),
+        plot._compare_surface_figure(
+            a, b, delta,
+            a_bin_name="/some/reference/Complete_Reference_Name_R15.bin",
+            b_bin_name="/some/output/Complete_Output_Name_R16.bin",
+        ),
+        plot._compare_columns_figure(
+            a, b, delta,
+            a_bin_name="/some/reference/Complete_Reference_Name_R15.bin",
+            b_bin_name="/some/output/Complete_Output_Name_R16.bin",
+        ),
+    )
+    for fig in figures:
+        text = {line for artist in fig.texts for line in artist.get_text().splitlines()}
+        assert names <= text
+        assert all("/some/" not in artist.get_text() for artist in fig.texts)
+        assert _savefig_bytes(fig)
+
+
+def test_compare_columns_three_panels_labeled_series_and_shared_y_scale(tmp_path):
+    a = _rt_2d([[1.0, 2.0], [3.0, 4.0]])
+    b = _rt_2d([[2.0, 3.0], [5.0, 4.0]])
+    delta = plot._delta(a, b)
+    fig = plot._compare_columns_figure(a, b, delta)
+
+    assert len(fig.axes) == 3
+    assert [ax.get_title() for ax in fig.axes] == ["A", "B", "Δ (B − A)"]
+    assert all(len(ax.get_lines()) >= 2 for ax in fig.axes)
+    assert [line.get_label() for line in fig.axes[0].get_lines()] == ["0", "1"]
+    np.testing.assert_array_equal(fig.axes[0].get_lines()[0].get_ydata(), [1.0, 3.0])
+    assert len({ax.get_ylim() for ax in fig.axes}) == 1
+    shared_lo, shared_hi = fig.axes[0].get_ylim()
+    assert shared_lo <= min(a.values.min(), b.values.min(), delta.min())
+    assert shared_hi >= max(a.values.max(), b.values.max(), delta.max())
+    assert _savefig_bytes(fig)
+
+
+def test_compare_tables_2d_writes_all_composites(tmp_path):
     a = _rt_2d([[1.0, 2.0], [3.0, 4.0]])
     b = _rt_2d([[2.0, 3.0], [5.0, 4.0]])
     paths = plot.compare_tables(a, b, tmp_path)
-    assert {p.name for p in paths} == {"CMP2D__compare_surface.png", "CMP2D__compare_heatmap.png"}
+    assert {p.name for p in paths} == {
+        "CMP2D__compare_surface.png",
+        "CMP2D__compare_heatmap.png",
+        "CMP2D__compare_columns.png",
+    }
     for p in paths:
         assert p.exists() and p.stat().st_size > 0
 
@@ -409,13 +464,29 @@ def test_compare_tables_1d_two_panel_and_delta(tmp_path):
     assert {p.name for p in paths} == {"CMP1D__compare_line.png"}
 
 
+def test_compare_line_figure_shows_bin_filenames(tmp_path):
+    a = _rt_1d([10.0, 20.0, 30.0])
+    b = _rt_1d([12.0, 20.0, 33.0])
+    fig = plot._compare_line_figure(
+        a, b, plot._delta(a, b),
+        a_bin_name="reference.bin", b_bin_name="output.bin",
+    )
+    text = "\n".join(artist.get_text() for artist in fig.texts)
+    assert "A: reference.bin" in text
+    assert "B: output.bin" in text
+
+
 def test_compare_tables_toggles(tmp_path):
     a = _rt_2d([[1.0, 2.0], [3.0, 4.0]])
     b = _rt_2d([[2.0, 3.0], [5.0, 4.0]])
-    only_heat = plot.compare_tables(a, b, tmp_path / "h", surface=False)
+    only_heat = plot.compare_tables(a, b, tmp_path / "h", surface=False, columns=False)
     assert {p.name for p in only_heat} == {"CMP2D__compare_heatmap.png"}
-    only_surf = plot.compare_tables(a, b, tmp_path / "s", heatmap=False)
+    only_surf = plot.compare_tables(a, b, tmp_path / "s", heatmap=False, columns=False)
     assert {p.name for p in only_surf} == {"CMP2D__compare_surface.png"}
+    only_columns = plot.compare_tables(
+        a, b, tmp_path / "c", surface=False, heatmap=False
+    )
+    assert {p.name for p in only_columns} == {"CMP2D__compare_columns.png"}
 
 
 def test_compare_before_after_single_view(mini_cal: CalFile, tmp_path):
@@ -427,7 +498,11 @@ def test_compare_before_after_single_view(mini_cal: CalFile, tmp_path):
     view.set(edited)
 
     paths = plot.compare_tables(before, view, tmp_path)
-    assert {p.name for p in paths} == {"SYM_10X10__compare_surface.png", "SYM_10X10__compare_heatmap.png"}
+    assert {p.name for p in paths} == {
+        "SYM_10X10__compare_surface.png",
+        "SYM_10X10__compare_heatmap.png",
+        "SYM_10X10__compare_columns.png",
+    }
     # The pre-edit RenderedTable still holds the old values (render_table snapshots).
     np.testing.assert_array_equal(before.values, before_values)
     # And the delta reflects the edit (within one raw LSB of the table's scaling).
@@ -438,7 +513,7 @@ def test_compare_identical_tables_all_zero_delta(tmp_path):
     a = _rt_2d([[1.0, 2.0], [3.0, 4.0]])
     b = _rt_2d([[1.0, 2.0], [3.0, 4.0]])
     paths = plot.compare_tables(a, b, tmp_path)  # must not raise on degenerate norm
-    assert len(paths) == 2
+    assert len(paths) == 3
     for p in paths:
         assert p.stat().st_size > 0
 
@@ -563,7 +638,9 @@ def test_compare_bins_matches_by_uniqueid(tmp_path):
     rel = {p.relative_to(tmp_path).as_posix() for p in paths}
     assert rel == {
         "Cat One/MULTI2X2__compare_surface.png", "Cat One/MULTI2X2__compare_heatmap.png",
+        "Cat One/MULTI2X2__compare_columns.png",
         "Cat Two/MULTI2X2__compare_surface.png", "Cat Two/MULTI2X2__compare_heatmap.png",
+        "Cat Two/MULTI2X2__compare_columns.png",
     }
     # Spot-check the delta: b - a = +10 across the table.
     va = cal_a.get("MULTI2X2")

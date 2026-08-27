@@ -14,9 +14,9 @@ with ``test_acceptance_export.py``.
     AE1  2D plot        surface + heatmap PNGs; every cell value overlaid
     AE2  1D plot        one line PNG; x = breakpoints, y = Z units
     AE3  scalar plot    no file produced
-    AE4  2D compare     3-panel heatmap composite: shared A/B scale, diverging delta
+    AE4  2D compare     3-panel heatmap, surface, and column-curves composites
     AE5  1D compare     2-panel composite (overlay + delta)
-    AE6  compare toggle surface off → heatmap only; heatmap off → surface only
+    AE6  compare toggles can select surface, heatmap, or column curves alone
     AE7  category batch  file set per non-scalar table under the category folder
     AE8  before/after   render_table snapshot compared through compare_tables
     AE9  mismatch        TableMismatchError naming both tables
@@ -115,7 +115,8 @@ def test_ae4_2d_compare_composites(mini_cal: CalFile, tmp_path):
     )
     paths = compare_tables(a, b, tmp_path)
     assert {p.name for p in paths} == {
-        "SYM_10X10__compare_surface.png", "SYM_10X10__compare_heatmap.png"
+        "SYM_10X10__compare_surface.png", "SYM_10X10__compare_heatmap.png",
+        "SYM_10X10__compare_columns.png",
     }
 
     delta = plot._delta(a, b)
@@ -159,10 +160,18 @@ def test_ae6_compare_toggles(mini_cal: CalFile, tmp_path):
         x_labels=a.x_labels, y_labels=a.y_labels, x_units=a.x_units,
         y_units=a.y_units, values=a.values + 1.0,
     )
-    heat_only = compare_tables(a, b, tmp_path / "h", surface=False)
+    heat_only = compare_tables(
+        a, b, tmp_path / "h", surface=False, columns=False
+    )
     assert {p.name for p in heat_only} == {"SYM_10X10__compare_heatmap.png"}
-    surf_only = compare_tables(a, b, tmp_path / "s", heatmap=False)
+    surf_only = compare_tables(
+        a, b, tmp_path / "s", heatmap=False, columns=False
+    )
     assert {p.name for p in surf_only} == {"SYM_10X10__compare_surface.png"}
+    columns_only = compare_tables(
+        a, b, tmp_path / "c", surface=False, heatmap=False
+    )
+    assert {p.name for p in columns_only} == {"SYM_10X10__compare_columns.png"}
 
 
 # --------------------------------------------------------------------------- #
@@ -188,7 +197,8 @@ def test_ae8_before_after_single_cal(mini_cal: CalFile, tmp_path):
     view.set(before.values + 4.0)
     paths = compare_tables(before, view, tmp_path)
     assert {p.name for p in paths} == {
-        "SYM_10X10__compare_surface.png", "SYM_10X10__compare_heatmap.png"
+        "SYM_10X10__compare_surface.png", "SYM_10X10__compare_heatmap.png",
+        "SYM_10X10__compare_columns.png",
     }
     # The pre-edit snapshot survived the edit (render_table does not alias).
     np.testing.assert_array_equal(before.values, snapshot)

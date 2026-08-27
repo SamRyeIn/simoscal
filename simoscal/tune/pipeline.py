@@ -482,6 +482,8 @@ def _compare_plots(
                 render_table(before_cals[space_name].get(key)),
                 after_cals[space_name].get(key),
                 png_dir,
+                a_bin_name=Path(reference_bin).name,
+                b_bin_name=bin_path.name,
             )
         except TableMismatchError:
             written = []  # axis re-breakpointed; the report's detail covers it

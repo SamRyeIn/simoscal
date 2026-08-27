@@ -361,10 +361,15 @@ has no window/backend side effects.
   labeled, TunerPro-style).
 - **1D** table → a **line** plot. **Scalar** (1×1) → nothing produced.
 - **`compare_tables(a, b)`** is provenance-agnostic — two `.bin`s *or*
-  before/after one edit. Delta is `b − a`. 2D → a 3-panel composite (A and B on
-  a shared scale, delta on its own zero-centered diverging scale); 1D → a 2-panel
+  before/after one edit. Delta is `b − a`. 2D → 3-panel surface, heatmap, and
+  column-curves composites. The column-curves view plots one labeled curve per
+  matrix column and uses one Y scale across A, B, and delta. 1D → a 2-panel
   composite (overlay + delta). Mismatched shapes/axes **hard-fail** with
   `TableMismatchError` naming both tables — never a misleading plot.
+- Tune-build comparison figures identify provenance at the top with the complete
+  reference filename as A and the complete built filename as B. Standalone
+  callers can supply the same annotation through `a_bin_name=` and
+  `b_bin_name=`.
 
 ```python
 from simoscal import (CalFile, SC8S50_STRUCTURE, plot_tables, compare_bins,
@@ -386,19 +391,20 @@ view.set_cell(0, 0, 12.5)
 compare_tables(before, view, "review/")
 ```
 
-| Member | Description |
-|--------|-------------|
-| `plot_table(source, out_dir, *, surface=True, heatmap=True, value_cmap="viridis", fmt="{:.4g}", elev=30, azim=-120)` | Render one table (`TableView` or `RenderedTable`) to PNG(s), flat into `out_dir`. Returns written paths. |
-| `compare_tables(a, b, out_dir, *, surface=True, heatmap=True, value_cmap="viridis", delta_cmap="RdBu_r", ...)` | Composite comparison of two views of one table (`b − a`). Raises `TableMismatchError` on shape/axis mismatch. |
-| `plot_tables(cal, out_dir, *, symbols=None, category=None, all_tables=False, ...)` | Batch-plot a selection into per-category subfolders (`_uncategorized/` for a category-less table). |
-| `compare_bins(cal_a, cal_b, out_dir, *, symbols=None, category=None, all_tables=False, ...)` | Batch-compare a selection across two bins, matched by `uniqueid` (fails loud if `cal_b` lacks a match). |
-| `TableMismatchError` | Raised by the compare path when two tables are not comparable. |
+| Member                                                                                                                     | Description                                                                                                   |
+|----------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------|
+| `plot_table(source, out_dir, *, surface=True, heatmap=True, value_cmap="turbo", fmt="{:.4g}", elev=30, azim=-120)`         | Render one table (`TableView` or `RenderedTable`) to PNG(s), flat into `out_dir`. Returns written paths.      |
+| `compare_tables(a, b, out_dir, *, surface=True, heatmap=True, columns=True, value_cmap="turbo", delta_cmap="RdBu_r", ...)` | Composite comparison of two views of one table (`b − a`). Raises `TableMismatchError` on shape/axis mismatch. |
+| `plot_tables(cal, out_dir, *, symbols=None, category=None, all_tables=False, ...)`                                         | Batch-plot a selection into per-category subfolders (`_uncategorized/` for a category-less table).            |
+| `compare_bins(cal_a, cal_b, out_dir, *, symbols=None, category=None, all_tables=False, columns=True, ...)`                 | Batch-compare a selection across two bins, matched by `uniqueid` (fails loud if `cal_b` lacks a match).       |
+| `TableMismatchError`                                                                                                       | Raised by the compare path when two tables are not comparable.                                                |
 
 Output model: one PNG set per table under `out_dir/<category>/`; a multi-category
 table is duplicated under each of its categories (mirroring Phase 2 xlsx). Files
 are `<name>__<kind>.png` where `name` = symbol → title → uniqueid and `kind` ∈
 {`surface`, `heatmap`, `line`, `compare_surface`, `compare_heatmap`,
-`compare_line`}. Defaults: `viridis` values / `RdBu_r` delta, both overridable
+`compare_columns`, `compare_line`}. Defaults: `turbo` values / `RdBu_r` delta,
+both overridable
 (e.g. `value_cmap="turbo"` for a TunerPro-like look); surfaces bake in a fixed
 camera (`elev=30, azim=-120`, tunable) since the PNG is non-interactive.
 

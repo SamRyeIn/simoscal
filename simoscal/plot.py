@@ -12,6 +12,8 @@ any selection of tables into static images:
 plus a provenance-agnostic :func:`compare_tables` that produces fixed composite
 comparison images (3-panel for 2D, 2-panel for 1D) from two views of the same
 calibration item — two ``.bin``\\ s *or* before/after one in-session edit.
+The 2D comparison set also includes a 3-panel **column-curves** view: every
+matrix column is a labeled line over the row-axis breakpoints.
 
 matplotlib is used **headless via the object API only** — the module constructs
 :class:`matplotlib.figure.Figure` objects directly and never imports
@@ -122,6 +124,40 @@ def _apply_fig_title(fig, rt: RenderedTable) -> None:
     if desc:
         fig.text(0.5, 0.945, desc, ha="center", va="top",
                  fontsize=9, style="italic", color="0.35")
+
+
+def _apply_compare_header(
+    fig: Figure,
+    rt: RenderedTable,
+    *,
+    a_bin_name: Optional[Union[str, Path]] = None,
+    b_bin_name: Optional[Union[str, Path]] = None,
+) -> None:
+    """Add the table title and centered A/B BIN filename provenance.
+
+    Paths are reduced to their complete basenames: the filename is the useful
+    review identity, while embedding machine-specific parent directories would
+    make otherwise identical artifacts differ across workspaces.
+    """
+    _apply_fig_title(fig, rt)
+    provenance = []
+    if a_bin_name is not None:
+        provenance.append(f"A: {Path(a_bin_name).name}")
+    if b_bin_name is not None:
+        provenance.append(f"B: {Path(b_bin_name).name}")
+    if provenance:
+        fig.text(
+            0.5,
+            0.905,
+            "\n".join(provenance),
+            ha="center",
+            va="top",
+            fontsize=8,
+            family="monospace",
+            linespacing=1.2,
+            zorder=100,
+            bbox={"facecolor": "white", "edgecolor": "none", "pad": 1.5},
+        )
 
 
 def _text_color(rgba) -> str:
@@ -511,6 +547,8 @@ def _compare_heatmap_figure(
     value_cmap: str = _VALUE_CMAP,
     delta_cmap: str = _DELTA_CMAP,
     fmt: str = _CELL_FMT,
+    a_bin_name: Optional[Union[str, Path]] = None,
+    b_bin_name: Optional[Union[str, Path]] = None,
 ) -> Figure:
     """A 3-panel heatmap composite: A and B on a shared scale, delta diverging."""
     vmin, vmax = _shared_limits(rt_a, rt_b)
@@ -532,7 +570,10 @@ def _compare_heatmap_figure(
 
     fig.colorbar(im_a, ax=[ax_a, ax_b], label=rt_a.units or "", shrink=0.7)
     fig.colorbar(im_d, ax=ax_d, label=rt_a.units or "", shrink=0.7)
-    _apply_fig_title(fig, rt_a)
+    _apply_compare_header(
+        fig, rt_a, a_bin_name=a_bin_name, b_bin_name=b_bin_name
+    )
+    fig.subplots_adjust(top=0.80)
     return fig
 
 
@@ -546,6 +587,8 @@ def _compare_surface_figure(
     elev: float = _ELEV,
     azim=_AZIM_AUTO,
     adaptive_azim: bool = True,
+    a_bin_name: Optional[Union[str, Path]] = None,
+    b_bin_name: Optional[Union[str, Path]] = None,
 ) -> Figure:
     """A 3-panel surface composite: A and B on a shared scale, delta diverging.
 
@@ -563,7 +606,7 @@ def _compare_surface_figure(
     dmin, dmax = _diverging_limits(delta)
     delta_norm = colors.TwoSlopeNorm(vmin=dmin, vcenter=0.0, vmax=dmax)
 
-    fig = Figure(figsize=(15.0, 5.0))
+    fig = Figure(figsize=(15.0, 6.0))
     specs = [
         (1, rt_a.values, value_cmap, value_norm, "A"),
         (2, rt_b.values, value_cmap, value_norm, "B"),
@@ -579,7 +622,94 @@ def _compare_surface_figure(
         ax.view_init(elev=elev, azim=az)
         ax.set_box_aspect((1, 1, 0.6))
         fig.colorbar(surf, ax=ax, shrink=0.5)
-    _apply_fig_title(fig, rt_a)
+    _apply_compare_header(
+        fig, rt_a, a_bin_name=a_bin_name, b_bin_name=b_bin_name
+    )
+    fig.subplots_adjust(top=0.68, bottom=0.04)
+    return fig
+
+
+def _comparison_line_limits(*arrays: np.ndarray) -> tuple[float, float]:
+    """A padded Y range spanning every array in a line comparison.
+
+    The column-curves comparison intentionally uses this one range for A, B,
+    and ``B - A``. A small pad keeps extrema off the axes frame; constant data
+    gets a deterministic non-degenerate range rather than matplotlib's
+    per-axes automatic expansion.
+    """
+    lo = min(float(np.min(values)) for values in arrays)
+    hi = max(float(np.max(values)) for values in arrays)
+    span = hi - lo
+    pad = span * 0.05 if span else max(abs(lo) * 0.05, 1.0)
+    return lo - pad, hi + pad
+
+
+def _compare_columns_figure(
+    rt_a: RenderedTable,
+    rt_b: RenderedTable,
+    delta: np.ndarray,
+    *,
+    value_cmap: str = _VALUE_CMAP,
+    a_bin_name: Optional[Union[str, Path]] = None,
+    b_bin_name: Optional[Union[str, Path]] = None,
+) -> Figure:
+    """A 3-panel line composite with one labeled curve per table column.
+
+    Curves run over the row-axis breakpoints and are keyed by their column-axis
+    breakpoint. Colors and labels are identical across A, B, and ``B - A``;
+    all three panels also receive the exact same Y limits so their vertical
+    shapes and magnitudes can be compared directly.
+    """
+    row_axis = np.asarray(rt_a.y_labels, dtype=float)
+    column_axis = np.asarray(rt_a.x_labels, dtype=float)
+    line_colors = colormaps[value_cmap](np.linspace(0.05, 0.95, len(column_axis)))
+    ylim = _comparison_line_limits(rt_a.values, rt_b.values, delta)
+
+    fig = Figure(figsize=(15.0, 5.0))
+    panels = (
+        (rt_a.values, "A"),
+        (rt_b.values, "B"),
+        (delta, "Δ (B − A)"),
+    )
+    axes = []
+    for pos, (values, title) in enumerate(panels, start=1):
+        ax = fig.add_subplot(1, 3, pos)
+        for col, (column_value, color) in enumerate(zip(column_axis, line_colors)):
+            ax.plot(
+                row_axis,
+                values[:, col],
+                marker="o",
+                markersize=3,
+                linewidth=1.2,
+                color=color,
+                label=f"{column_value:g}",
+            )
+        if pos == 3:
+            ax.axhline(0.0, color="0.6", linewidth=0.8)
+        ax.set_xlabel(rt_a.y_units or "", fontweight="bold")
+        ax.set_ylabel(rt_a.units or "", fontweight="bold")
+        ax.set_title(title, fontsize=9)
+        ax.set_ylim(ylim)
+        ax.grid(True, which="both", alpha=0.3)
+        axes.append(ax)
+
+    legend_title = "Column value"
+    if rt_a.x_units:
+        legend_title += f" ({rt_a.x_units})"
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        title=legend_title,
+        loc="center right",
+        bbox_to_anchor=(0.995, 0.5),
+        fontsize=7,
+        title_fontsize=8,
+    )
+    _apply_compare_header(
+        fig, rt_a, a_bin_name=a_bin_name, b_bin_name=b_bin_name
+    )
+    fig.tight_layout(rect=(0.0, 0.0, 0.88, 0.80))
     return fig
 
 
@@ -590,6 +720,8 @@ def _compare_line_figure(
     *,
     value_cmap: str = _VALUE_CMAP,
     delta_cmap: str = _DELTA_CMAP,
+    a_bin_name: Optional[Union[str, Path]] = None,
+    b_bin_name: Optional[Union[str, Path]] = None,
 ) -> Figure:
     """A 2-panel line composite: A/B overlaid on a shared scale, delta below."""
     x = np.asarray(rt_a.x_labels, dtype=float)
@@ -599,7 +731,7 @@ def _compare_line_figure(
     ax_top.plot(x, rt_a.values[0], marker="o", label="A")
     ax_top.plot(x, rt_b.values[0], marker="s", label="B")
     ax_top.set_ylabel(rt_a.units or "", fontweight="bold")
-    ax_top.set_title(_axes_title(rt_a))
+    ax_top.set_title("A and B")
     ax_top.legend()
     ax_top.grid(True, which="both", alpha=0.3)
 
@@ -610,7 +742,10 @@ def _compare_line_figure(
     ax_bot.set_ylabel("Δ (B − A)", fontweight="bold")
     ax_bot.grid(True, which="both", alpha=0.3)
 
-    fig.tight_layout()
+    _apply_compare_header(
+        fig, rt_a, a_bin_name=a_bin_name, b_bin_name=b_bin_name
+    )
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.80))
     return fig
 
 
@@ -621,12 +756,15 @@ def compare_tables(
     *,
     surface: bool = True,
     heatmap: bool = True,
+    columns: bool = True,
     value_cmap: str = _VALUE_CMAP,
     delta_cmap: str = _DELTA_CMAP,
     fmt: str = _CELL_FMT,
     elev: float = _ELEV,
     azim=_AZIM_AUTO,
     adaptive_azim: bool = True,
+    a_bin_name: Optional[Union[str, Path]] = None,
+    b_bin_name: Optional[Union[str, Path]] = None,
 ) -> list[Path]:
     """Compare two views of the same table; write composite PNG(s) to ``out_dir``.
 
@@ -641,8 +779,12 @@ def compare_tables(
 
     * ``(1, 1)`` scalar → nothing produced (returns ``[]``).
     * single row (1D) → one ``<name>__compare_line.png`` (2-panel: overlay + delta).
-    * otherwise (2D) → ``<name>__compare_surface.png`` and/or
-      ``<name>__compare_heatmap.png`` (each a 3-panel composite), gated by toggle.
+    * otherwise (2D) → ``<name>__compare_surface.png``,
+      ``<name>__compare_heatmap.png``, and/or ``<name>__compare_columns.png``
+      (each a 3-panel composite), gated by its corresponding toggle.
+
+    ``a_bin_name`` and ``b_bin_name`` add centered provenance lines containing
+    each complete BIN filename. Parent directories are intentionally omitted.
 
     ``azim`` defaults to the :data:`_AZIM_AUTO` sentinel; see :func:`plot_table`
     for the adaptive / override semantics.
@@ -664,19 +806,31 @@ def compare_tables(
 
     if rows == 1:
         fig = _compare_line_figure(rt_a, rt_b, delta, value_cmap=value_cmap,
-                                   delta_cmap=delta_cmap)
+                                   delta_cmap=delta_cmap,
+                                   a_bin_name=a_bin_name,
+                                   b_bin_name=b_bin_name)
         written.append(_write_figure(fig, out / f"{stem}__compare_line.png"))
         return written
 
     if surface:
         fig = _compare_surface_figure(rt_a, rt_b, delta, value_cmap=value_cmap,
                                       delta_cmap=delta_cmap, elev=elev,
-                                      azim=azim, adaptive_azim=adaptive_azim)
+                                      azim=azim, adaptive_azim=adaptive_azim,
+                                      a_bin_name=a_bin_name,
+                                      b_bin_name=b_bin_name)
         written.append(_write_figure(fig, out / f"{stem}__compare_surface.png"))
     if heatmap:
         fig = _compare_heatmap_figure(rt_a, rt_b, delta, value_cmap=value_cmap,
-                                      delta_cmap=delta_cmap, fmt=fmt)
+                                      delta_cmap=delta_cmap, fmt=fmt,
+                                      a_bin_name=a_bin_name,
+                                      b_bin_name=b_bin_name)
         written.append(_write_figure(fig, out / f"{stem}__compare_heatmap.png"))
+    if columns:
+        fig = _compare_columns_figure(
+            rt_a, rt_b, delta, value_cmap=value_cmap,
+            a_bin_name=a_bin_name, b_bin_name=b_bin_name,
+        )
+        written.append(_write_figure(fig, out / f"{stem}__compare_columns.png"))
     return written
 
 
@@ -746,12 +900,15 @@ def compare_bins(
     all_tables: bool = False,
     surface: bool = True,
     heatmap: bool = True,
+    columns: bool = True,
     value_cmap: str = _VALUE_CMAP,
     delta_cmap: str = _DELTA_CMAP,
     fmt: str = _CELL_FMT,
     elev: float = _ELEV,
     azim=_AZIM_AUTO,
     adaptive_azim: bool = True,
+    a_bin_name: Optional[Union[str, Path]] = None,
+    b_bin_name: Optional[Union[str, Path]] = None,
 ) -> list[Path]:
     """Batch-compare the same tables across two bins, into per-category subfolders.
 
@@ -775,7 +932,9 @@ def compare_bins(
         for cat in _category_dirs(rt_a):
             written += compare_tables(
                 rt_a, rt_b, out / cat, surface=surface, heatmap=heatmap,
+                columns=columns,
                 value_cmap=value_cmap, delta_cmap=delta_cmap, fmt=fmt,
                 elev=elev, azim=azim, adaptive_azim=adaptive_azim,
+                a_bin_name=a_bin_name, b_bin_name=b_bin_name,
             )
     return written
