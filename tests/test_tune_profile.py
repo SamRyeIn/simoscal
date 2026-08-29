@@ -14,7 +14,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from dataclasses import replace
+
 from simoscal import CalFile, parse_xdf
+from simoscal.calfile import TableView
+from simoscal.model import ScalingEquation
+from simoscal.tune.project import Tune
 from simoscal.binimage import BinImage
 from simoscal.tune import profile as prof
 from simoscal.tune.profile import (
@@ -836,3 +841,139 @@ def test_an_override_is_refused_on_a_subtract_mode_xdf(tmp_path: Path) -> None:
             str(tampered), str(binp), structure=SCGA05.structure,
             base_offset=SCGA05.xdf_base_offset,
         )
+
+
+# --------------------------------------------------------------------------- #
+# Pinned layouts — the map is bound to a reviewed definition file (CR-...-02)
+# --------------------------------------------------------------------------- #
+# Resolution proves a definition file *names* this car's tables in the right
+# shapes. It says nothing about where those tables are or how their bytes
+# decode, and every gate after resolution — the journal, the readback, the byte
+# audit — is computed through that same file, so all of them agree with a table
+# that moved. The pin is the only check that compares the file with something
+# outside it.
+
+#: The z-axis declaration of `C_M_AIR_CYL_SP_MAX` — Maximum allowed airmass
+#: setpoint in the real SC8S50 XDF. Unique in the file, so the tamper below
+#: moves exactly one table and nothing else.
+_AIRMASS_Z_DECL = (
+    '<EMBEDDEDDATA mmedtypeflags="0x10006" mmedaddress="0x9bd4" '
+    'mmedelementsizebits="32" mmedcolcount="1" mmedrowcount="1" '
+    'mmedmajorstridebits="32" mmedminorstridebits="0" />'
+)
+
+
+def test_the_shipped_base_maps_are_fully_pinned() -> None:
+    """Every spec on a base profile carries a layout, and no pin is orphaned.
+
+    Enforced here rather than at import, following ``ungrouped``: what counts as
+    acceptable is per-profile, and a *derived* profile (a decoy, a subset) is
+    legitimately part-pinned. What must not happen is a spec added to a shipped
+    map arriving unauthenticated, or a renamed one leaving its pin behind.
+    """
+    for profile in (SC8S50, SCGA05):
+        assert profile.unpinned == [], (
+            f"{profile.name} has unpinned specs — re-run "
+            f"`python -m simoscal.tune.profiles pin {profile.name} ...`"
+        )
+        assert profile.stale_pins == [], (
+            f"{profile.name} pins names it no longer maps: {profile.stale_pins}"
+        )
+
+
+@pytest.mark.parametrize(
+    "key, field, value",
+    [
+        # A 4x6 uint16 grid carries every field except the float flag, which is
+        # only legal on a 32-bit element — so that one is mutated on the float32
+        # airmass ceiling instead.
+        ("IP_PUT_SP", "address", 0x1B6E6),
+        ("IP_PUT_SP", "elem_bits", 32),
+        ("IP_PUT_SP", "rows", 5),
+        ("IP_PUT_SP", "cols", 7),
+        ("IP_PUT_SP", "signed", True),
+        ("IP_PUT_SP", "little_endian", False),
+        ("IP_PUT_SP", "column_major", False),
+        ("IP_PUT_SP", "major_stride_bits", 8),
+        ("IP_PUT_SP", "minor_stride_bits", 16),
+        ("C_M_AIR_CYL_SP_MAX", "is_float", False),
+    ],
+)
+def test_layout_digest_moves_for_every_load_bearing_field(
+    real_cal: CalFile, key: str, field: str, value: object
+) -> None:
+    """Each field that decides which bytes a table is, or how they decode."""
+    view = real_cal.get(key)
+    before = prof.layout_digest(view)
+    emb = replace(view.table.z.embedded, **{field: value})
+    moved = replace(view.table, z=replace(view.table.z, embedded=emb))
+    assert prof.layout_digest(TableView(moved, real_cal)) != before, field
+
+
+def test_layout_digest_moves_when_the_scaling_changes(real_cal: CalFile) -> None:
+    """A re-scaled table writes different bytes for the same physical value."""
+    view = real_cal.get("C_M_AIR_CYL_SP_MAX")
+    before = prof.layout_digest(view)
+    rescaled = replace(
+        view.table,
+        z=replace(view.table.z, scaling=ScalingEquation.from_expression("X * 2")),
+    )
+    assert prof.layout_digest(TableView(rescaled, real_cal)) != before
+
+
+def test_layout_digest_ignores_what_changes_no_byte(real_cal: CalFile) -> None:
+    """A retitled table is the same table; the pin must not churn on metadata."""
+    view = real_cal.get("C_M_AIR_CYL_SP_MAX")
+    renamed = replace(view.table, title="Something else entirely")
+    assert prof.layout_digest(TableView(renamed, real_cal)) == prof.layout_digest(view)
+
+
+def test_layout_digest_ignores_the_packed_stride_spelling(real_bin: Path) -> None:
+    """Two definition files for one car must agree on every pinned layout.
+
+    ``SC8S50.V1.0.xdf`` writes a major stride of ``elem_bits`` where
+    ``SC8S50.ALL.xdf`` writes ``0``, for the very same tables. Both mean packed
+    contiguous — the same bytes — so a pin that moved between them would be
+    noise, and noise is what gets a real refusal ignored.
+    """
+    alternate = Path(__file__).resolve().parents[1] / "xdf" / "SC8S50.ALL.xdf"
+    if not alternate.is_file():
+        pytest.skip(f"alternate XDF not present: {alternate}")
+    cal = CalFile.open(str(alternate), str(real_bin), structure=SC8S50_STRUCTURE)
+    assert prof.pin_layouts(replace(SC8S50, table_layouts={}), cal) == dict(
+        SC8S50.table_layouts
+    )
+
+
+def test_a_table_that_moved_is_refused_before_anything_is_written(
+    real_xdf: Path, real_bin: Path, tmp_path: Path
+) -> None:
+    """The reproducer from CR-20260828-02, end to end.
+
+    Move one table four bytes along in a copy of the reviewed XDF, changing
+    nothing else. Its symbol still resolves and its shape still matches, so
+    before the pins this built a verified, shareable bin whose airmass ceiling
+    was written at ``0x209bd8`` while the real calibration sat at ``0x209bd4``.
+    The refusal has to land at resolution, which is before a session exists.
+    """
+    text = real_xdf.read_text(encoding="utf-8", errors="surrogateescape")
+    assert text.count(_AIRMASS_Z_DECL) == 1, "the tamper anchor is no longer unique"
+    tampered = tmp_path / "moved-table.xdf"
+    tampered.write_text(
+        text.replace(_AIRMASS_Z_DECL, _AIRMASS_Z_DECL.replace("0x9bd4", "0x9bd8"), 1),
+        encoding="utf-8", errors="surrogateescape",
+    )
+
+    cal = CalFile.open(str(tampered), str(real_bin), structure=SC8S50_STRUCTURE)
+    with pytest.raises(ProfileResolutionError) as excinfo:
+        resolve(SC8S50, cal, xdf_label=str(tampered))
+    misses = {m.name: m for m in excinfo.value.misses}
+    assert set(misses) == {"airmass_setpoint_max"}, (
+        "exactly the moved table may fail; anything else means the tamper hit "
+        "more than one declaration"
+    )
+    assert "layout" in misses["airmass_setpoint_max"].reason
+
+    # And through the public door, where a revision script would meet it.
+    with pytest.raises(ProfileResolutionError):
+        Tune.open(SC8S50, xdf=tampered, bin=real_bin)

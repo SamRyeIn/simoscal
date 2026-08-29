@@ -34,6 +34,12 @@ What is pinned here is the **decision and its loudness**, not the wording:
   together is declared by the profile and reached through it, so SC8S50's sets
   no longer travel to another car — and a car that has not declared a required
   set is refused rather than defaulted.
+* F10 the bin and the definition file must be the *same* car (CR-20260828-01,
+  -03): identification reads the XDF and never opens the bin, so crossing the
+  two real sets was accepted in both directions, and a bin truncated at the end
+  of its calibration block passed every checksum and every build gate. Both are
+  now refused at both entry points — ``preflight`` and ``Tune.open`` — with a
+  control that the matched pairings still open.
 
 The A05 files are a third party's calibration and are **not committed** — like
 the SC8S50 files, they are gitignored and you drop your own copies in. Every
@@ -73,7 +79,7 @@ from simoscal.tune.profiles import (
     SCGA05,
     patch_profile_for,
 )
-from simoscal.tune.project import TuneError, _open_shared_space
+from simoscal.tune.project import Tune, TuneError, _open_shared_space
 from simoscal.tune.profiles.switchpatch_2933 import (
     SWITCH_PATCH_2933,
     build_switch_patch_profile,
@@ -379,6 +385,119 @@ def test_f2_preflight_does_not_modify_the_foreign_files() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# F10 — the bin and the definition file must be the same car (CR-20260828-01/03)
+# --------------------------------------------------------------------------- #
+# Profile identification reads the *XDF*. It never opens the bin, so on its own
+# it cannot tell "this is an A05 calibration" from "this is an A05 definition
+# file". Crossing the two real sets is the sharpest available test of that, and
+# it used to come back READY and writable in both directions.
+
+
+@pytest.mark.parametrize(
+    "binary, definition, identified_as",
+    [
+        ("s50_bin_a05_xdf", "A05", "SCGA05"),
+        ("a05_bin_s50_xdf", "S50", "SC8S50"),
+    ],
+)
+def test_f10_a_crossed_bin_and_xdf_are_blocked(binary, definition, identified_as):
+    """Both real crossed pairings are refused, before any session exists."""
+    _require(S50_BIN, S50_XDF, A05_BIN, A05_XDF)
+    bin_path, xdf_path = (
+        (S50_BIN, A05_XDF) if binary == "s50_bin_a05_xdf" else (A05_BIN, S50_XDF)
+    )
+    v = preflight(bin_path, xdf_path)
+    assert v.status == BLOCKED
+    assert not v.ok_to_edit and not v.writable and not v.profile_matched
+    # The profile *did* resolve — that is the whole hazard — so the verdict has
+    # to say both things, or a reader cannot tell this refusal from "not ours".
+    assert v.profile_name == identified_as
+    assert v.advanced["profile_resolved"] is True
+    assert v.advanced["discovered_cal_file_offset"] != (
+        v.advanced["profile_cal_file_offset"]
+    )
+
+
+def test_f10_a_crossed_pairing_cannot_be_opened_directly_either():
+    """``Tune.open`` is a second front door and enforces the same rule.
+
+    A guard only ``preflight`` honours is not a guard: a revision script, a demo
+    or a test calls ``Tune.open`` directly. The refusal has to arrive before a
+    session exists, so nothing can be written through the wrong map.
+    """
+    _require(S50_BIN, S50_XDF, A05_BIN, A05_XDF)
+    for profile, xdf_path, bin_path in (
+        (SCGA05, A05_XDF, S50_BIN),
+        (SC8S50, S50_XDF, A05_BIN),
+    ):
+        with pytest.raises(TuneError) as excinfo:
+            Tune.open(profile, xdf=xdf_path, bin=bin_path)
+        assert f"not a {profile.name} calibration" in str(excinfo.value)
+
+
+def test_f10_a_bin_truncated_after_the_cal_block_is_blocked(tmp_path):
+    """A CAL-complete slice verifies both checksums and is still not an image.
+
+    ``SCGa05_cal.xdf`` numbers tables from the start of the calibration block, so
+    the XDF's declared region ends where the calibration does. A file truncated
+    exactly there keeps every CAL byte and enough ASW data for both checksums to
+    verify — it passed the size check, the checksum checks and every build gate,
+    while being 1.3 MB short of a flashable image (CR-20260828-03).
+    """
+    _require(A05_BIN, A05_XDF)
+    end_of_cal = 0x2BFC00
+    truncated = tmp_path / "a05-cal-only.bin"
+    truncated.write_bytes(A05_BIN.read_bytes()[:end_of_cal])
+
+    # The premise: this file really is checksum-clean. Without that, the test
+    # would be passing for the wrong reason.
+    assert all(r.can_verify and not r.is_stale
+               for r in ck.verify_discovered(truncated.read_bytes()))
+
+    v = preflight(truncated, A05_XDF)
+    assert v.status == BLOCKED
+    assert not v.ok_to_edit and not v.writable
+    assert v.profile_name == "SCGA05"
+    assert v.advanced["expected_bin_size"] == "0x400000"
+
+    with pytest.raises(TuneError) as excinfo:
+        Tune.open(SCGA05, xdf=A05_XDF, bin=truncated)
+    assert "bytes" in str(excinfo.value)
+
+
+def test_f10_the_matched_pairings_are_unaffected():
+    """The control: both cars still open, or the gates above prove nothing."""
+    _require(S50_BIN, S50_XDF, A05_BIN, A05_XDF)
+    assert preflight(S50_BIN, S50_XDF).ok_to_edit
+    # A05 is READY only in the sense preflight means it; its own F2 tests pin the
+    # verdict in full. What matters here is that the new gates do not block it.
+    v = preflight(A05_BIN, A05_XDF)
+    assert v.status == READY and v.profile_matched
+
+
+def test_f10_a_stale_a05_bin_still_discovers_its_own_block_not_the_decoy():
+    """The decoy block is why relaxing discovery needed its own control.
+
+    ``discover_structure`` no longer requires a candidate's ECM3 to recompute
+    (CR-20260828-05), and this bin carries a second CRC-headered block at
+    SC8S50's offset. So the case that must not regress is an A05 image whose ECM3
+    *is* stale: with no exact sum to settle it, discovery still has to land on the
+    real CAL block rather than on the decoy or on an ambiguity refusal.
+    """
+    _require(A05_BIN)
+    clean = A05_BIN.read_bytes()
+    baseline = ck.discover_structure(clean, name="SCGA05")
+    data = bytearray(clean)
+    data[ck.verify(clean, baseline)[1].covered[0][0]] ^= 0xFF
+
+    got = ck.discover_structure(bytes(data), name="SCGA05")
+    assert got == baseline
+    assert got.cal_file_offset != A05_DECOY_CAL_FILE_OFFSET
+    reports = {r.name: r for r in ck.verify_discovered(bytes(data))}
+    assert reports["ECM3"].can_verify and reports["ECM3"].is_stale
+
+
+# --------------------------------------------------------------------------- #
 # F3 — the safety claim: shape-mismatched tables are refused, for shape reasons
 # --------------------------------------------------------------------------- #
 def test_f3_sc8s50_profile_does_not_resolve_against_a05(a05_cal: CalFile) -> None:
@@ -394,14 +513,26 @@ def test_f3_partial_match_is_still_a_refusal(a05_cal: CalFile) -> None:
     not find, would hand back a usable-looking map pointing partly at the wrong
     car. The all-or-nothing contract is what makes the write gate meaningful.
     """
+    # The hazard here is *name* resolution, so this half runs with the map's
+    # layout pins lifted. In force they refuse every name (asserted below), and a
+    # total refusal cannot exercise "most of it matched" — which is exactly the
+    # state a resolver might be tempted to accept.
+    unpinned = replace(SC8S50, table_layouts={})
     with pytest.raises(ProfileResolutionError) as excinfo:
-        resolve(SC8S50, a05_cal, xdf_label=str(A05_XDF))
+        resolve(unpinned, a05_cal, xdf_label=str(A05_XDF))
     misses = excinfo.value.misses
     total = len(SC8S50.names())
     assert 0 < len(misses) < total, (
         "expected a PARTIAL match — if every name missed, this fixture is no "
         "longer exercising the partial-match hazard this test exists for"
     )
+
+    # With the pins, nothing resolves at all: a name that binds here by symbol
+    # and shape still binds to a table at the other car's address, and the
+    # digest is what notices (CR-20260828-02).
+    with pytest.raises(ProfileResolutionError) as excinfo:
+        resolve(SC8S50, a05_cal, xdf_label=str(A05_XDF))
+    assert len(excinfo.value.misses) == total
 
 
 def test_f3_shape_mismatched_ignition_tables_are_refused_for_shape(
@@ -750,16 +881,38 @@ def test_f6_declaring_the_wrong_shape_for_a05_still_fails(a05_cal) -> None:
 
 
 def test_f6_the_a05_profile_does_not_resolve_against_the_sc8s50_xdf() -> None:
-    """The refusal is symmetric, and for the same reason in both directions."""
+    """The refusal is symmetric — and total, by two mechanisms at once.
+
+    The nine ignition grids are refused on shape, which is checked first and is
+    the claim this pair of tests was written for. Every *other* name is refused
+    on its pinned layout: it names a real table in this file, at this file's
+    address, which is not the address the A05 map was authored against
+    (CR-20260828-02). Both halves are asserted, so neither can quietly become
+    the only one doing the work.
+    """
     _require(S50_BIN, S50_XDF)
     s50_cal = CalFile.open(str(S50_XDF), str(S50_BIN), structure=SC8S50_STRUCTURE)
     with pytest.raises(ProfileResolutionError) as excinfo:
         resolve(SCGA05, s50_cal, xdf_label=str(S50_XDF))
     by_name = {m.name: m for m in excinfo.value.misses}
-    assert set(by_name) == SHAPE_MISMATCH_NAMES
+    assert set(by_name) == set(SCGA05.names()), "no A05 name may resolve here"
     for name in SHAPE_MISMATCH_NAMES:
         reason = by_name[name].reason
         assert "(16, 16)" in reason and "(16, 18)" in reason
+    others = sorted(set(SCGA05.names()) - SHAPE_MISMATCH_NAMES)
+    assert others, "the shape mismatches cannot be the whole profile"
+    for name in others:
+        reason = by_name[name].reason
+        assert "layout" in reason or "no table with this symbol" in reason, (
+            f"{name} missed for an unexpected reason: {reason}"
+        )
+
+    # And the pins are what does it: lift them and the same pairing resolves
+    # most of the map, which is the state this refusal exists to prevent.
+    unpinned = replace(SCGA05, table_layouts={})
+    with pytest.raises(ProfileResolutionError) as excinfo:
+        resolve(unpinned, s50_cal, xdf_label=str(S50_XDF))
+    assert set(m.name for m in excinfo.value.misses) == SHAPE_MISMATCH_NAMES
 
 
 def test_f6_the_a05_profile_is_registered_and_declares_a_structure() -> None:

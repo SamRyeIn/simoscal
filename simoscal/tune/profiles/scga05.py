@@ -568,6 +568,94 @@ TABLE_SETS: dict[str, tuple[str, ...]] = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# Pinned layouts
+# --------------------------------------------------------------------------- #
+# Where each mapped table *is* in `SCGa05_cal.xdf`, and how its bytes decode,
+# as of the review that authored this map. Generated — never hand-edited — by
+#
+#     python -m simoscal.tune.profiles pin SCGA05 \
+#         xdf/SCGa05_cal.xdf bin/3CN906259B__0002_SCGA05.bin
+#
+# Resolution matches a spec by symbol and by exact shape, and a definition file
+# can satisfy both while placing a table four bytes further along or reading it
+# as a different type. Every gate downstream of resolution — the edit journal,
+# the final-bin readback, the byte-level audit — is computed *through* this same
+# file, so all three would agree with the moved table and the build would come
+# back verified (CR-20260828-02). These digests are the one check that compares
+# the file against something outside it.
+#
+# Regenerate only from a definition file a human has reviewed, and say in the
+# commit message what changed and why. A digest that moves without a reason is
+# the finding, not the noise.
+_TABLE_LAYOUTS = {
+    "airmass_setpoint_max":             "e9a637ebf85047de",
+    "charge_air_diag_put_axis":         "d13ec094a61caeee",
+    "charge_air_diag_rpm_axis":         "2363777c6cb1335d",
+    "charge_air_pressure_max_diag":     "796e1a483de04aae",
+    "compressor_air_temp_max":          "9f504f594a524a68",
+    "compressor_air_temp_max_setpoint": "20fed2f47301e4f6",
+    "cylinder_head_temp_setpoint":      "6148d6b023c285ac",
+    "engine_speed_limit_vvl0":          "660737e8f5e6f44d",
+    "engine_speed_limit_vvl1":          "6dc3809fb1fabb52",
+    "ignition_base_vvl0_i0_e0":         "baf0fce137e3ff97",
+    "ignition_base_vvl0_i0_e1":         "85dd1f1f52a4afae",
+    "ignition_base_vvl0_i0_e2":         "d85dd279f366d20b",
+    "ignition_base_vvl0_i1_e0":         "2c09b7dc7044e4cc",
+    "ignition_base_vvl0_i1_e1":         "36e36a21b90701da",
+    "ignition_base_vvl0_i1_e2":         "d4f406aaa7df0cff",
+    "ignition_base_vvl0_i2_e0":         "e971e6a3cf876966",
+    "ignition_base_vvl0_i2_e1":         "3a9546cb1ddd709e",
+    "ignition_base_vvl0_i2_e2":         "9fe2aaa9da5e8765",
+    "ignition_temp_correction_basic":   "876443f00f8ce0d3",
+    "ignition_temp_rpm_axis":           "7c404651544ac1c2",
+    "intake_air_max_vvl0":              "b2f5c7cf00b29b58",
+    "intake_air_max_vvl1":              "01f849b0a9827865",
+    "knock_recovery_delay":             "01d16e738be835d9",
+    "knock_recovery_step":              "a097688ae504a57c",
+    "knock_retard":                     "0af0fb248a57a05a",
+    "lambda_basic":                     "406ff2a60b3af418",
+    "lambda_basic_hpdi":                "535c1667421854f3",
+    "lambda_basic_mpi":                 "e5228a0c93395c75",
+    "lambda_catalyst_min":              "e8767b0bd16d9fe6",
+    "lambda_full_load":                 "7547d823494a2ede",
+    "lambda_full_load_iat":             "a1282490769831a0",
+    "lambda_full_load_iat_hysteresis":  "63bb36503ee88dd1",
+    "lambda_full_load_iat_threshold":   "f04955bfc21a4a8d",
+    "lambda_setpoint_min":              "f30f2367ca376e16",
+    "lambda_turbo_min":                 "0b67b90035329780",
+    "manifold_pressure_limit_offset":   "81209b2e5f1c7467",
+    "manifold_pressure_max":            "61d2caeebe0a9481",
+    "overboost_threshold":              "f775846872a84e1a",
+    "pedal_dct_high":                   "370f7d9cb47e5287",
+    "pedal_dct_low":                    "e9a57873dc64db87",
+    "pedal_dct_sport_high":             "8359738bf6276b8b",
+    "pedal_dct_sport_low":              "9d28ddad0d18249b",
+    "pedal_drive_off":                  "d3cc933a992623e3",
+    "pedal_threshold_full_load":        "7d2e3ff350288c54",
+    "pressure_quotient_max":            "982b7b9b827442d2",
+    "put_from_ambient_enable":          "65de85f74f27786c",
+    "put_setpoint":                     "35f27adbbde002ea",
+    "put_setpoint_map_axis":            "99be016ee748a12a",
+    "put_setpoint_rpm_axis":            "a2a074b602acae2c",
+    "speed_limiter_inactive":           "4ac4f7399098324b",
+    "speed_limiter_level1":             "63bb4c6b4eb76357",
+    "speed_limiter_level2":             "89a7c6a0162aa2f3",
+    "speed_limiter_level3":             "6ac0931199b54cd1",
+    "static_rev_limit_at":              "a7590045a927434a",
+    "static_rev_limit_cvt":             "407da39ab6747caf",
+    "static_rev_limit_dct":             "0fd63635b3418982",
+    "static_rev_limit_mt":              "aeb8e9e7c0244a2f",
+    "torque_reference_max":             "a65b8c5d89a30cf1",
+    "turbo_speed_max":                  "85929bf45bde10b4",
+    "turbo_speed_max_setpoint":         "306206a7b97245de",
+    "wastegate_exh_flow_axis":          "92919845f71ca366",
+    "wastegate_feedforward_vvl0":       "a5432060269e49c9",
+    "wastegate_feedforward_vvl1":       "57c1be56f7c0242b",
+    "wastegate_intake_flow_axis":       "8dfcde53cd8b3077",
+}
+
+
 SCGA05 = Profile(
     name="SCGA05",
     xdf="SCGa05_cal.xdf",
@@ -591,6 +679,7 @@ SCGA05 = Profile(
     # (0xad4..0x8f8c3) also fits inside the 0x9FC00 block, which is the
     # structural signature of this convention.
     xdf_addresses_cal_relative=True,
+    table_layouts=_TABLE_LAYOUTS,
 )
 
 __all__ = [

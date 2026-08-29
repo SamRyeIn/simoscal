@@ -198,6 +198,48 @@ def test_verify_discovered_agrees_with_the_declared_spec_on_a_known_bin():
     assert discovered == declared
 
 
+# --- discovery on an edited bin (CR-20260828-05) ---------------------------- #
+@requires_real
+def test_discovery_recognises_a_bin_whose_ecm3_is_stale():
+    """A stale bin is the library's own output, and must stay reopenable.
+
+    Discovery used to accept a CAL block only when the ECM3 sum stored in it
+    already recomputed exactly — which refuses every edited-but-uncorrected
+    binary, the exact class of file this library produces and then reopens
+    (CR-20260828-05). Layout and correctness are separate questions: this asserts
+    the layout comes back *identical* to the clean bin's, and that the stale sum
+    is reported as stale rather than as an unrecognised file.
+    """
+    clean = REAL_BIN.read_bytes()
+    baseline = ck.discover_structure(clean)
+
+    data = bytearray(clean)
+    ecm3_area = ck.verify(clean, SPEC)[1].covered[0]
+    data[ecm3_area[0]] ^= 0xFF
+
+    assert ck.discover_structure(bytes(data)) == baseline
+
+    reports = {r.name: r for r in ck.verify_discovered(bytes(data))}
+    assert reports["ECM3"].can_verify and reports["ECM3"].is_stale
+    assert reports["CAL_CRC"].can_verify and reports["CAL_CRC"].is_stale
+
+
+@requires_real
+def test_discovery_still_refuses_what_it_cannot_locate():
+    """Relaxing the checksum precondition must not relax recognition itself.
+
+    The control on the test above: a file with no CAL block is still refused, and
+    so is a CAL-only slice of a real bin — whose calibration bytes are entirely
+    genuine, and which fails on the one thing a slice cannot supply.
+    """
+    for label, data in (
+        ("zeros", bytes(0x400000)),
+        ("cal-only slice", REAL_BIN.read_bytes()[SPEC.cal_file_offset:][:0x80000]),
+    ):
+        with pytest.raises(ck.StructureNotFound):
+            ck.discover_structure(data)
+
+
 # --- real bin: the authoritative oracle ------------------------------------- #
 @requires_real
 def test_real_bin_verifies_clean():

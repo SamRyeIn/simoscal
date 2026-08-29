@@ -663,6 +663,27 @@ safety rules is the substitution preflight exists to prevent. A file no profile
 matches is `INSPECT_ONLY`, and the refusal names the software the file declares
 itself to be.
 
+A match is not the whole gate, because a profile resolves against the *XDF* and
+never opens the bin. Three further checks hold the pair together, and `Tune.open`
+enforces the same ones so a direct caller cannot route around them:
+
+* the definition file must count addresses from where the profile says it does
+  (its declared `BASEOFFSET`);
+* the CAL block the bin's own headers describe must be the one the profile
+  declares — otherwise one car's bin paired with another car's XDF is recognised
+  as the *second* car and written at the second car's addresses, in bytes the
+  first car's checksums do not cover;
+* the file must be the profile's full image size. A bin truncated at the end of
+  its calibration block still verifies both checksums, because that is all they
+  cover.
+
+And the map itself is pinned to the definition file it was authored against: each
+spec carries a digest of that table's address, element type, packing and scaling
+(`Profile.table_layouts`, regenerated with `python -m simoscal.tune.profiles
+pin`). Symbol and shape do not say *where* a table is, and every gate after
+resolution is computed through the same XDF — so without the pin, a definition
+file that moved one table four bytes builds a verified, shareable, wrong bin.
+
 Two calibrations are mapped today: `SC8S50` (`5G0906259L_0002`, validated over
 sixteen tune revisions on a real car) and `SCGA05` (`3CN906259B_0002`,
 **bench-verified only — opened, read, edited and byte-audited, never flashed or

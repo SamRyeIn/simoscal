@@ -24,13 +24,19 @@ is opened for editing (requirements AE3).
 
 from __future__ import annotations
 
+import hashlib
+
 from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
-from typing import Iterable, Iterator, Mapping, Optional, Union
+from typing import TYPE_CHECKING, Iterable, Iterator, Mapping, Optional, Union
 
 from ..calfile import CalFile, TableView
 from ..checksum import StructureSpec
 from ..model import AmbiguousTableError, SimosCalError
+
+if TYPE_CHECKING:  # pragma: no cover - annotation only
+    from ..model import Axis
+from ..codec import unpacked_reason
 
 __all__ = [
     "TAG_FLOAT_BUG",
@@ -54,6 +60,8 @@ __all__ = [
     "TableSpec",
     "TableUnavailableError",
     "apply_groups",
+    "layout_digest",
+    "pin_layouts",
 ]
 
 # ---- guard tags ------------------------------------------------------------ #
@@ -314,6 +322,26 @@ class Profile:
     #: leaves :func:`~simoscal.preflight.preflight` free to refuse any file whose
     #: header disagrees with the declaration rather than quietly accommodating it.
     xdf_addresses_cal_relative: bool = False
+    #: Logical name → the layout this map was authored against, as returned by
+    #: :func:`layout_digest`. Generated, not hand-written — regenerate with
+    #: ``python -m simoscal.tune.profiles pin <profile> <xdf> <bin>``.
+    #:
+    #: Resolution matches a spec by symbol and by shape, and neither says
+    #: *where* the table is or *how* its bytes decode. An XDF can name every
+    #: table this profile wants, declare every shape correctly, and still put
+    #: one of them four bytes further along, or read it as int16 where the real
+    #: calibration is uint16 — and every downstream gate would agree with it,
+    #: because the journal, the readback and the byte audit are all derived from
+    #: the same definition file (CR-20260828-02). Pinning the layout is what
+    #: makes those gates check the *bin* rather than check the XDF against
+    #: itself.
+    #:
+    #: A name absent from this mapping is simply not pinned, which is how a
+    #: profile that has never been pinned behaves exactly as it did before —
+    #: so this can be filled in per car as each one's XDF is reviewed, and a
+    #: spec added to a pinned profile fails loudly at import rather than
+    #: silently arriving unpinned (see :meth:`unpinned`).
+    table_layouts: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for name, spec in self.specs.items():
@@ -353,6 +381,42 @@ class Profile:
                 "are relative to the CAL block, but the profile declares no "
                 "structure, so there is nothing that says where that block starts"
             )
+
+    def structure_mismatch(self, discovered: StructureSpec) -> Optional[str]:
+        """Why ``discovered`` is not this car's CAL layout — ``None`` if it is.
+
+        The counterpart to :attr:`expected_xdf_base_offset`, and the other half
+        of the same question. That gate holds the *XDF* to the profile; this one
+        holds the *bin* to it. Resolution proves only that a definition file
+        names this car's tables — it opens no bin at all — so without this a
+        file from one car paired with the definition file from another is
+        recognised as the second car and edited at the second car's addresses,
+        in bytes the first car's checksums do not cover (CR-20260828-01).
+
+        Only the two fields that place a byte are compared. ``cal_block_length``
+        is deliberately excluded: a declared spec may carry the official block
+        length while a discovered one carries how far that bin's own CAL CRC
+        reaches, and the two legitimately differ by ``0x200`` on both cars we
+        hold. ``asw_file_offset`` and ``ecm3_addr_locs`` are excluded for the
+        same reason — a discovered spec states the ECM3 address location as a
+        file offset with the block base left at 0, which is a different (and
+        equally correct) way of saying where the same bytes are.
+        """
+        if self.structure is None:
+            return None
+        mine = self.structure
+        for field_name, label in (
+            ("cal_file_offset", "CAL block file offset"),
+            ("cal_base_address", "CAL base address"),
+        ):
+            want = getattr(mine, field_name)
+            got = getattr(discovered, field_name)
+            if want != got:
+                return (
+                    f"{label} {got:#x} in this bin, but the {self.name} profile "
+                    f"describes a calibration whose {label.lower()} is {want:#x}"
+                )
+        return None
 
     @property
     def expected_xdf_base_offset(self) -> Optional[int]:
@@ -460,6 +524,33 @@ class Profile:
         """
         return sorted(n for n, spec in self.specs.items() if not spec.group)
 
+    @property
+    def stale_pins(self) -> list[str]:
+        """Pinned names this profile does not map — a pin nothing can check.
+
+        Harmless on its own (an unreachable entry writes no byte), so this
+        reports rather than raises: profiles are legitimately *derived* — a test
+        decoy, a subset — and a derivation that narrows the specs should not have
+        to remember to narrow the pins too. It is still worth catching in the
+        authored maps, because a renamed spec leaves exactly this trace, and the
+        new name shows up in :attr:`unpinned` at the same time.
+        """
+        return sorted(set(self.table_layouts) - set(self.specs))
+
+    @property
+    def unpinned(self) -> list[str]:
+        """Logical names with no entry in :attr:`table_layouts`.
+
+        Reports rather than raises, for the same reason :meth:`ungrouped` does:
+        what counts as acceptable is per-profile. A base map authored against a
+        definition file we hold pins every spec, and its module asserts this is
+        empty at import, so a spec added later cannot arrive unauthenticated. A
+        patch map whose XDF is third-party is not pinned at all, and a merge of
+        the two is legitimately part-pinned — demanding completeness of every
+        profile would make that merge impossible while proving nothing.
+        """
+        return sorted(set(self.specs) - set(self.table_layouts))
+
     def merged_with(self, other: "Profile", *, name: str = "") -> "Profile":
         """Union of two profiles; overlapping logical names raise.
 
@@ -502,6 +593,13 @@ class Profile:
                 f"they declare different CAL structures "
                 f"({self.structure.name!r} vs {other.structure.name!r})"
             )
+        # Pins are per spec and the spec sets are disjoint (checked above), so
+        # the union cannot conflict. A profile that pins nothing contributes
+        # nothing, which leaves each half of the merged profile authenticated
+        # exactly as far as its own map file authenticated it — the base
+        # calibration pinned, patch-added tables not — and :attr:`unpinned` says
+        # which is which rather than the merge averaging the two into a claim
+        # neither source made.
         specs = {**self.specs, **other.specs}
         # A gap one profile declares can be *filled* by the other — that is what
         # a patch profile is for — so the merged declaration keeps only the gaps
@@ -520,6 +618,7 @@ class Profile:
             stock_references={**self.stock_references, **other.stock_references},
             table_sets={**self.table_sets, **other.table_sets},
             unavailable=unavailable,
+            table_layouts={**self.table_layouts, **other.table_layouts},
             # The convention travels with the structure, because it is only
             # meaningful beside one: whichever profile said where the CAL block
             # is also said how its XDF counts from there.
@@ -698,6 +797,90 @@ class ResolvedProfile:
 
 
 # --------------------------------------------------------------------------- #
+# Layout pinning
+# --------------------------------------------------------------------------- #
+#: How much of the fingerprint hash a pin records. Sixteen hex characters is 64
+#: bits: far past collision by accident, and short enough that a generated block
+#: of them stays readable in a diff. This is not a security boundary — nobody is
+#: searching for a preimage — it is a fixture check against a definition file
+#: that quietly changed.
+_DIGEST_CHARS = 16
+
+
+def _canonical_axis(axis: Optional["Axis"]) -> tuple:
+    """One axis reduced to what decides which bytes it is and how they decode.
+
+    :func:`~simoscal.xdf.table_data_fingerprint` answers a stricter question —
+    "are these two XDFTABLE entries literally the same declaration" — and takes
+    the stride fields verbatim, which is right for detecting a uniqueid conflict
+    inside one file. A pin is comparing two *different* files, and there the
+    three packed stride spellings are one layout (see
+    :func:`~simoscal.codec.unpacked_reason`), so they are collapsed to one token
+    here. A stride the codec would refuse keeps its raw value: it cannot be
+    written through at all, and a pin should still notice it changing.
+    """
+    if axis is None:
+        return ()
+    emb = axis.embedded
+    if emb is None:
+        return (None,)
+    stride: object = (
+        "packed" if unpacked_reason(emb) is None
+        else (emb.major_stride_bits, emb.minor_stride_bits)
+    )
+    scaling = axis.scaling
+    return (
+        emb.address, emb.rows, emb.cols, emb.elem_bits, stride,
+        emb.signed, emb.little_endian, emb.is_float, emb.column_major,
+        # Compared on the source expression, as the parser's fingerprint does:
+        # the coefficients are floats parsed from it, and NaN != NaN would make a
+        # non-linear scaling never match itself.
+        None if scaling is None else (scaling.expression, scaling.is_linear),
+    )
+
+
+def layout_digest(view: TableView) -> str:
+    """A stable short digest of *where* ``view`` is and *how* it decodes.
+
+    Moves when the address, shape, element width, packing, signedness,
+    endianness, float flag, element order, or scaling expression of the table or
+    either of its axes moves. Does not move for a retitled or recategorised
+    table, or for a definition file that spells a packed stride differently —
+    neither changes a byte.
+
+    Stable across runs and machines: a SHA-256 over canonical text, never
+    :func:`hash`, whose value is salted per process and would make a pin
+    meaningless the moment it was written down.
+    """
+    table = view.table
+    canonical = repr((
+        _canonical_axis(table.x), _canonical_axis(table.y), _canonical_axis(table.z),
+    ))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:_DIGEST_CHARS]
+
+
+def pin_layouts(profile: Profile, cal: CalFile) -> dict[str, str]:
+    """Every mapped name in ``profile`` → its layout in ``cal``, for pinning.
+
+    The generator behind :attr:`Profile.table_layouts`. Run it against the
+    definition file the map was authored against — the reviewed one, named in
+    :attr:`Profile.xdf` — and paste the result into the profile module.
+    ``python -m simoscal.tune.profiles pin`` does exactly this and formats the
+    block.
+
+    Deliberately not called at import to pin a profile automatically: a pin
+    computed from whatever file is in front of you authenticates nothing, and
+    the whole value of the mapping is that a human put those numbers there once,
+    from a file they had reason to trust.
+    """
+    resolved = resolve(profile, cal, xdf_label=profile.xdf)
+    return {
+        name: layout_digest(resolved[name].view)
+        for name in sorted(resolved.names())
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Resolution
 # --------------------------------------------------------------------------- #
 _MAX_SUGGESTIONS = 5
@@ -785,6 +968,28 @@ def resolve(
                 )
             )
             continue
+        # The pin, where the profile has one. Symbol and shape say this is the
+        # right *table*; the digest says this is the right *definition of* it —
+        # same address, same element type and strides, same scaling. Nothing
+        # downstream can make this check for us: the journal, the readback and
+        # the byte audit are all computed through whatever this XDF says, so
+        # they agree with a moved table as readily as with a correct one
+        # (CR-20260828-02).
+        pinned = profile.table_layouts.get(name)
+        if pinned is not None:
+            actual = layout_digest(view)
+            if actual != pinned:
+                misses.append(
+                    ResolutionMiss(
+                        name,
+                        key,
+                        f"layout {actual} does not match the {pinned} this map "
+                        f"was authored against — this XDF places or decodes the "
+                        f"table differently from {profile.xdf}, so writing "
+                        f"through it would put bytes somewhere nobody reviewed",
+                    )
+                )
+                continue
         tables[name] = ResolvedTable(spec=spec, view=view)
 
     if misses:

@@ -727,6 +727,105 @@ TABLE_SETS: dict[str, tuple[str, ...]] = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# Pinned layouts
+# --------------------------------------------------------------------------- #
+# Where each mapped table *is* in `SC8S50.V1.0.xdf`, and how its bytes decode,
+# as of the review that authored this map. Generated — never hand-edited — by
+#
+#     python -m simoscal.tune.profiles pin SC8S50 \
+#         xdf/SC8S50.V1.0.xdf bin/5G0906259L__0002.bin
+#
+# Resolution matches a spec by symbol and by exact shape, and a definition file
+# can satisfy both while placing a table four bytes further along or reading it
+# as a different type. Every gate downstream of resolution — the edit journal,
+# the final-bin readback, the byte-level audit — is computed *through* this same
+# file, so all three would agree with the moved table and the build would come
+# back verified (CR-20260828-02). These digests are the one check that compares
+# the file against something outside it.
+#
+# Regenerate only from a definition file a human has reviewed, and say in the
+# commit message what changed and why. A digest that moves without a reason is
+# the finding, not the noise.
+_TABLE_LAYOUTS = {
+    "airmass_full_load":                  "cb5c30959bf03d24",
+    "airmass_setpoint_max":               "6c3e824f7c7df161",
+    "charge_air_diag_put_axis":           "36e5e0cf70da7a39",
+    "charge_air_diag_rpm_axis":           "b8ce3ca48132d39e",
+    "charge_air_pressure_max_diag":       "2ab9d559db9c365b",
+    "compressor_air_temp_max":            "1d047fede54cde84",
+    "compressor_air_temp_max_setpoint":   "8537cdfde211ab6c",
+    "cylinder_head_temp_charge_axis":     "8defcae9de7b0330",
+    "cylinder_head_temp_rpm_axis":        "402e8f627309790c",
+    "cylinder_head_temp_setpoint":        "2ada43a00733d649",
+    "engine_speed_limit_vvl0":            "0aa348c9be7d6a75",
+    "engine_speed_limit_vvl1":            "b9cc7d534e7cecd7",
+    "ignition_base_vvl0_i0_e0":           "0796968dd18b390a",
+    "ignition_base_vvl0_i0_e1":           "9132917ca547f6d1",
+    "ignition_base_vvl0_i0_e2":           "cacea30cd2615da1",
+    "ignition_base_vvl0_i1_e0":           "3ca719ad3769577e",
+    "ignition_base_vvl0_i1_e1":           "1ef9e99bd71640b5",
+    "ignition_base_vvl0_i1_e2":           "8e276cb4fa4817d1",
+    "ignition_base_vvl0_i2_e0":           "e546193974c14979",
+    "ignition_base_vvl0_i2_e1":           "0641ed7a7c9c00aa",
+    "ignition_base_vvl0_i2_e2":           "f0bef26a607fe86a",
+    "ignition_temp_correction_basic":     "9b507443cee774fd",
+    "ignition_temp_correction_reference": "0f94e5d136b96175",
+    "ignition_temp_iat_axis":             "68595ce933aa5cec",
+    "ignition_temp_rpm_axis":             "824c7ee8eba11641",
+    "intake_air_max_vvl0":                "6339c41bb9410460",
+    "intake_air_max_vvl1":                "a1bbbb006cddae28",
+    "knock_recovery_delay":               "41123e5dea25c9f7",
+    "knock_recovery_step":                "a61c7b304d6b9e1f",
+    "knock_retard":                       "13b73ce29e6b717c",
+    "knock_retard_max":                   "870c8ff0e7852dbd",
+    "lambda_basic":                       "29c9cda08c60d6c6",
+    "lambda_basic_hpdi":                  "175979af05d64ca9",
+    "lambda_basic_mpi":                   "16228923f78e4c71",
+    "lambda_catalyst_min":                "5536147c8e47e516",
+    "lambda_full_load":                   "6835a5e5751cc64c",
+    "lambda_full_load_iat":               "f2af45b0d9407957",
+    "lambda_full_load_iat_hysteresis":    "5986932d58f3c84c",
+    "lambda_full_load_iat_threshold":     "57afaf423e86c960",
+    "lambda_load_axis":                   "1663b705a3919e69",
+    "lambda_rpm_axis":                    "148d938ba00611a3",
+    "lambda_setpoint_min":                "a17c4bf42f4f0da8",
+    "lambda_turbo_min":                   "40d2dba11b973cfa",
+    "manifold_pressure_limit_offset":     "a0583b7e0a21b1cf",
+    "manifold_pressure_max":              "149324780f354060",
+    "overboost_threshold":                "59b8cc4fcf03c8b4",
+    "pedal_dct_high":                     "8552d6bb16fb49c6",
+    "pedal_dct_low":                      "7f2fc7e54a6910c9",
+    "pedal_dct_offroad_high":             "9aa87d652b4991f0",
+    "pedal_dct_offroad_low":              "8f70cfdf52b810b7",
+    "pedal_dct_sport_high":               "abe8bebceb1e01b6",
+    "pedal_dct_sport_low":                "c0ff59fbd283d445",
+    "pedal_drive_off":                    "ac38ce3baff8ffb6",
+    "pedal_threshold_full_load":          "d56dda92888076dc",
+    "pressure_quotient_max":              "67e250dad07273d0",
+    "put_from_ambient_enable":            "442de9286b79e171",
+    "put_setpoint":                       "eab41abd91d67188",
+    "put_setpoint_map_axis":              "cfcd6117081df2f9",
+    "put_setpoint_rpm_axis":              "ff01ae351c2c4533",
+    "speed_limiter_inactive":             "37b4926af46677d5",
+    "speed_limiter_level1":               "68bdee60e0d916b7",
+    "speed_limiter_level2":               "78a59326d0673726",
+    "speed_limiter_level3":               "464f963878b87cba",
+    "static_rev_fuel_cut_offset":         "3edb7efdb4b20dd6",
+    "static_rev_limit_at":                "015a39d11829e1a8",
+    "static_rev_limit_cvt":               "f86b90d1639730a8",
+    "static_rev_limit_dct":               "46c38b9716f49852",
+    "static_rev_limit_mt":                "c6304132ad596a97",
+    "torque_reference_max":               "dd45e740b8578b2b",
+    "turbo_speed_max":                    "946000ddaf92fa21",
+    "turbo_speed_max_setpoint":           "51ca1b95a40a9866",
+    "wastegate_exh_flow_axis":            "d8468019dfc4bf51",
+    "wastegate_feedforward_vvl0":         "dcfe37b0f7617b4e",
+    "wastegate_feedforward_vvl1":         "b8ce04e6c47c29c8",
+    "wastegate_intake_flow_axis":         "9cdcd6b0c6055b15",
+}
+
+
 SC8S50 = Profile(
     name="SC8S50",
     xdf="SC8S50.V1.0.xdf",
@@ -734,6 +833,7 @@ SC8S50 = Profile(
     structure=SC8S50_STRUCTURE,
     stock_references=STOCK_REFERENCES,
     table_sets=TABLE_SETS,
+    table_layouts=_TABLE_LAYOUTS,
 )
 
 __all__ = [

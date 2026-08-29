@@ -35,67 +35,82 @@ in place as they are fixed or dismissed.
 
 ## Findings index
 
-| ID             | Severity | Verdict   | File                                                | Summary                                                                     | Status              |
-|----------------|----------|-----------|-----------------------------------------------------|-----------------------------------------------------------------------------|---------------------|
-| CR-20260706-01 | High     | CONFIRMED | tests/test_acceptance.py                            | AE3 diff blind to appended bytes; no length assert on edited save           | Open                |
-| CR-20260706-02 | High     | CONFIRMED | tests/conftest.py                                   | Safety suite is skip-if-absent with no way to force a non-skipped run       | Open                |
-| CR-20260706-03 | High     | CONFIRMED | tests/test_acceptance.py                            | AE3 offset math ignores `base_subtract`                                     | Open                |
-| CR-20260706-04 | High     | CONFIRMED | tests/test_acceptance.py                            | AE1 tolerance is unbounded and controlled by the capture under test         | Open                |
-| CR-20260706-05 | Medium   | CONFIRMED | tests/test_acceptance.py                            | AE4 precondition unsound for declared max in [120, 127)                     | Open                |
-| CR-20260706-06 | High     | CONFIRMED | README.md                                           | Quick-start paths do not resolve from the documented cwd                    | Open                |
-| CR-20260706-07 | Medium   | CONFIRMED | README.md                                           | Quick-start example writes out-of-range value, fires EditRangeWarning       | Open                |
-| CR-20260706-08 | Medium   | CONFIRMED | tests/conftest.py                                   | `real_cal` fixture silently shadowed by test_read.py module fixture         | Open                |
-| CR-20260706-09 | Medium   | CONFIRMED | tests/test_acceptance.py                            | AE2/AE3/AE5 duplicate pre-existing tests near-verbatim                      | Open                |
-| CR-20260706-10 | Medium   | PLAUSIBLE | tests/test_acceptance.py                            | int8 wraparound in AE3 whole-table `+1` before clip                         | Open                |
-| CR-20260706-11 | Low      | PLAUSIBLE | tests/test_acceptance.py                            | AE4 asserts on `rec[0]` without filtering warning category                  | Open                |
-| CR-20260706-12 | Low      | PLAUSIBLE | tests/conftest.py                                   | Oracle JSON read without `utf-8-sig`; Windows BOM fails a valid capture     | Open                |
-| CR-20260706-13 | Low      | CONFIRMED | tests/fixtures/README.md                            | mini.xdf documented as 3 tables; it contains 4                              | Open                |
-| CR-20260706-14 | Low      | CONFIRMED | tests/conftest.py                                   | `requires_real_files` marker is dead code (fifth copy of the guard)         | Open                |
-| CR-20260706-15 | Low      | CONFIRMED | tests/test_acceptance.py                            | No guard pins ORACLE_ID identity/shape/dtype                                | Open                |
-| CR-20260706-16 | Low      | CONFIRMED | tests/ (multiple)                                   | Oracle JSON schema exists in three uncoordinated copies                     | Open                |
-| CR-20260706-17 | Low      | CONFIRMED | tests/test_acceptance.py                            | Redundant `checked` counter duplicates fixture guard                        | Open                |
-| CR-20260706-18 | Low      | CONFIRMED | README.md                                           | AE gating story told in three prose locations                               | Open                |
-| CR-20260706-19 | Low      | CONFIRMED | tests/ (multiple)                                   | ~2.5 s/run avoidable XDF re-parsing and slow Python byte-diff loops         | Open                |
-| CR-20260706-20 | Low      | CONFIRMED | tests/fixtures/README.md                            | AE1 capture procedure relies on error-prone hand transcription              | Open                |
-| CR-20260706-21 | High     | CONFIRMED | simoscal/codec.py                                   | 2D table decode uses row-major reshape against column-major on-bin data     | Fixed (2026-07-06)  |
-| CR-20260706-22 | High     | CONFIRMED | simoscal/xdf.py                                     | mmedtypeflags sign bit inverted for at least three real int16/int32 tables  | Fixed (2026-07-06)  |
-| CR-20260707-01 | Medium   | PLAUSIBLE | simoscal/sop_recipe.py                              | Multi-cell writers leave a table partly written if a guard trips mid-loop   | Fixed (2026-07-07)  |
-| CR-20260707-02 | Low      | CONFIRMED | simoscal/sop_recipe.py                              | Vestigial row_idx/col_idx locals only None-checked in _apply_literal_table  | Fixed (2026-07-07)  |
-| CR-20260707-03 | High     | CONFIRMED | Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R01.py    | Max allowed airmass written as TunerPro workaround value, not physical 2000 | Dismissed (invalid) |
-| CR-20260707-04 | Medium   | CONFIRMED | Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R01.py    | Merged report shows R01-covered guide items as both applied and skipped     | Fixed (2026-07-07)  |
-| CR-20260707-05 | Medium   | CONFIRMED | Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R01.py    | Coherence-passed banner hides unresolved in-scope guide fueling items       | Open                |
-| CR-20260720-01 | High     | CONFIRMED | simoscal/tune/pipeline.py                           | Unverifiable checksums are reported CLEAN and do not fail the build         | Fixed (2026-07-20)  |
-| CR-20260720-02 | High     | CONFIRMED | simoscal/tune/project.py                            | Intentional restoration to stock fails as unexplained bytes                 | Fixed (2026-07-20)  |
-| CR-20260720-03 | Medium   | CONFIRMED | pyproject.toml                                      | Installed distributions omit all tune domain modules                        | Fixed (2026-07-20)  |
-| CR-20260720-04 | Medium   | CONFIRMED | ../Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R13.py | R13 template omits the required explicit intent on most domain calls        | Fixed (2026-07-20)  |
-| CR-20260724-01 | High     | CONFIRMED | simoscal/tune/build_service.py                      | Extra allowances make unjournaled edits verified, shareable, and invisible  | Fixed (2026-07-24)  |
-| CR-20260724-02 | High     | CONFIRMED | simoscal/tune/build_service.py                      | Public report assembler can emit internally contradictory shareable reports | Fixed (2026-07-24)  |
-| CR-20260724-03 | Medium   | CONFIRMED | simoscal/tune/build_service.py                      | Unchanged declarations are reported as changed tables                       | Fixed (2026-07-24)  |
-| CR-20260724-04 | High     | CONFIRMED | simoscal/export.py                                  | Plot extra imports undeclared openpyxl dependency                           | Fixed (2026-07-24)  |
-| CR-20260724-05 | Medium   | CONFIRMED | (client repo)                                       | Embedded NumPy runtime floats across unchanged APK builds                   | Fixed (2026-07-24)  |
-| CR-20260724-06 | High     | CONFIRMED | simoscal/tune/recovery.py                           | Recovery accepts changed XDF table definitions                              | Fixed (2026-07-24)  |
-| CR-20260724-07 | High     | CONFIRMED | simoscal/tune/recovery.py                           | Recovery silently drops finished-file safety gates                          | Fixed (2026-07-24)  |
-| CR-20260724-08 | Medium   | CONFIRMED | simoscal/tune/recovery.py                           | Recovery ignores its within-engine-version marker                           | Fixed (2026-07-24)  |
-| CR-20260724-09 | Medium   | CONFIRMED | simoscal/tune/recovery.py                           | Recovered sessions lose their undo/redo history                             | Fixed (2026-07-24)  |
-| CR-20260724-10 | High     | CONFIRMED | simoscal/bridge.py                                  | Session creation can bypass compatibility preflight                         | Fixed (2026-07-24)  |
-| CR-20260724-11 | High     | CONFIRMED | simoscal/tune/editing.py                            | Generic axis writes accept nonmonotonic breakpoints                         | Fixed (2026-07-24)  |
-| CR-20260724-12 | Medium   | CONFIRMED | tests/test_bridge.py                                | Edit tests fail before reaching the bridge dispatcher                       | Fixed (2026-07-24)  |
-| CR-20260724-13 | High     | CONFIRMED | simoscal/tune/recovery.py                           | Undo restores bytes but leaves profile views stale                          | Fixed (2026-07-24)  |
-| CR-20260724-14 | Medium   | CONFIRMED | (client repo)                                       | V0 declared GO before physical-arm64 and x86_64 parity gates ran            | Fixed (2026-08-16)  |
-| CR-20260724-15 | Low      | CONFIRMED | tests/test_packaging.py                             | No test installs a built wheel; the closure test imports the source tree    | Fixed (2026-07-24)  |
-| CR-20260724-16 | Low      | PLAUSIBLE | simoscal/bridge.py                                  | `bridge_info` cannot discover a mismatched engine on its documented path    | Open                |
-| CR-20260813-01 | High     | CONFIRMED | (client repo)                                       | Generic patch edits bypass domain guards and produce shareable bins         | Fixed (2026-08-14)  |
-| CR-20260813-02 | High     | PLAUSIBLE | simoscal/tune/build_service.py                      | A later build can overwrite a candidate already granted to another app      | Fixed (2026-08-14)  |
-| CR-20260813-03 | Medium   | CONFIRMED | (client repo)                                       | SAF imports and SHA-256 hashing run synchronously on the main thread        | Fixed (2026-08-14)  |
-| CR-20260813-04 | Medium   | CONFIRMED | (client repo)                                       | Undo, redo, and rpm-axis apply silently discard unapplied editor drafts     | Fixed (2026-08-14)  |
-| CR-20260813-05 | Medium   | PLAUSIBLE | simoscal/tune/build_service.py                      | Unsanitized provider display names can escape the staging directory         | Fixed (2026-08-14)  |
-| CR-20260815-01 | High     | CONFIRMED | (client repo)                                       | Every file-naming bridge op sends the path under the bare key, not `_path`  | Fixed (2026-08-15)  |
-| CR-20260815-02 | Medium   | CONFIRMED | simoscal/bridge.py                                  | An unreadable switch-patch XDF is reported as an absent patch in the bin    | Fixed (2026-08-15)  |
-| CR-20260815-03 | Low      | CONFIRMED | (client repo)                                       | V7 test-count table stale: claims 93 tests, actual 104 before this review   | Fixed (2026-08-15)  |
-| CR-20260815-04 | High     | CONFIRMED | simoscal/tune/profiles/sc8s50.py                    | Generic editor can write the kg/stk airmass ceiling in its lying mg/stk unit | Fixed (2026-08-15)  |
-| CR-20260815-05 | High     | CONFIRMED | simoscal/tune/domains/switchpatch.py                | Switch-patch build gate resolves a desktop BinToolz path; fails on any device | Fixed (2026-08-15)  |
-| CR-20260815-06 | Medium   | PLAUSIBLE | simoscal/tune/profiles/sc8s50.py                    | An unmapped table reaches the generic editor with no guard tags or owner    | Fixed (2026-08-15)  |
+| ID             | Severity | Verdict   | File                                                | Summary                                                                                                     | Status              |
+|----------------|----------|-----------|-----------------------------------------------------|-------------------------------------------------------------------------------------------------------------|---------------------|
+| CR-20260706-01 | High     | CONFIRMED | tests/test_acceptance.py                            | AE3 diff blind to appended bytes; no length assert on edited save                                           | Open                |
+| CR-20260706-02 | High     | CONFIRMED | tests/conftest.py                                   | Safety suite is skip-if-absent with no way to force a non-skipped run                                       | Open                |
+| CR-20260706-03 | High     | CONFIRMED | tests/test_acceptance.py                            | AE3 offset math ignores `base_subtract`                                                                     | Open                |
+| CR-20260706-04 | High     | CONFIRMED | tests/test_acceptance.py                            | AE1 tolerance is unbounded and controlled by the capture under test                                         | Open                |
+| CR-20260706-05 | Medium   | CONFIRMED | tests/test_acceptance.py                            | AE4 precondition unsound for declared max in [120, 127)                                                     | Open                |
+| CR-20260706-06 | High     | CONFIRMED | README.md                                           | Quick-start paths do not resolve from the documented cwd                                                    | Open                |
+| CR-20260706-07 | Medium   | CONFIRMED | README.md                                           | Quick-start example writes out-of-range value, fires EditRangeWarning                                       | Open                |
+| CR-20260706-08 | Medium   | CONFIRMED | tests/conftest.py                                   | `real_cal` fixture silently shadowed by test_read.py module fixture                                         | Open                |
+| CR-20260706-09 | Medium   | CONFIRMED | tests/test_acceptance.py                            | AE2/AE3/AE5 duplicate pre-existing tests near-verbatim                                                      | Open                |
+| CR-20260706-10 | Medium   | PLAUSIBLE | tests/test_acceptance.py                            | int8 wraparound in AE3 whole-table `+1` before clip                                                         | Open                |
+| CR-20260706-11 | Low      | PLAUSIBLE | tests/test_acceptance.py                            | AE4 asserts on `rec[0]` without filtering warning category                                                  | Open                |
+| CR-20260706-12 | Low      | PLAUSIBLE | tests/conftest.py                                   | Oracle JSON read without `utf-8-sig`; Windows BOM fails a valid capture                                     | Open                |
+| CR-20260706-13 | Low      | CONFIRMED | tests/fixtures/README.md                            | mini.xdf documented as 3 tables; it contains 4                                                              | Open                |
+| CR-20260706-14 | Low      | CONFIRMED | tests/conftest.py                                   | `requires_real_files` marker is dead code (fifth copy of the guard)                                         | Open                |
+| CR-20260706-15 | Low      | CONFIRMED | tests/test_acceptance.py                            | No guard pins ORACLE_ID identity/shape/dtype                                                                | Open                |
+| CR-20260706-16 | Low      | CONFIRMED | tests/ (multiple)                                   | Oracle JSON schema exists in three uncoordinated copies                                                     | Open                |
+| CR-20260706-17 | Low      | CONFIRMED | tests/test_acceptance.py                            | Redundant `checked` counter duplicates fixture guard                                                        | Open                |
+| CR-20260706-18 | Low      | CONFIRMED | README.md                                           | AE gating story told in three prose locations                                                               | Open                |
+| CR-20260706-19 | Low      | CONFIRMED | tests/ (multiple)                                   | ~2.5 s/run avoidable XDF re-parsing and slow Python byte-diff loops                                         | Open                |
+| CR-20260706-20 | Low      | CONFIRMED | tests/fixtures/README.md                            | AE1 capture procedure relies on error-prone hand transcription                                              | Open                |
+| CR-20260706-21 | High     | CONFIRMED | simoscal/codec.py                                   | 2D table decode uses row-major reshape against column-major on-bin data                                     | Fixed (2026-07-06)  |
+| CR-20260706-22 | High     | CONFIRMED | simoscal/xdf.py                                     | mmedtypeflags sign bit inverted for at least three real int16/int32 tables                                  | Fixed (2026-07-06)  |
+| CR-20260707-01 | Medium   | PLAUSIBLE | simoscal/sop_recipe.py                              | Multi-cell writers leave a table partly written if a guard trips mid-loop                                   | Fixed (2026-07-07)  |
+| CR-20260707-02 | Low      | CONFIRMED | simoscal/sop_recipe.py                              | Vestigial row_idx/col_idx locals only None-checked in _apply_literal_table                                  | Fixed (2026-07-07)  |
+| CR-20260707-03 | High     | CONFIRMED | Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R01.py    | Max allowed airmass written as TunerPro workaround value, not physical 2000                                 | Dismissed (invalid) |
+| CR-20260707-04 | Medium   | CONFIRMED | Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R01.py    | Merged report shows R01-covered guide items as both applied and skipped                                     | Fixed (2026-07-07)  |
+| CR-20260707-05 | Medium   | CONFIRMED | Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R01.py    | Coherence-passed banner hides unresolved in-scope guide fueling items                                       | Open                |
+| CR-20260720-01 | High     | CONFIRMED | simoscal/tune/pipeline.py                           | Unverifiable checksums are reported CLEAN and do not fail the build                                         | Fixed (2026-07-20)  |
+| CR-20260720-02 | High     | CONFIRMED | simoscal/tune/project.py                            | Intentional restoration to stock fails as unexplained bytes                                                 | Fixed (2026-07-20)  |
+| CR-20260720-03 | Medium   | CONFIRMED | pyproject.toml                                      | Installed distributions omit all tune domain modules                                                        | Fixed (2026-07-20)  |
+| CR-20260720-04 | Medium   | CONFIRMED | ../Tunes/TuningBasicsGuide/TUNE_Basics_Guide_R13.py | R13 template omits the required explicit intent on most domain calls                                        | Fixed (2026-07-20)  |
+| CR-20260724-01 | High     | CONFIRMED | simoscal/tune/build_service.py                      | Extra allowances make unjournaled edits verified, shareable, and invisible                                  | Fixed (2026-07-24)  |
+| CR-20260724-02 | High     | CONFIRMED | simoscal/tune/build_service.py                      | Public report assembler can emit internally contradictory shareable reports                                 | Fixed (2026-07-24)  |
+| CR-20260724-03 | Medium   | CONFIRMED | simoscal/tune/build_service.py                      | Unchanged declarations are reported as changed tables                                                       | Fixed (2026-07-24)  |
+| CR-20260724-04 | High     | CONFIRMED | simoscal/export.py                                  | Plot extra imports undeclared openpyxl dependency                                                           | Fixed (2026-07-24)  |
+| CR-20260724-05 | Medium   | CONFIRMED | (client repo)                                       | Embedded NumPy runtime floats across unchanged APK builds                                                   | Fixed (2026-07-24)  |
+| CR-20260724-06 | High     | CONFIRMED | simoscal/tune/recovery.py                           | Recovery accepts changed XDF table definitions                                                              | Fixed (2026-07-24)  |
+| CR-20260724-07 | High     | CONFIRMED | simoscal/tune/recovery.py                           | Recovery silently drops finished-file safety gates                                                          | Fixed (2026-07-24)  |
+| CR-20260724-08 | Medium   | CONFIRMED | simoscal/tune/recovery.py                           | Recovery ignores its within-engine-version marker                                                           | Fixed (2026-07-24)  |
+| CR-20260724-09 | Medium   | CONFIRMED | simoscal/tune/recovery.py                           | Recovered sessions lose their undo/redo history                                                             | Fixed (2026-07-24)  |
+| CR-20260724-10 | High     | CONFIRMED | simoscal/bridge.py                                  | Session creation can bypass compatibility preflight                                                         | Fixed (2026-07-24)  |
+| CR-20260724-11 | High     | CONFIRMED | simoscal/tune/editing.py                            | Generic axis writes accept nonmonotonic breakpoints                                                         | Fixed (2026-07-24)  |
+| CR-20260724-12 | Medium   | CONFIRMED | tests/test_bridge.py                                | Edit tests fail before reaching the bridge dispatcher                                                       | Fixed (2026-07-24)  |
+| CR-20260724-13 | High     | CONFIRMED | simoscal/tune/recovery.py                           | Undo restores bytes but leaves profile views stale                                                          | Fixed (2026-07-24)  |
+| CR-20260724-14 | Medium   | CONFIRMED | (client repo)                                       | V0 declared GO before physical-arm64 and x86_64 parity gates ran                                            | Fixed (2026-08-16)  |
+| CR-20260724-15 | Low      | CONFIRMED | tests/test_packaging.py                             | No test installs a built wheel; the closure test imports the source tree                                    | Fixed (2026-07-24)  |
+| CR-20260724-16 | Low      | PLAUSIBLE | simoscal/bridge.py                                  | `bridge_info` cannot discover a mismatched engine on its documented path                                    | Open                |
+| CR-20260813-01 | High     | CONFIRMED | (client repo)                                       | Generic patch edits bypass domain guards and produce shareable bins                                         | Fixed (2026-08-14)  |
+| CR-20260813-02 | High     | PLAUSIBLE | simoscal/tune/build_service.py                      | A later build can overwrite a candidate already granted to another app                                      | Fixed (2026-08-14)  |
+| CR-20260813-03 | Medium   | CONFIRMED | (client repo)                                       | SAF imports and SHA-256 hashing run synchronously on the main thread                                        | Fixed (2026-08-14)  |
+| CR-20260813-04 | Medium   | CONFIRMED | (client repo)                                       | Undo, redo, and rpm-axis apply silently discard unapplied editor drafts                                     | Fixed (2026-08-14)  |
+| CR-20260813-05 | Medium   | PLAUSIBLE | simoscal/tune/build_service.py                      | Unsanitized provider display names can escape the staging directory                                         | Fixed (2026-08-14)  |
+| CR-20260815-01 | High     | CONFIRMED | (client repo)                                       | Every file-naming bridge op sends the path under the bare key, not `_path`                                  | Fixed (2026-08-15)  |
+| CR-20260815-02 | Medium   | CONFIRMED | simoscal/bridge.py                                  | An unreadable switch-patch XDF is reported as an absent patch in the bin                                    | Fixed (2026-08-15)  |
+| CR-20260815-03 | Low      | CONFIRMED | (client repo)                                       | V7 test-count table stale: claims 93 tests, actual 104 before this review                                   | Fixed (2026-08-15)  |
+| CR-20260815-04 | High     | CONFIRMED | simoscal/tune/profiles/sc8s50.py                    | Generic editor can write the kg/stk airmass ceiling in its lying mg/stk unit                                | Fixed (2026-08-15)  |
+| CR-20260815-05 | High     | CONFIRMED | simoscal/tune/domains/switchpatch.py                | Switch-patch build gate resolves a desktop BinToolz path; fails on any device                               | Fixed (2026-08-15)  |
+| CR-20260815-06 | Medium   | PLAUSIBLE | simoscal/tune/profiles/sc8s50.py                    | An unmapped table reaches the generic editor with no guard tags or owner                                    | Fixed (2026-08-15)  |
 | CR-20260816-01 | High     | CONFIRMED | simoscal/tune/recovery.py                           | A session that has been built can never be recovered — the build's checksum bytes are outside the byte diff | Fixed (2026-08-16)  |
+| CR-20260828-01 | High     | CONFIRMED | simoscal/preflight.py                               | Cross-car bin/XDF pairs are accepted and can build shareable wrong-address bins                             | Fixed (2026-08-29)  |
+| CR-20260828-02 | High     | CONFIRMED | simoscal/tune/profile.py                            | Profile identity does not pin table addresses or encodings                                                  | Fixed (2026-08-29)  |
+| CR-20260828-03 | High     | CONFIRMED | simoscal/preflight.py                               | A truncated SCGA05 image passes preflight and every build gate                                              | Fixed (2026-08-29)  |
+| CR-20260828-04 | Medium   | CONFIRMED | simoscal/tune/domains/limits.py                     | Two valid SCGA05 ceiling writes are rejected by SC8S50-specific domain paths                                | Open                |
+| CR-20260828-05 | High     | CONFIRMED | simoscal/checksum.py                                | Structure discovery requires an already-valid ECM3; edited bins cannot be reopened                          | Fixed (2026-08-29)  |
+| CR-20260828-06 | Medium   | CONFIRMED | simoscal/preflight.py                               | `StructureNotFound` escapes `preflight()`, which is documented to always return a verdict                   | Open                |
+| CR-20260828-07 | Medium   | CONFIRMED | simoscal/tune/catalog.py                            | Stock-ghost decoder built without `base_offset` shows wrong stock values on a CAL-relative car              | Open                |
+| CR-20260828-08 | Medium   | CONFIRMED | simoscal/tune/sop_bridge.py                         | The `prior` decoder omits `base_offset`, so journalled `before` values read the wrong address               | Open                |
+| CR-20260828-09 | Medium   | CONFIRMED | simoscal/checksum.py                                | `correction_patches` lacks the unlocatable guard, so `save()` can write an uncorrected bin                  | Open                |
+| CR-20260828-10 | Medium   | CONFIRMED | simoscal/tune/domains/limits.py                     | `rev_limits` zips a fixed 3-key dict against a per-car trio with no arity check                             | Open                |
+| CR-20260828-11 | Low      | PLAUSIBLE | simoscal/tune/profile.py                            | `table_sets` may name an unavailable member, making a partial set write reachable                           | Open                |
+| CR-20260828-12 | Low      | CONFIRMED | simoscal/tune/profile.py                            | `resolve()` ignores `profile.unavailable`, losing the recorded reason and the shape check                   | Open                |
+| CR-20260828-13 | Low      | PLAUSIBLE | simoscal/checksum.py                                | CAL block length assumes the CRC area table is sorted ascending                                             | Open                |
+| CR-20260828-14 | Low      | PLAUSIBLE | simoscal/bridge.py                                  | Session creation uses the client-supplied profile rather than the verdict's                                 | Open                |
+| CR-20260828-15 | Low      | CONFIRMED | simoscal/tune/domains/limits.py                     | `intake_air_max` hardcodes its table set instead of using `Profile.table_sets`                              | Open                |
 
 ---
 
@@ -2069,3 +2084,436 @@ stack had to survive alongside the buffer.
 Left on the device: that session now carries a test edit and a built `R00.bin`
 in staging. Both are throwaway artifacts of this check — the R00 candidate must
 never be flashed.
+
+---
+
+## Review 2026-08-28 — supporting other file structures (U1–U8)
+
+- **Scope:** branch `feat/file-structure-support`, range
+  `c561f47~1..829025f`, with primary attention to the 29 changed files under
+  `simoscal/` and the invariants in
+  `Docs/code-review-brief-file-structures.md`.
+- **Method:** inspected the exact `829025f` tree from an immutable export rather
+  than the later dirty checkout; traced profile resolution, address arithmetic,
+  checksum correction, readback, and byte-audit boundaries; then reproduced each
+  finding against the real SC8S50 and SCGA05 fixtures. The already-recorded
+  966-test green run was not repeated as a finding or treated as proof against
+  the negative cases below.
+- **Headline:** the per-car data objects are present, and the shape, kg/stk,
+  float32, unavailable-table, and checksum tests named in the brief remain
+  intact. The compatibility boundary does not yet bind a bin to the profile its
+  XDF identifies, does not authenticate the XDF's table locations, and does not
+  require the profile's full image size. Each omission can reach a verified,
+  shareable artifact.
+
+### CR-20260828-01 — Cross-car bin/XDF pairs are accepted and can build shareable wrong-address bins — High, CONFIRMED — Fixed (2026-08-29)
+
+`simoscal/preflight.py:246-281`, `:423-438`, and `:573-575`; also
+`simoscal/tune/project.py:168-176`. Preflight discovers a structure from the bin,
+but `_identify()` decides the profile entirely by resolving the supplied XDF's
+symbols and shapes. The discovered structure is never compared with
+`profile.structure`. `Tune.open()` repeats the separation: it opens with
+`structure_of(working_bin)` while applying the caller's profile and XDF.
+
+**Failure scenario:** pair the real `5G0906259L__0002.bin` SC8S50 image with
+`SCGa05_cal.xdf`. Preflight returns `READY`, `ok_to_edit=True`, and profile
+`SCGA05`. Editing `IP_PUT_SP` — Pressure up throttle setpoint through that
+profile writes the SCGA05 table at `0x23f054` instead of the SC8S50 table at
+`0x21b6e2`. In the reproducer, the changed full-load-row bytes were
+`0x23f05a..0x23f083`; `build_revision()` then returned `verified=True`, exposed
+a non-null share path, and passed Checksums, Final-bin readback, Blocked writes,
+Recipe coherence, and Raw-diff audit. The readback and audit agree with the same
+wrong XDF, so neither can detect the substitution.
+
+The reverse real pairing is also reported editable:
+`3CN906259B__0002_SCGA05.bin` plus `SC8S50.V1.0.xdf` returns `READY` as
+`SC8S50`. Its build later raises a region-bounds exception during readback, but
+that is after preflight has positively told the caller the files are safe.
+
+**Suggested fix:** after profile identification, require the bin's discovered
+CAL/ECM3 structure to match the selected profile's declared structure before
+returning an editable verdict, and enforce the same invariant in `Tune.open()`
+so direct callers cannot bypass preflight. Add both crossed real-file pairings as
+negative tests; the failure must precede session creation and any edit.
+
+**Fixed 2026-08-29.** `Profile.structure_mismatch()` compares the two fields that
+place a byte — `cal_file_offset` and `cal_base_address` — and both entry points
+call it: `preflight()` returns `BLOCKED` naming the disagreement (and still
+reports `profile_resolved: True`, so the refusal is distinguishable from "not
+ours"), and `Tune.open()` raises `TuneError` through
+`_require_profile_calibration()` before a session exists. Block length, ASW
+offset and the ECM3 address location are deliberately excluded: a discovered spec
+states those differently from a declared one without disagreeing about any byte.
+Both crossed real pairings are pinned in
+`tests/test_foreign_structure.py::test_f10_*`, with a control that the matched
+pairings still open.
+
+### CR-20260828-02 — Profile identity does not pin table addresses or encodings — High, CONFIRMED — Fixed (2026-08-29)
+
+`simoscal/tune/profile.py:179-184` and `:762-788`. A `TableSpec` records a key,
+shape, units, and tags, but no expected address, element width/type, stride, or
+scaling fingerprint. `resolve()` checks only exact key resolution and shape.
+The later BASEOFFSET gate proves only which origin the XDF counts from; it does
+not prove where any table lies relative to that origin.
+
+**Failure scenario:** in a copy of the validated SC8S50 XDF, change only the
+embedded address of `C_M_AIR_CYL_SP_MAX` — Maximum allowed airmass setpoint from
+`0x9bd4` to `0x9bd8`. Preflight still returns `READY` for the real SC8S50 stock
+bin. `limits.airmass_cap_mg(2000)` then changes exactly
+`0x209bd8..0x209bdb`, while the real calibration is at
+`0x209bd4..0x209bd7`. `build_revision()` nevertheless returns
+`verified=True`, a share path, and five passing gates: the journal allowance and
+final-bin readback are both derived from the shifted definition.
+
+This is not limited to addresses. A same-shaped table whose XDF changes element
+type, stride, or scaling also clears profile resolution, and those fields decide
+which bytes and physical values are written.
+
+**Suggested fix:** make the base profile authenticate each writable table's
+layout/codec fingerprint (at minimum effective address, element width/type,
+strides, and scaling) or pin an independently reviewed XDF identity. Add a
+mutation test for each load-bearing field and require refusal before editing.
+
+**Fixed 2026-08-29.** `Profile.table_layouts` maps each logical name to a
+`layout_digest()` — SHA-256 over address, shape, element width, packing,
+signedness, endianness, float flag, element order and scaling expression, for the
+table and both axes — and `resolve()` refuses a table whose digest does not match
+the pin. Both base maps are pinned against the definition files they name (75
+specs for SC8S50, 64 for SCGA05); `Profile.unpinned` / `stale_pins` report gaps
+and the profile tests assert both are empty, so a spec added later cannot arrive
+unauthenticated. Regenerate with `python -m simoscal.tune.profiles pin`.
+
+Two deliberate limits. The three packed stride spellings are collapsed to one
+token (`codec.unpacked_reason()`), because `SC8S50.V1.0.xdf` and
+`SC8S50.ALL.xdf` write different ones for the same bytes and a pin that moved
+between them would be noise — a test asserts the two files agree on every pinned
+layout. And the patch profiles are *not* pinned: their XDF is third-party and not
+committed, so a merged profile is legitimately part-pinned and `unpinned` says
+which half is which. The reproducer from this finding — the airmass ceiling moved
+`0x9bd4` → `0x9bd8` in a copy of the reviewed XDF — is a test, alongside a
+mutation test per load-bearing field.
+
+### CR-20260828-03 — A truncated SCGA05 image passes preflight and every build gate — High, CONFIRMED — Fixed (2026-08-29)
+
+`simoscal/preflight.py:408-420` and `:643-660`. The only size gate compares the
+file with the XDF's declared region. For the calibration-relative SCGA05 XDF that
+region ends at `0x7d000`, so it does not describe a full flash image. After the
+profile matches, `StructureSpec.full_bin_size` is never consulted; the verdict
+merely reports `advanced["full_bin"] = False` and still sets
+`ok_to_edit=True`, `writable=True`.
+
+**Failure scenario:** truncate the real 4 MiB SCGA05 bin at `0x2bfc00`, exactly
+the end of its declared CAL block. The 2,882,560-byte file retains enough ASW
+data and all CAL bytes for both checksums to verify. Preflight returns `READY`
+while reporting `full_bin=False`. After an `IP_PUT_SP` — Pressure up throttle
+setpoint edit, `build_revision()` returns `verified=True`, exposes a share path,
+and the saved candidate remains only 2,882,560 bytes; every one of the five
+build gates passes. Such an artifact is not the complete 4 MiB image the API says
+is required and must not be presented as flash-ready.
+
+**Suggested fix:** once the profile is known, require
+`bin_size == profile.structure.full_bin_size` in preflight, `Tune.open()`, and/or
+the final share gate. Add a foreign-fixture test that truncates after the CAL
+block and requires a blocking verdict and no share path.
+
+**Fixed 2026-08-29.** Both entry points require
+`bin_size == profile.structure.full_bin_size` once the profile is known.
+`preflight.FULL_BIN_SIZE` is gone with it: a module-level "the" full-bin size is
+the same single-car assumption the profiles replaced, and `advanced["full_bin"]`
+now follows the matched profile. The test truncates the real A05 bin at
+`0x2bfc00`, first asserting the slice really is checksum-clean so it cannot pass
+for the wrong reason.
+
+### CR-20260828-04 — Two valid SCGA05 ceiling writes are rejected by SC8S50-specific domain paths — Medium, CONFIRMED — Open
+
+`simoscal/tune/domains/limits.py:49-90` and
+`simoscal/tune/domains/boost.py:149-163`, through
+`simoscal/tune/domains/_common.py:146-163`. SCGA05 correctly omits
+`TAG_KG_PER_STROKE` because its XDF scales `C_M_AIR_CYL_SP_MAX` — Maximum
+allowed airmass setpoint into mg/stk, and correctly omits `TAG_FLOAT_BUG` because
+its `C_PRS_IM_SP_MAX` — Maximum requested intake-manifold pressure setpoint is
+properly scaled. The domain methods interpret those correct omissions as reasons
+to reject rather than as instructions to use the normal physical-unit writer.
+
+**Failure scenario:** open the real SCGA05 bin/XDF and call
+`limits.airmass_cap_mg(2000)`. The live table reads about 1389 mg/stk and can
+encode 2000 mg/stk normally, but the method raises "not marked as a kg/stk
+store." Calling `boost.manifold_pressure_max(3000)` likewise raises "not marked
+as a float-bug table" even though the live table reads 2399.96 hPa and its
+ordinary scaled write is valid. These are current inputs, and they contradict
+the scoped acceptance that domain machinery works on the foreign profile even
+though car-specific tuning guidance was not ported.
+
+**Suggested fix:** branch on the tags: retain the special raw/conversion paths
+when present and route untagged, correctly scaled tables through a normal
+physical write. Add paired SC8S50/SCGA05 tests proving the same domain call takes
+the appropriate per-profile path and encodes the requested physical value.
+
+## Review 2026-08-28 — file structures, second pass (in-session, Opus)
+
+- **Scope:** the same range as the review above — branch
+  `feat/file-structure-support`, `c561f47~1..829025f`, 29 changed files under
+  `simoscal/`. Run independently of, and without sight of, the review recorded
+  immediately above; the two were compared only after both had reported.
+- **Method:** read every hunk in the range, then reproduced the suspect paths in
+  a throwaway worktree checked out at `829025f` with the real `bin/` and `xdf/`
+  fixtures symlinked in. Findings marked *(reproduced)* were confirmed by
+  running against the real binaries; the rest are proven against the code as
+  written. Line numbers are against `829025f`, not the later working tree.
+- **Suite at the target:** 828 passed, 138 skipped. That is 966 tests total,
+  which reconciles with the figure recorded when U8 closed — but the plan doc
+  records it as "966 **passed**", and the 138 skips are fixture-gated. The
+  distinction matters when reading that number as evidence, so it is noted here
+  rather than left to be rediscovered.
+
+> **On the overlap with the review above.** This pass independently found the
+> cross-car bin/XDF defect already recorded as **CR-20260828-01**. It is not
+> re-filed under a new ID. Two reviewers reaching it by different routes — one
+> tracing preflight's identification path, one tracing address arithmetic
+> through the build gates — is corroboration of that finding, and it is recorded
+> here as such. The findings below are the ones the review above did not reach.
+>
+> **CR-20260828-05 is the finding that pass missed and this one considers most
+> serious**, because it is the only item in either review that regresses the
+> SC8S50 car — the validated one, sixteen tune revisions deep.
+
+### CR-20260828-05 — Structure discovery requires an already-valid ECM3, so edited bins cannot be reopened — High, CONFIRMED — Fixed (2026-08-29)
+
+`simoscal/checksum.py:432`, `simoscal/calfile.py:224`. *(reproduced)*
+`discover_structure` accepts a candidate CAL block only when the ECM3 checksum
+stored in that block already recomputes exactly. That makes `structure_of()`
+fail on every edited-but-uncorrected binary — which is precisely the class of
+file this library produces and then reopens.
+
+**Failure scenario:** flip one byte inside the ECM3-summed area of the stock
+SC8S50 bin (areas `0xd9ac..0x10230`, i.e. file offsets `0x209ac..0x210230`).
+`Tune.open(SC8S50, xdf='xdf/SC8S50.V1.0.xdf', bin=<that bin>)` then raises
+`StructureNotFound: no CAL block with a verifiable ECM3 header…`. Worse for
+diagnosis, `verify_discovered()` degrades both checksums to `can_verify=False`
+instead of reporting CAL_CRC and ECM3 as *stale and correctable* — the state
+they are actually in, and the state the library has a status for.
+
+This is a regression introduced by U2. Before the CAL layout became per-car
+data, the layout was module constants and reopening worked regardless of
+checksum state. The same fallout reaches `btp.switch_patch_sanity()`
+(`simoscal/btp.py:594`), which is called on a bin BinToolz has just patched and
+which is therefore *always* stale, and `simoscal/tune/recovery.py:191` and
+`:200`.
+
+**Suggested fix:** relax the precondition. Accept a candidate on CAL-CRC-header
+plausibility, or fall back to a declared or caller-supplied spec, rather than
+requiring the binary to already be flash-ready before its structure can be
+named. Add a test that opens a deliberately stale bin and requires a
+stale-but-correctable verdict rather than an exception.
+
+**Fixed 2026-08-29.** `discover_structure` now accepts a candidate that resolves
+*structurally* — a sane CAL CRC area table under the base the file states, plus
+ECM3 area addresses that land inside that block — and prefers, without requiring,
+one whose stored ECM3 also recomputes. A verifying candidate still short-circuits,
+so a clean bin behaves exactly as before. Where several blocks resolve and none
+verifies, it raises rather than choosing: on the A05 bin that matters, because a
+second CRC-headered decoy block sits at SC8S50's offset, and a test pins that a
+stale A05 image still lands on the real CAL block. Negative controls kept: zeros,
+random bytes and a CAL-only slice are all still refused.
+
+Not fixed here: `StructureNotFound` still escapes `preflight()`
+(**CR-20260828-06**). A stale bin no longer reaches that path, which was the
+combination that made it acute, but an unrecognisable one still raises instead of
+returning `BLOCKED`.
+
+### CR-20260828-06 — `StructureNotFound` escapes `preflight()`, which is documented to always return a verdict — Medium, CONFIRMED — Open
+
+`simoscal/preflight.py:424`. *(reproduced)* `preflight()` on 4 MB of random or
+zero bytes raises instead of returning `BLOCKED`. `StructureNotFound` subclasses
+plain `Exception`, so the `except (RegionBoundsError, SimosCalError)` on line 425
+does not catch it. The module docstring states there is no "continue anyway" and
+that the verdict's `ok_to_edit` is the whole decision; `BLOCKED` explicitly
+covers "unrecognised".
+
+Combined with CR-20260828-05, this also means a merely stale bin raises rather
+than returning `READY_STALE_CHECKSUM` — the status that exists precisely for the
+normal state of an already-edited file. The bridge's outer `except Exception`
+(`simoscal/bridge.py:1361`) converts it into a generic internal error rather than
+a "choose another file" verdict, so the caller cannot recover sensibly.
+
+**Suggested fix:** catch `StructureNotFound` in `preflight()` and return
+`BLOCKED` with the reason; keep the raise for direct low-level callers.
+
+### CR-20260828-07 — Stock-ghost decoder built without `base_offset` shows wrong "stock" values on a CAL-relative car — Medium, CONFIRMED — Open
+
+`simoscal/tune/catalog.py:203`. *(reproduced)* The `CalFile` built to decode
+stock values for side-by-side display is constructed without `base_offset=`. On
+a calibration-relative profile it therefore reads from the wrong addresses.
+
+**Failure scenario:** on A05, `_source_values(t, 'base', 'lambda_full_load')`
+returns `(63.96, 12.14, 3.99, 22.21, …)` where the live table is uniformly
+`1.0`; `put_setpoint` ghosts as all zeros against a live `591…2506`; and
+`speed_limiter_level1` ghosts as `None` because the read falls out of the region
+and the `RegionBoundsError` is eaten by a bare `except Exception`.
+
+Every other reader of that buffer in this range — `pipeline._readback`,
+`pipeline._compare_plots`, `pipeline.run_gates`, `_open_shared_space` — was
+correctly given `base_offset=`; this one call site was missed. The consequence is
+a wrong "stock" number rendered next to the live one in the table detail, which
+is exactly the comparison a person makes immediately before deciding to write.
+
+**Suggested fix:** pass `base_offset=cal.base_offset`, and narrow the bare
+`except Exception` so an out-of-region ghost read surfaces instead of rendering
+as `None`.
+
+### CR-20260828-08 — The `prior` decoder omits `base_offset`, so journalled `before` values read the wrong address — Medium, CONFIRMED — Open
+
+`simoscal/tune/sop_bridge.py:106`. The read-only pre-recipe view is constructed
+with `structure=cal.structure` but no `base_offset=cal.base_offset`, while its
+`BinImage` region *is* taken from the live image
+(`cal.binimage.region_start`, i.e. `0x220000` on A05). On a CAL-relative profile
+the two disagree by the CAL file offset, so every journalled `before` value is
+either read from the wrong address or raised as `RegionBoundsError`.
+
+**Suggested fix:** pass `base_offset=cal.base_offset` and
+`float_bug_symbols=cal.float_bug_symbols`, as the sibling call sites already do.
+
+### CR-20260828-09 — `correction_patches` lacks the unlocatable-checksum guard, so `save()` can write an uncorrected bin — Medium, CONFIRMED — Open
+
+`simoscal/checksum.py:582`. U8 added a `ChecksumNotLocatable` guard to
+`correct()`, on the stated reasoning that returning the data unchanged would be
+a silent no-op on the one operation whose entire job is to make a bin
+flash-ready. `CalFile.save()` (`simoscal/calfile.py:425`) is that operation in
+the library's actual write path, and it routes through `correction_patches`,
+which received no such guard.
+
+**Failure scenario:** `correction_patches` appends a patch only
+`if report.can_verify and report.is_stale`. An unlocatable checksum yields no
+patch, and the `warn_stale` block is skipped precisely *because* the caller
+passed `correct_checksums=True`. The caller therefore receives a saved,
+uncorrected, unwarned binary. `pipeline.run_gates` catches this downstream via
+`CHECKSUM_UNVERIFIABLE`, but a direct `CalFile.save(correct_checksums=True)`
+does not.
+
+**Suggested fix:** raise `ChecksumNotLocatable` from `correction_patches` when
+correction was requested, matching `correct()`.
+
+### CR-20260828-10 — `rev_limits` zips a fixed 3-key dict against a per-car trio with no arity check — Medium, CONFIRMED — Open
+
+`simoscal/tune/domains/limits.py:154`. `zip(requested, trio)` truncates
+silently. A profile declaring four names never writes the fourth; a profile
+declaring two produces a bare `KeyError: 'hard'` at `resulting["hard"]` rather
+than the loud, explaining refusal the rest of this method is built around.
+`Profile.__post_init__` (`simoscal/tune/profile.py:332`) validates that members
+are known names, but not how many there are.
+
+Before this effort the trio was a module constant and its arity could not vary.
+It is now per-car data, so the arity is the profile author's to get wrong.
+
+**Suggested fix:** assert `len(trio) == 3` in `Profile.__post_init__`, or map by
+label rather than by position.
+
+### CR-20260828-11 — `table_sets` may name an unavailable member, making a partial set write reachable — Low, PLAUSIBLE — Open
+
+`simoscal/tune/profile.py:332`. The validator accepts a `table_sets` member that
+is mapped **or** declared `unavailable`. Every set-writing domain call —
+`fueling.lambda_floors`, `ignition.retard_cells` and `offset_cells`,
+`wastegate.overlay`, `limits.speed_limiter`, `limits.static_rev_limit` — loops
+`for name in names: self._tune.write(...)`. An unavailable member would
+therefore write the earlier tables in the set and then raise
+`TableUnavailableError` mid-loop: the opposite of the whole-set-first atomicity
+`rev_limits` is careful to provide.
+
+Neither shipped profile currently trips this; both were checked. It is latent,
+and it becomes reachable the moment a third car declares a gap inside a set.
+
+**Suggested fix:** a set that decides *what gets written* should require every
+member to be mapped. Reject `unavailable` members in `table_sets` validation.
+
+### CR-20260828-12 — `resolve()` ignores `profile.unavailable`, losing the recorded reason and the shape check — Low, CONFIRMED — Open
+
+`simoscal/tune/profile.py:763`. *(reproduced)*
+`resolve(SCGA05, cal, names=['airmass_full_load'])` — a name A05 declares
+unavailable, with a recorded reason — raises
+`ProfileResolutionError: 'airmass_full_load': no table with this symbol, title,
+or uniqueid in the XDF`. The reason never surfaces, which is the one thing the
+`unavailable` mapping and `TableUnavailableError` were added to provide.
+
+The second-order effect is worse than the message. The name falls into the
+`spec is None` branch and is retried as a literal XDF symbol with a synthesised
+spec carrying **no shape** — so if any XDF ever defines a table under that
+logical name, it binds with the shape check skipped.
+
+**Suggested fix:** consult `profile.unavailable` before the symbol fallback and
+raise `TableUnavailableError` with the recorded reason.
+
+### CR-20260828-13 — CAL block length assumes the CRC area table is sorted ascending — Low, PLAUSIBLE — Open
+
+`simoscal/checksum.py:489`. `cal_block_length = spans[-1][1] + 1` takes the last
+listed span rather than the maximum. A calibration listing its areas out of
+ascending order yields a block length that understates the block;
+`_cal_crc_areas` and `_ecm3_areas` then reject legitimate areas under the very
+spec discovery just returned, and `verify_cal_crc` comes back `can_verify=False`
+on a binary whose ECM3 verified during that same discovery.
+
+**Suggested fix:** `max(e for _s, e in spans) + 1`. Same cost, correct for any
+ordering.
+
+### CR-20260828-14 — Session creation uses the client-supplied profile rather than the verdict's — Low, PLAUSIBLE — Open
+
+`simoscal/bridge.py:346`. `_op_session_create` opens the session under the
+client-supplied `profile` parameter, defaulting to `"SC8S50"`, rather than under
+`verdict.profile_name` that preflight just resolved and validated. The inline
+comment at the `patch_profile_for` call — "Preflight has already refused above if
+the car has none" — describes `verdict`'s profile, but the call is made on the
+parameter.
+
+Profile resolution catches the mismatch today, because the two shipped profiles
+differ in shape and the XDF pins the car. That is an accident of the current
+pair, not a check. It is also the same trust-the-caller shape as
+CR-20260828-01, one layer up.
+
+**Suggested fix:** use `verdict.profile_name`, or refuse when the parameter and
+the verdict disagree.
+
+### CR-20260828-15 — `intake_air_max` still hardcodes its table set instead of using `Profile.table_sets` — Low, CONFIRMED — Open
+
+`simoscal/tune/domains/limits.py:94`. `tables: Sequence[str] =
+("intake_air_max_vvl0", "intake_air_max_vvl1")` is the one per-car table set the
+U7 refactor left as a module-level default in domain code. Its neighbours —
+`static_rev_limit`, `speed_limiter`, `lambda_floors`, `ignition_base_vvl0`,
+`wastegate_maps` — all moved to `Profile.table_sets`.
+
+Both shipped profiles happen to declare both names, so nothing is broken today.
+But it is exactly the assert-one-car's-tables shape this effort set out to
+remove, and it will bite on car three.
+
+**Suggested fix:** move the set to `Profile.table_sets` alongside its neighbours.
+
+### What checked out
+
+Verified clean, and recorded so a later reader does not re-derive them:
+
+- **The table shape check is intact and not bypassable by a per-car
+  declaration.** Every spec in all four profiles declares a shape — SC8S50
+  75/75, SCGA05 60/60, both patch maps 92/92 — so `resolve()`'s
+  `spec.shape is not None` escape hatch is unreachable for mapped names.
+  `IP_IGA_BAS_IVVT_VVL_PORT_L[STND][i][e]` — Basic ignition angle by VVT/VVL,
+  port injection is declared `(16, 18)` on A05 as a positive claim against
+  SC8S50's `(16, 16)`, and `test_ae5_a_wrong_declared_shape_is_still_refused`
+  covers the negative. This was the effort's stated top safety risk; it held.
+- **SC8S50's float-bug set survived the move from module global to derivation
+  exactly**, and closed a pre-existing drift in doing so:
+  `C_PRS_IM_SP_LIM` — Limit requested intake-manifold pressure setpoint had been
+  missing a spec and got one in the same commit. SCGA05 correctly derives an
+  empty set.
+- **Checksums verify on both cars under both the declared and the discovered
+  structure**, CAL_CRC and ECM3. Discovery independently reproduces
+  `SC8S50_STRUCTURE`'s offsets (`0x200000` / `0xA0800000`, ECM3 addresses at
+  ASW+`0x520`) and A05's (`0x220000` / `0xA0820000`, ASW+`0x540`).
+- **The U7 `audit.py` base-offset fix is correct**, and its byte-extent maths is
+  the exact inverse of `writer.pack_block` — `col * rows + row if column_major
+  else row * cols + col` against `tobytes(order="F"/"C")`.
+- **No existing test body was edited**, which was the effort's acceptance
+  criterion for the SC8S50 refactor. The test diffs only thread `structure=` and
+  `float_bug_symbols=` through construction sites; every assertion is untouched.
+- **`_open_shared_space`'s move to effective-offset comparison is correct.** It
+  is what makes A05's pairing legal — CAL-relative base XDF at declared `0`,
+  full-bin patch XDF at declared `0x220000`, both effective `0x220000` — without
+  loosening the check, and the float-bug union rather than replace is the right
+  direction.

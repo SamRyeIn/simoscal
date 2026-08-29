@@ -76,7 +76,13 @@ _ECM3_SEED = struct.pack("<II", ECM3_SEED_HI, ECM3_SEED_LO)
 
 
 class StructureNotFound(Exception):
-    """No CAL block with a verifiable ECM3 header could be found in a bin."""
+    """No CAL block could be located in a bin, or more than one could.
+
+    "Located" means structurally: a CAL CRC header whose areas resolve, and ECM3
+    area addresses that land inside the block it describes. Whether those
+    checksums are *current* is a separate question — a stale bin is recognised,
+    not refused (see :func:`discover_structure`).
+    """
 
 
 class ChecksumNotLocatable(Exception):
@@ -438,10 +444,22 @@ def discover_structure(
 
     Candidates come from the ECM3 accumulator seed, which is a fixed constant
     stored in the header at +8/+12 — so every occurrence is a candidate header,
-    with no assumption about where the CAL block starts. A candidate is accepted
-    only when the ECM3 value **stored** at it equals the value **recomputed**
-    over the areas it points at: a 64-bit exact match over kilobytes of
-    calibration, which a merely plausible-looking byte pattern will not satisfy.
+    with no assumption about where the CAL block starts. A candidate has to
+    survive the CAL CRC header's own arithmetic — a sane area count whose
+    addresses all resolve under the base the file itself states — and then
+    produce ECM3 area addresses that resolve inside that block. Where a
+    candidate's stored ECM3 *also* recomputes exactly, that settles it
+    immediately: a 64-bit match over kilobytes of calibration is the strongest
+    evidence a file can offer about its own layout.
+
+    **A stale checksum is not a failure of recognition.** Requiring the stored
+    ECM3 to match would refuse exactly the files this library produces: an
+    edited bin is stale by definition until :func:`correct` runs, and it still
+    has to be reopenable, diffable and reportable in between (CR-20260828-05).
+    Where a layout *is* and whether its checksums are *current* are two
+    questions; this one answers the first, and leaves the second to
+    :func:`verify`, which has a status for it — stale and correctable, not
+    unrecognised.
 
     The CAL base address is read off the file rather than guessed — the CAL CRC
     header's first area always starts at CAL offset 0, so its stored start
@@ -459,6 +477,11 @@ def discover_structure(
         i = data.find(_ECM3_SEED, i + 1)
 
     rejected: list[str] = []
+    # Specs that resolve structurally but whose stored ECM3 does not recompute —
+    # the normal state of an already-edited bin. Collected rather than returned
+    # on sight, because a candidate that verifies outright is better evidence and
+    # a later candidate may still be it.
+    stale_fits: list[StructureSpec] = []
     for hdr in candidates:
         cal_off = hdr - 0x400
         if cal_off < 0:
@@ -489,8 +512,10 @@ def discover_structure(
             cal_block_length=spans[-1][1] + 1,
             asw_file_offset=0,
         )
-        # The ASW block's own ECM3 header sits just above the area addresses, so
-        # every other seed hit supplies a candidate location. Arithmetic decides.
+        # Where this block's ECM3 area addresses live. The ASW block's own ECM3
+        # header sits just above them, so every *other* seed hit supplies a
+        # candidate location; a CAL that inlines its addresses supplies one more.
+        probes: list[StructureSpec] = []
         for other in candidates:
             if other == hdr:
                 continue
@@ -500,20 +525,49 @@ def discover_structure(
                 # The ASW block's own base is not recoverable from the file, so a
                 # discovered spec states the address location as a file offset and
                 # leaves the block base at 0 rather than inventing one.
-                probe = replace(candidate, asw_file_offset=0,
-                                ecm3_addr_locs=(other - delta,))
-                report, _ = verify_ecm3(data, probe)
-                if report.can_verify and not report.is_stale:
-                    return probe
+                probes.append(replace(candidate, asw_file_offset=0,
+                                      ecm3_addr_locs=(other - delta,)))
         if _u32(data, hdr + 24) > 0:
-            report, _ = verify_ecm3(data, candidate)
+            probes.append(candidate)
+
+        fit: Optional[StructureSpec] = None
+        for probe in probes:
+            areas, _note = _ecm3_areas(data, probe)
+            if areas is None:
+                # Not this block's area addresses — they do not land inside it.
+                # A structural rejection: the addresses are read, the kilobytes
+                # of calibration they point at are not.
+                continue
+            report, _ = verify_ecm3(data, probe)
             if report.can_verify and not report.is_stale:
-                return candidate
-        rejected.append(f"{hdr:#08x}: ECM3 did not verify at any address location")
+                return probe
+            if fit is None:
+                fit = probe
+        if fit is None:
+            rejected.append(
+                f"{hdr:#08x}: no ECM3 area addresses resolve inside this block"
+            )
+        else:
+            stale_fits.append(fit)
+
+    if len(stale_fits) == 1:
+        return stale_fits[0]
+    if len(stale_fits) > 1:
+        # Two blocks both look structurally like the CAL block and neither can
+        # prove it by arithmetic. Choosing between them would decide where every
+        # subsequent read and write lands on nothing better than registry order,
+        # so this refuses and says what would settle it.
+        where = ", ".join(f"{s.cal_file_offset:#08x}" for s in stale_fits)
+        raise StructureNotFound(
+            f"{len(stale_fits)} CAL blocks in this {len(data):#x}-byte bin resolve "
+            f"structurally ({where}) and none has a matching ECM3 sum to settle "
+            "which is which. Correct the checksums, or open the file against an "
+            "explicitly named structure."
+        )
 
     detail = "; ".join(rejected) if rejected else "no ECM3 seed found in the bin"
     raise StructureNotFound(
-        f"no CAL block with a verifiable ECM3 header in this {len(data):#x}-byte "
+        f"no CAL block with a resolvable ECM3 header in this {len(data):#x}-byte "
         f"bin ({detail})"
     )
 

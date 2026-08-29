@@ -63,12 +63,22 @@ for report in verify(data, spec):
 
 `probe_foreign.py` calls the same function rather than keeping its own copy.
 
-## 3. Why a candidate is only accepted if it verifies
+## 3. What makes a candidate acceptable
 
-A byte pattern that looks like a header proves nothing. The search accepts a
-candidate only when the ECM3 value **stored** at it equals the value
-**recomputed** over the areas that header points at — a 64-bit exact match over
-several kilobytes of calibration. That cannot be satisfied by coincidence.
+A byte pattern that looks like a header proves nothing, so a candidate has to
+survive the CAL CRC header's own arithmetic — a sane area count whose addresses
+all resolve under the base the file itself states — and then produce ECM3 area
+addresses that land inside the block it describes. Where a candidate's stored
+ECM3 *also* recomputes exactly, that settles it on the spot: a 64-bit match over
+several kilobytes of calibration cannot be satisfied by coincidence.
+
+**A stale checksum is not a failure of recognition.** The search used to require
+that exact match, which refused every edited-but-uncorrected bin — the class of
+file this library produces and then reopens (CR-20260828-05). Where a layout
+*is* and whether its checksums are *current* are two questions; `verify()`
+answers the second, and answers it as stale-and-correctable rather than as
+unrecognised. If two blocks resolve structurally and neither has a matching sum
+to separate them, the search refuses rather than choosing.
 
 Run the search on a known bin as a negative control before trusting it on an
 unknown one. On the SC8S50 stock bin it must rediscover `CAL_FILE_OFFSET
@@ -227,10 +237,13 @@ changed byte runs — the CAL CRC at `0x220304` and the 48-byte table at `0x23F0
    enforces the declaration once the profile exists, so getting it wrong
    surfaces as a `BLOCKED` verdict rather than as wrong bytes, but a map written
    against the wrong reading of the file is wasted either way.
-4. Only then write the profile's `StructureSpec`. A declared spec is worth
-   having even though discovery works: it lets a bin that does not match the
-   profile the user selected be caught, instead of being silently accepted
-   because it happens to be a valid bin of some other car.
+4. Only then write the profile's `StructureSpec`. A declared spec is not
+   redundant with discovery: it is what preflight and `Tune.open` hold the bin
+   *to*, so a file that is a perfectly valid bin of some other car is refused
+   rather than edited at that car's addresses (CR-20260828-01). Its
+   `full_bin_size` is enforced the same way, which is what separates a complete
+   image from a slice that ends where the calibration does and still passes both
+   checksums (CR-20260828-03).
 5. Set it as the profile's `structure=`, and settle the profile's other per-car
    facts at the same time (section 9): which tables carry `TAG_FLOAT_BUG`,
    which — if any — stock values the SOP guidance may quote, and the
@@ -247,7 +260,22 @@ changed byte runs — the CAL CRC at `0x220304` and the 48-byte table at `0x23F0
    `writable=True`, and `preflight(sc8s50_bin, sc8s50_xdf)` must still say
    `SC8S50` — two profiles both resolving against one file raises
    `AmbiguousProfileError` rather than picking one.
-7. If the car has a 29.33 switch-patch definition, port that separately by the
+7. Pin the map to the definition file you reviewed:
+
+   ```
+   python -m simoscal.tune.profiles pin <PROFILE> <xdf> <bin>
+   ```
+
+   Paste the printed `_TABLE_LAYOUTS` block into the profile module and pass it
+   as `table_layouts=`. Resolution matches a spec by symbol and by exact shape,
+   and neither says where the table is or how its bytes decode — a definition
+   file can satisfy both and still place one table four bytes along, which every
+   later gate would agree with because they are all computed through that same
+   file (CR-20260828-02). `Profile.unpinned` must come back empty, and the
+   profile tests assert it, so a spec added later cannot arrive unpinned.
+   Regenerate only from a file a human has reviewed, and say in the commit
+   message what moved and why.
+8. If the car has a 29.33 switch-patch definition, port that separately by the
    address-book method in section 9b, and register it in `PATCH_PROFILES` beside
    the base profile it belongs to. Unlike `BASE_PROFILES` this one *is* a
    hand-written list, and it has to be: a patch map is bound by address, so it

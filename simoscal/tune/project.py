@@ -35,6 +35,7 @@ import numpy as np
 from .. import btp
 from ..binimage import BinImage
 from ..calfile import CalFile, structure_of
+from ..checksum import StructureSpec
 from ..model import FloatBugGuardError, RawRangeError, SimosCalError
 from ..safety import EditRangeWarning
 from ..xdf import parse_xdf
@@ -233,8 +234,10 @@ class Tune:
         working_bin, results = _apply_patches(source_bin, patch_specs)
 
         try:
+            discovered = structure_of(working_bin)
+            _require_profile_calibration(profile, working_bin, discovered)
             base_cal = CalFile.open(
-                str(xdf), str(working_bin), structure=structure_of(working_bin),
+                str(xdf), str(working_bin), structure=discovered,
                 base_offset=profile.xdf_base_offset,
                 float_bug_symbols=profile.float_bug_symbols,
                 stock_references=profile.stock_references,
@@ -580,6 +583,47 @@ def _rows_changed(before: np.ndarray, after: np.ndarray) -> tuple[int, ...]:
         return ()
     diff = ~np.isclose(before, after, rtol=0, atol=1e-12)
     return tuple(int(r) for r in np.flatnonzero(diff.any(axis=1)))
+
+
+def _require_profile_calibration(
+    profile: Profile, bin_path: Path, discovered: StructureSpec
+) -> None:
+    """Refuse a bin that is not the calibration ``profile`` describes.
+
+    :func:`~simoscal.preflight.preflight` is the front door and asks this first,
+    but it is not the only door: :meth:`Tune.open` is a public entry point that a
+    revision script, a demo, or a test calls directly, and a guard only one of
+    two paths honours is not a guard (CR-20260828-01, CR-20260828-03). The
+    reasoning behind each half is in
+    :meth:`~simoscal.tune.profile.Profile.structure_mismatch` and in preflight's
+    own gates; this is the same rule stated where the other entry point can
+    trip over it.
+
+    A profile with no structure only adds tables to another profile's space and
+    could never identify a calibration on its own, so it declines to judge one
+    rather than passing everything.
+    """
+    if profile.structure is None:
+        return
+    mismatch = profile.structure_mismatch(discovered)
+    if mismatch is not None:
+        raise TuneError(
+            f"{bin_path.name} is not a {profile.name} calibration: {mismatch}. "
+            "The bin and the profile (with its XDF) are from different cars, and "
+            "every table would be written at the other car's addresses — outside "
+            "the region this bin's checksums cover, so the result would build and "
+            "verify clean and be wrong everywhere."
+        )
+    size = bin_path.stat().st_size
+    if size != profile.structure.full_bin_size:
+        raise TuneError(
+            f"{bin_path.name} is {size:,} bytes, but a {profile.name} image "
+            f"is {profile.structure.full_bin_size:,} "
+            f"({profile.structure.full_bin_size:#x}). "
+            "A partial image can still verify both checksums — they only cover the "
+            "calibration block — so this refusal is the only thing between a "
+            "truncated file and a build that calls it flash-ready."
+        )
 
 
 def _open_shared_space(

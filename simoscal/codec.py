@@ -34,6 +34,7 @@ from .model import Axis, EmbeddedData, RegionBoundsError, SimosCalError, Table
 
 __all__ = [
     "CodecError",
+    "unpacked_reason",
     "file_offset_for",
     "numpy_dtype_for",
     "decode_raw",
@@ -73,27 +74,44 @@ def numpy_dtype_for(emb: EmbeddedData) -> np.dtype:
     return np.dtype(f"{endian}{kind}{emb.element_bytes}")
 
 
-def _require_packed(emb: EmbeddedData) -> None:
-    """Assert the layout is packed contiguous; raise :class:`CodecError` if not.
+def unpacked_reason(emb: EmbeddedData) -> Optional[str]:
+    """Why ``emb`` is not packed contiguous, or ``None`` when it is.
 
     Packed means: no gap between columns (``minor_stride_bits == 0``) and the
     major stride is one of the packed conventions — ``0`` (implicit),
     ``elem_bits`` (a2l2xdf's per-element value), or ``cols * elem_bits`` (a true
-    row stride with no inter-row gap). Any other value implies a strided layout
-    the codec does not handle, and it refuses rather than guess.
+    row stride with no inter-row gap). Those three spellings describe *the same
+    bytes*; which one a definition file uses is a property of the generator that
+    wrote it, not of the calibration. ``SC8S50.V1.0.xdf`` writes ``elem_bits``
+    where ``SC8S50.ALL.xdf`` writes ``0`` for the very same tables.
+
+    Returning the reason rather than raising lets the same rule answer two
+    questions with one definition: :func:`_require_packed` refuses what the
+    codec cannot decode, and
+    :func:`~simoscal.tune.profile.layout_digest` treats the three packed
+    spellings as one so a pinned layout survives a re-generated definition file
+    that changed nothing about where a byte is.
     """
     if emb.minor_stride_bits != 0:
-        raise CodecError(
+        return (
             f"unhandled minor stride {emb.minor_stride_bits} bits "
             f"(only packed columns, minor_stride=0, are supported)"
         )
     packed_major = (0, emb.elem_bits, emb.cols * emb.elem_bits)
     if emb.major_stride_bits not in packed_major:
-        raise CodecError(
+        return (
             f"unhandled major stride {emb.major_stride_bits} bits for a "
             f"{emb.rows}x{emb.cols} {emb.elem_bits}-bit table "
             f"(expected one of {packed_major}, i.e. packed contiguous)"
         )
+    return None
+
+
+def _require_packed(emb: EmbeddedData) -> None:
+    """Assert the layout is packed contiguous; raise :class:`CodecError` if not."""
+    why = unpacked_reason(emb)
+    if why is not None:
+        raise CodecError(why)
 
 
 def decode_raw(

@@ -71,11 +71,6 @@ class AmbiguousProfileError(SimosCalError):
     """
 
 
-#: A full Simos 18 image is 4 MiB (both SC8S50 and SCGA05 read this size).
-#: Anything smaller is a CAL-only slice or a truncated file — neither is a
-#: flashable image this tool will edit.
-FULL_BIN_SIZE = 0x400000
-
 # -- verdict statuses -------------------------------------------------------- #
 #: Recognised full bin (some registered profile matched), checksums verify clean
 #: — safe to open for editing.
@@ -421,7 +416,8 @@ def preflight(
 
     # -- load (region-checked) ---------------------------------------------- #
     try:
-        cal = CalFile.open(str(xdf_path), str(bin_path), structure=structure_of(bin_path))
+        discovered = structure_of(bin_path)
+        cal = CalFile.open(str(xdf_path), str(bin_path), structure=discovered)
     except (RegionBoundsError, SimosCalError) as exc:
         return _blocked(
             bin_path=bin_path, xdf_path=xdf_path,
@@ -487,6 +483,89 @@ def preflight(
             advanced=advanced,
         )
 
+    # -- the bin must be the calibration the profile describes -------------- #
+    # Identification above resolved the *XDF*: it read symbols and shapes out of
+    # a definition file and opened no calibration at all. This is where the two
+    # are tied together — the CAL block this bin's own headers describe has to be
+    # the one the profile declares. Without it, one car's bin handed another
+    # car's definition file is recognised as the *second* car, and every read and
+    # write afterwards lands at the second car's addresses inside the first car's
+    # file, in bytes its checksums do not cover, so the result builds and
+    # verifies clean and is wrong everywhere (CR-20260828-01).
+    #
+    # ``profile`` came from BASE_PROFILES, whose membership rule *is* "declares a
+    # structure", so this is always present — but read it once rather than
+    # reaching through the Optional below.
+    structure = profile.structure
+    assert structure is not None, "a base profile always declares a structure"
+    mismatch = profile.structure_mismatch(discovered)
+    if mismatch is not None:
+        return _blocked(
+            bin_path=bin_path, xdf_path=xdf_path,
+            summary=(
+                f"This XDF's tables match the {profile.name} profile, but the bin "
+                f"is not a {profile.name} calibration."
+            ),
+            reasons=(
+                mismatch + ".",
+                "The definition file and the bin are from different cars. Every "
+                "table would be read and written at the other car's addresses — "
+                "outside the region this bin's checksums protect, so the result "
+                "would build and flash without complaint.",
+                "Pair this bin with its own definition file, or this definition "
+                "file with its own bin.",
+            ),
+            bin_size=bin_size, bin_sha256=bin_hash, xdf_sha256=xdf_hash,
+            region_start=region_start, region_size=region_size,
+            profile_name=profile.name,
+            advanced={
+                "deftitle": model.deftitle,
+                # As with the BASEOFFSET refusal below: the profile *did* resolve,
+                # and ``profile_matched`` stays False because nothing here may be
+                # edited as that car. Both facts matter, so both are stated.
+                "profile_resolved": True,
+                "discovered_cal_file_offset": f"{discovered.cal_file_offset:#x}",
+                "discovered_cal_base_address": f"{discovered.cal_base_address:#x}",
+                "profile_cal_file_offset": f"{structure.cal_file_offset:#x}",
+                "profile_cal_base_address": f"{structure.cal_base_address:#x}",
+            },
+        )
+
+    # -- and it must be the whole image, not a slice of it ------------------ #
+    # The size check further up compares the file against the *XDF's* declared
+    # region. For a definition file that numbers tables from the start of the
+    # calibration block, that region ends where the calibration does and says
+    # nothing about the rest of the flash. A bin truncated there keeps every CAL
+    # byte and enough ASW data for both checksums to verify, so it passes that
+    # check, this module's checksum checks, and every later build gate — while
+    # not being a flashable image at all (CR-20260828-03). The profile's declared
+    # image size is the only thing that can tell the difference, and it is known
+    # by now.
+    if bin_size != structure.full_bin_size:
+        return _blocked(
+            bin_path=bin_path, xdf_path=xdf_path,
+            summary=(
+                f"This is a {profile.name} calibration, but the file is not a "
+                "complete image."
+            ),
+            reasons=(
+                f"A {profile.name} bin is {structure.full_bin_size:,} bytes "
+                f"({structure.full_bin_size:#x}); this file is {bin_size:,}.",
+                "A partial image can still verify its checksums — they only cover "
+                "the calibration block — so passing them is not evidence the file "
+                "is whole.",
+                "Import a complete bin read from the ECU.",
+            ),
+            bin_size=bin_size, bin_sha256=bin_hash, xdf_sha256=xdf_hash,
+            region_start=region_start, region_size=region_size,
+            profile_name=profile.name,
+            advanced={
+                "deftitle": model.deftitle,
+                "profile_resolved": True,
+                "expected_bin_size": f"{structure.full_bin_size:#x}",
+            },
+        )
+
     # -- the XDF must count from where the profile says it counts ---------- #
     # Profile resolution matches on symbol and shape, which says nothing about
     # *where* the XDF reads. A definition file can name every table correctly,
@@ -508,11 +587,6 @@ def preflight(
     # accommodated, so a third convention has to be read and declared by a human
     # before anything is written through it.
     #
-    # ``profile`` came from BASE_PROFILES, whose membership rule *is* "declares a
-    # structure", so this is always present — but read it once rather than
-    # reaching through the Optional below.
-    structure = profile.structure
-    assert structure is not None, "a base profile always declares a structure"
     expected_base = profile.expected_xdf_base_offset
     # Subtract mode would make the XDF's addresses ECU addresses rather than
     # offsets, so the comparison below would be against the wrong quantity. No
@@ -644,7 +718,7 @@ def preflight(
         "profile": profile.name,
         "deftitle": model.deftitle,
         "region": f"[{region_start:#x}, {region_end:#x})",
-        "full_bin": bin_size == FULL_BIN_SIZE,
+        "full_bin": bin_size == structure.full_bin_size,
         **switch_advanced,
     }
 
