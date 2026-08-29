@@ -7,8 +7,8 @@ name = "simoscal"
 version = "0.1.0"
 description = "Parse, read, edit, and minimal-diff write Simos18 (SC8S50) TunerPro XDF/BIN calibrations in physical units."
 requires-python = ">=3.11"
-license = { text = "Proprietary" }
-authors = [{ name = "Sam Ryan", email = "samryan1021@gmail.com" }]
+license = { text = "GPL-3.0-only" }
+authors = [{ name = "simoscal project", email = "simoscal.tuning@gmail.com" }]
 dependencies = [
     "numpy>=1.24",
 ]
