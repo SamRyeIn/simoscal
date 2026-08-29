@@ -149,6 +149,10 @@ _SPECS = [
           "Map for boost pressure actuator setpoint : x axis "
           "(exhaust flow factor), shared by VVL 0 and VVL 1", "-", (1, 16),
           frozenset({TAG_AXIS})),
+    _spec("wastegate_intake_flow_axis", "ldp_fac_2_ip_fac_bpa_sp",
+          "Map for boost pressure actuator setpoint : y axis "
+          "(intake flow factor), shared by VVL 0 and VVL 1", "-", (1, 10),
+          frozenset({TAG_AXIS})),
 
     # ---- fueling ---------------------------------------------------------- #
     _spec("lambda_basic", "IP_LAMB_BAS[1]",
@@ -226,6 +230,45 @@ _SPECS.extend([
           "Basis for temperature correction of IGA versus N_32, TIA : y axis "
           "(intake air temperature), shared by Basic and Reference",
           "\N{DEGREE SIGN}C", (1, 10), frozenset({TAG_AXIS})),
+])
+
+# Knock control — the fast loop that answers a single knocking combustion event.
+#
+# Three tables, and the sign convention is the trap. The knock correction is a
+# NEGATIVE angle, so "increase" in `IP_IGA_INC_KNK` means move it back toward
+# zero: it is the recovery step size, which is why TunerPro names the same
+# table "Knock Correction Decay Amount". Reading "increase" as "pull more
+# timing" inverts the edit. See `knowledge/ecu-tuning-not-the-basics.md`
+# § Knock behavior and calibration for the screenshot-to-symbol mapping, which
+# was confirmed cell-by-cell against the stock bin rather than inferred.
+#
+# Not mapped here, on purpose, and easy to grab by mistake:
+# `IP_FAC_IGA_DEC_KNK` — Knock Factor Table Cyl. X is indexed by rpm x knock
+# ENERGY rather than airmass, and the `IP_IGA_AD_1_*` / `IP_DLY_INC_AD_1_KNK`
+# family drives the slow adaptive (ad1) loop, not this one.
+_SPECS.extend([
+    _spec("knock_retard", "IP_IGA_DEC_KNK",
+          "Spark retard at recognised knocking, i.e. how much timing one "
+          "detected knock event pulls (rpm x airmass). More negative is a "
+          "deeper protective cut",
+          "\N{DEGREE SIGN}CRK", (4, 8)),
+    _spec("knock_recovery_delay", "IP_DLY_INC_FAST_KNK",
+          "Number of segments between each increase of fast loop, i.e. cylinder "
+          "strokes between knock decay steps (rpm). Lower recovers sooner",
+          "segments", (1, 8)),
+    _spec("knock_recovery_step", "IP_IGA_INC_KNK",
+          "Increasing value of knock integrated correction when knock is "
+          "detected, i.e. the timing returned per decay step (rpm x current "
+          "correction). Positive; larger recovers faster",
+          "\N{DEGREE SIGN}CRK", (4, 8)),
+    # The backstop on total accumulated retard. Mapped so a revision and a
+    # reviewer can read where protection ultimately floors out, and because a
+    # recovery-rate change should be read against it — nothing in this lineage
+    # has cause to write it.
+    _spec("knock_retard_max", "IP_IGA_MAX_KNK",
+          "Maximum value for spark retard — the floor on total accumulated "
+          "knock correction (rpm x airmass)",
+          "\N{DEGREE SIGN}CRK", (4, 8)),
 ])
 
 # The remaining Tuning Basics SOP write targets, plus the one table the revision
@@ -478,6 +521,11 @@ IGNITION_TEMP_CORRECTION = (
     "ignition_temp_iat_axis",
 )
 
+#: The knock fast loop, in the order it acts: how deep the cut is, how often it
+#: steps back, and how much each step returns. A revision touching recovery rate
+#: should say explicitly what it does to cut depth, which is why they are one set.
+KNOCK_CONTROL = ("knock_retard", "knock_recovery_delay", "knock_recovery_step")
+
 #: The three lambda grids that share ``lambda_rpm_axis`` / ``lambda_load_axis``.
 LAMBDA_FAMILY = ("lambda_basic", "lambda_basic_hpdi", "lambda_basic_mpi")
 
@@ -589,13 +637,15 @@ _GROUPS: dict[str, tuple[str, ...]] = {
         "wastegate_feedforward_vvl0",
         "wastegate_feedforward_vvl1",
         "wastegate_exh_flow_axis",
+        "wastegate_intake_flow_axis",
         "charge_air_pressure_max_diag",
         "charge_air_diag_put_axis",
         "charge_air_diag_rpm_axis",
     ),
     # Ignition angle: the nine base cam-position grids and the two IAT
     # corrections applied on top of them, with their shared axes.
-    GROUP_TIMING: IGNITION_BASE_VVL0 + IGNITION_TEMP_CORRECTION,
+    GROUP_TIMING: IGNITION_BASE_VVL0 + IGNITION_TEMP_CORRECTION + KNOCK_CONTROL
+    + ("knock_retard_max",),
     # Lambda, everywhere it is set: the three basic grids and their shared axes,
     # the three minimum-value floors, the full-load enrichment set, and
     # `ID_PV_AV_FL` — Pedal value threshold for the determination of LV_FL_RAW,
@@ -658,6 +708,7 @@ STOCK_REFERENCES = {
 TABLE_SETS: dict[str, tuple[str, ...]] = {
     "ignition_base_vvl0": IGNITION_BASE_VVL0,
     "ignition_temp_correction": IGNITION_TEMP_CORRECTION,
+    "knock_control": KNOCK_CONTROL,
     "lambda_family": LAMBDA_FAMILY,
     "lambda_floors": LAMBDA_FLOORS,
     "lambda_full_load": LAMBDA_FULL_LOAD,
@@ -694,6 +745,7 @@ __all__ = [
     "ENGINE_SPEED_LIMIT",
     "STATIC_REV_LIMIT",
     "IGNITION_BASE_VVL0",
+    "KNOCK_CONTROL",
     "IGNITION_TEMP_CORRECTION",
     "LAMBDA_FAMILY",
     "LAMBDA_FLOORS",

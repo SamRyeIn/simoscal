@@ -281,6 +281,103 @@ def test_exh_flow_axis_last_must_stay_increasing(tune: Tune) -> None:
         tune.wastegate.exh_flow_axis_last(0.5)
 
 
+def _bilinear(grid, x_axis, y_axis, x, y):
+    """The ECU's own feedforward lookup, unrolled — see the R19 revision script."""
+    xi = float(np.clip(np.interp(x, x_axis, np.arange(len(x_axis))),
+                       0, len(x_axis) - 1))
+    yi = float(np.clip(np.interp(y, y_axis, np.arange(len(y_axis))),
+                       0, len(y_axis) - 1))
+    x0, y0 = int(np.floor(xi)), int(np.floor(yi))
+    x1, y1 = min(x0 + 1, len(x_axis) - 1), min(y0 + 1, len(y_axis) - 1)
+    fx, fy = xi - x0, yi - y0
+    return (grid[y0, x0] * (1 - fx) * (1 - fy) + grid[y0, x1] * fx * (1 - fy)
+            + grid[y1, x0] * (1 - fx) * fy + grid[y1, x1] * fx * fy)
+
+
+def test_move_intake_flow_breakpoint_preserves_the_delivered_surface(
+    tune: Tune,
+) -> None:
+    """The whole point: moving a breakpoint must not move any commanded position.
+
+    Checked below the declared `preserve_to`, which is the range the contract
+    covers. Above it the resample deliberately extrapolates.
+    """
+    x_axis = tune.axis("wastegate_feedforward_vvl0", "x")
+    y_before = tune.axis("wastegate_feedforward_vvl0", "y")
+    before = {n: tune.values(n) for n in ("wastegate_feedforward_vvl0",
+                                         "wastegate_feedforward_vvl1")}
+
+    tune.wastegate.move_intake_flow_breakpoint(
+        8, 1.15, preserve_to=1.21, exhaust_range=(0.65, 1.45))
+
+    y_after = tune.axis("wastegate_feedforward_vvl0", "y")
+    assert y_after[8] == pytest.approx(1.15, abs=1e-3)
+    assert np.all(np.diff(y_after) > 0), "breakpoints must stay increasing"
+
+    # Probe the declared rectangle, which is exactly what the contract covers —
+    # outside it the top rows are extrapolated and are meant to differ.
+    worst = 0.0
+    for name, grid in before.items():
+        after = tune.values(name)
+        for x in np.linspace(0.65, 1.45, 40):
+            for y in np.linspace(0.0, 1.21, 40):
+                worst = max(worst, abs(
+                    _bilinear(after, x_axis, y_after, x, y)
+                    - _bilinear(grid, x_axis, y_before, x, y)
+                ))
+    # Two encoding steps — the floor of what "unchanged" can mean once the
+    # resampled cells are stored and clamped. See _REBREAKPOINT_TOLERANCE.
+    assert worst < 1.22e-4, f"surface moved by {worst:g} inside the preserved range"
+
+
+def test_move_intake_flow_breakpoint_keeps_both_vvl_maps_identical(
+    tune: Tune,
+) -> None:
+    tune.wastegate.move_intake_flow_breakpoint(
+        8, 1.15, preserve_to=1.21, exhaust_range=(0.65, 1.45))
+    assert np.array_equal(
+        tune.values("wastegate_feedforward_vvl0")[8:],
+        tune.values("wastegate_feedforward_vvl1")[8:],
+    )
+
+
+def test_move_intake_flow_breakpoint_stays_inside_its_neighbours(
+    tune: Tune,
+) -> None:
+    with pytest.raises(ValueError, match="strictly increasing"):
+        tune.wastegate.move_intake_flow_breakpoint(
+            8, 1.60, preserve_to=1.70, exhaust_range=(0.65, 1.45))
+    with pytest.raises(ValueError, match="strictly increasing"):
+        tune.wastegate.move_intake_flow_breakpoint(
+            8, 1.00, preserve_to=1.21, exhaust_range=(0.65, 1.45))
+
+
+def test_move_intake_flow_breakpoint_needs_something_left_to_preserve(
+    tune: Tune,
+) -> None:
+    with pytest.raises(ValueError, match="nothing left to preserve"):
+        tune.wastegate.move_intake_flow_breakpoint(
+            8, 1.15, preserve_to=1.10, exhaust_range=(0.65, 1.45))
+
+
+def test_move_intake_flow_breakpoint_rejects_an_index_off_the_axis(
+    tune: Tune,
+) -> None:
+    with pytest.raises(ValueError, match="outside the"):
+        tune.wastegate.move_intake_flow_breakpoint(
+            12, 1.15, preserve_to=1.21, exhaust_range=(0.65, 1.45))
+
+
+def test_move_intake_flow_breakpoint_leaves_every_cell_physical(
+    tune: Tune,
+) -> None:
+    tune.wastegate.move_intake_flow_breakpoint(
+        8, 1.15, preserve_to=1.21, exhaust_range=(0.65, 1.45))
+    for name in ("wastegate_feedforward_vvl0", "wastegate_feedforward_vvl1"):
+        values = tune.values(name)
+        assert values.min() >= 0.0 and values.max() <= 1.0, name
+
+
 # --------------------------------------------------------------------------- #
 # Equivalence with the frozen revisions
 # --------------------------------------------------------------------------- #
@@ -655,3 +752,17 @@ def test_the_fuel_cut_offset_stays_ordinary(tune: Tune) -> None:
     spec = SC8S50["static_rev_fuel_cut_offset"]
     assert not spec.domain_owned
     assert float(tune.values("static_rev_fuel_cut_offset").ravel()[0]) == pytest.approx(100.0)
+
+
+def test_move_intake_flow_breakpoint_refuses_an_envelope_it_cannot_honour(
+    tune: Tune,
+) -> None:
+    """Declaring exhaust flow the resample cannot preserve must raise, not clamp.
+
+    The low-exhaust columns are where extrapolating the top rows runs out of
+    physical range, so a caller claiming to operate there gets a refusal rather
+    than a quietly altered surface.
+    """
+    with pytest.raises(ValueError, match="Refusing to alter the delivered surface"):
+        tune.wastegate.move_intake_flow_breakpoint(
+            8, 1.15, preserve_to=1.21, exhaust_range=(0.40, 1.45))

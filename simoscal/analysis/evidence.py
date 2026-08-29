@@ -175,7 +175,6 @@ def _legend(ax) -> None:
         ax.legend(loc="best", fontsize=8)
 
 
-_CYCLE = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple", "tab:brown"]
 _REF_COLOR = "0.35"        # dashed dark-gray reference (setpoint / base / table)
 _SECONDARY_COLOR = "0.55"  # dash-dot mid-gray secondary-actual (e.g. HPFP alongside LPFP)
 _TRANSIENT_COLOR = "0.5"   # faint scatter of loaded-but-unsettled samples
@@ -199,6 +198,44 @@ _THRESHOLD_STYLE: dict[str, tuple[str, str, float]] = {
 }
 
 
+#: Tier 2 — bold, saturated named colors added once the 10-color matplotlib
+#: default cycle (tier 1, built from ``axes.prop_cycle`` below) runs out.
+_BOLD_NAMED_COLORS = (
+    "black", "cyan", "magenta", "gold", "lime", "deeppink", "saddlebrown", "navy",
+)
+
+
+def _pull_color(ordinal: int, total: int) -> str:
+    """A color unique to this pull among ``total`` pulls sharing one plot.
+
+    Tier 1 is matplotlib's own default cycle (``C0``..``C9``), tier 2 is a
+    short list of bold named colors distinct from it, and only once both are
+    exhausted does the rest come from an HSV colormap sweep — MATLAB's `hsv`
+    equivalent — so a handful of pulls still gets matplotlib's familiar
+    palette instead of an unfamiliar rainbow.
+    """
+    import matplotlib as mpl
+    import matplotlib.colors as mcolors
+
+    tier1 = list(mpl.rcParams["axes.prop_cycle"].by_key()["color"])
+    palette = tier1 + list(_BOLD_NAMED_COLORS)
+    if ordinal < len(palette):
+        return mcolors.to_hex(palette[ordinal])
+    extra_total = max(1, total - len(palette))
+    frac = (ordinal - len(palette)) / extra_total
+    return mcolors.to_hex(mpl.colormaps["hsv"](frac))
+
+
+def _gear_tag(ctx, pull_index: int) -> str:
+    """``", 3G"`` for a resolved gear, else ``""`` — never guessed."""
+    for p in ctx.pulls:
+        if p.index == pull_index:
+            if p.gear_resolved and p.gear is not None:
+                return f", {p.gear}G"
+            return ""
+    return ""
+
+
 def _draw_series(ax, ctx, spec: SeriesSpec, ordinals: dict[int, int]) -> bool:
     """Draw one declared series onto ``ax``. True if any sample was drawn.
 
@@ -214,12 +251,10 @@ def _draw_series(ax, ctx, spec: SeriesSpec, ordinals: dict[int, int]) -> bool:
     shared_label_used = False
     for data in series_segments(ctx, spec):
         if spec.role == Role.PRIMARY:
-            color = _CYCLE[ordinals.get(data.pull_index, 0) % len(_CYCLE)]
+            color = _pull_color(ordinals.get(data.pull_index, 0), len(ordinals))
             style = "-"
-            entry = (
-                f"{spec.label} (Pull {data.pull_index})" if spec.label
-                else f"Pull {data.pull_index}"
-            )
+            pull_tag = f"Pull {data.pull_index}{_gear_tag(ctx, data.pull_index)}"
+            entry = f"{spec.label} ({pull_tag})" if spec.label else pull_tag
         elif spec.role == Role.TRANSIENT:
             # Scatter, not a line: a transient is genuinely not curve-like, and
             # joining the points would assert a sweep that never happened.
@@ -280,6 +315,9 @@ def _render_plot_spec(ctx, spec: PlotSpec, path) -> bool:
     panels = [panel for panel in spec.panels if panel_available(ctx, panel)]
     if not panels:
         return False
+    subtitle = spec.subtitle_fn(ctx) if spec.subtitle_fn else None
+    if subtitle:
+        panels = [replace(panels[0], title=f"{panels[0].title}\n{subtitle}"), *panels[1:]]
     count = len(panels)
     fig = _figure(figsize=(10, 5.5) if count == 1 else (10, 4 * count))
     ordinals = pull_ordinals(ctx)

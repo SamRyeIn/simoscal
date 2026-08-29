@@ -139,6 +139,10 @@ BASE_CALLS = {
         lambda t, d: t.boost.manifold_pressure_max(3000.0, dry_run=d),
     "boost.overboost_threshold":
         lambda t, d: t.boost.overboost_threshold(2700.0, dry_run=d),
+    "wastegate.move_intake_flow_breakpoint":
+        lambda t, d: t.wastegate.move_intake_flow_breakpoint(
+            8, 1.15, preserve_to=1.21, exhaust_range=(0.65, 1.45),
+            dry_run=d),
     "limits.airmass_cap_mg":
         lambda t, d: t.limits.airmass_cap_mg(2000.0, dry_run=d),
     "limits.intake_air_max":

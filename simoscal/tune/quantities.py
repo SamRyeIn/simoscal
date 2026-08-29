@@ -54,6 +54,11 @@ AXIS_QUANTITIES: dict[str, str] = {
     "ldpm_n_32_1_lasp": "Engine speed",
     "ldpm_n_ip_iga_bas_igsp": "Engine speed",
     "ldpm_n_32_5_igsp": "Engine speed",
+    # 736–6016 rpm, shared by the whole knock family — the fast-loop tables
+    # (IP_IGA_DEC_KNK, IP_DLY_INC_FAST_KNK, IP_IGA_INC_KNK, IP_IGA_MAX_KNK) and
+    # the ad1 slow-loop ones. Its XDF title names only the ad1 table it happens
+    # to be filed under; the axis itself is plain engine speed.
+    "ldpm_n_32_1_knck": "Engine speed",
     # 1504–4992 rpm, the CAP_H overboost-diagnosis y axis.
     "ldpm_n_ip_put_cap_diag": "Engine speed",
     # 512–6496 rpm, the columns of the lambda full-load enrichment maps.
@@ -71,6 +76,10 @@ AXIS_QUANTITIES: dict[str, str] = {
     # and lambda grids are indexed on.
     "ldpm_maf_1_lasp": "Airmass per stroke",
     "ldpm_maf_ip_iga_bas_igsp": "Airmass per stroke",
+    # 349–1100 mg/stk, the load axis of the knock retard and retard-maximum
+    # grids. Titled after the threshold-factor table it is filed under, but the
+    # decoded breakpoints are the same airmass-per-stroke ladder.
+    "ldpm_maf_h_rng_1_knck": "Airmass per stroke",
     # kg/h through the compressor (100–1500) — the overboost diagnosis axis.
     "ldp_maf_kgh_tcha_put_amp_dif": "Turbocharger air mass flow",
 
@@ -90,6 +99,12 @@ AXIS_QUANTITIES: dict[str, str] = {
     # temperature the IGA temperature corrections are selected on. Distinct from
     # the compressor-inlet axis above — same unit, different station.
     "ldpm_tia_iga_cor_sel": "Intake air temperature",
+
+    # -- knock correction ---------------------------------------------------- #
+    # -6.0 to -0.75 °CRK. Not a timing angle being commanded: this is the knock
+    # correction *already accumulated*, which IP_IGA_INC_KNK is scheduled
+    # against so the recovery step can depend on how deep the cut currently is.
+    "ldp_iga_knk_bas_ip_iga_inc_knk": "Accumulated knock correction",
 
     # -- wastegate feedforward ---------------------------------------------- #
     # The two flow factors IP_FAC_BPA_SP[0]/[1] are indexed on; both 0–1.5.

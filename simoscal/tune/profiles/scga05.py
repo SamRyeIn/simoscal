@@ -150,6 +150,10 @@ _SPECS = [
           "Wastegate position feedforward : x axis (relative exhaust flow), "
           "shared by both valve-lift maps", "-", (1, 16),
           frozenset({TAG_AXIS})),
+    _spec("wastegate_intake_flow_axis", "ldp_fac_2_ip_fac_bpa_sp",
+          "Wastegate position feedforward : y axis (relative intake flow), "
+          "shared by both valve-lift maps", "-", (1, 10),
+          frozenset({TAG_AXIS})),
 
     # ---- airflow ---------------------------------------------------------- #
     # The kg/stk trap does NOT apply on this car. The ECU stores the same
@@ -283,6 +287,28 @@ _SPECS = [
           "Basis for temperature correction of IGA versus N_32, TIA : x axis "
           "(engine speed), shared by the IGA temperature-correction tables",
           "rpm", (1, 10), frozenset({TAG_AXIS})),
+
+    # Knock fast loop. All three carry the same shapes as SC8S50, and this XDF
+    # titles them with the tuning guide's own names ("Initial Knock Correction",
+    # "Cyl Strokes Between Knock Decay Steps", "Knock Correction Decay Amount"),
+    # which is independent corroboration of the screenshot-to-symbol mapping
+    # that was confirmed cell-by-cell on the other car. Sign convention as on
+    # SC8S50: the correction is negative, so `knock_recovery_step` is the
+    # amount returned per decay step, not extra retard.
+    _spec("knock_retard", "IP_IGA_DEC_KNK",
+          "Spark retard at recognised knocking, i.e. how much timing one "
+          "detected knock event pulls (rpm x airmass). More negative is a "
+          "deeper protective cut",
+          "\N{DEGREE SIGN}CRK", (4, 8)),
+    _spec("knock_recovery_delay", "IP_DLY_INC_FAST_KNK",
+          "Number of segments between each increase of fast loop, i.e. cylinder "
+          "strokes between knock decay steps (rpm). Lower recovers sooner",
+          "segments", (1, 8)),
+    _spec("knock_recovery_step", "IP_IGA_INC_KNK",
+          "Increasing value of knock integrated correction when knock is "
+          "detected, i.e. the timing returned per decay step (rpm x current "
+          "correction). Positive; larger recovers faster",
+          "\N{DEGREE SIGN}CRK", (4, 8)),
 ]
 
 # ---- ignition: the nine VVL0 base grids ------------------------------------ #
@@ -314,6 +340,10 @@ for _i in range(3):
 # Table sets — the groupings a revision or a domain call thinks in
 # --------------------------------------------------------------------------- #
 #: Every base-timing logical name, in the order the ECU's cam grid runs.
+#: The knock fast loop, in the order it acts. Same three tables and same
+#: rationale as SC8S50; `knock_retard_max` is unavailable here.
+KNOCK_CONTROL = ("knock_retard", "knock_recovery_delay", "knock_recovery_step")
+
 IGNITION_BASE_VVL0 = tuple(
     f"ignition_base_vvl0_i{i}_e{e}" for i in range(3) for e in range(3)
 )
@@ -400,6 +430,12 @@ UNAVAILABLE: dict[str, str] = {
         "Reference IGA versus N_32, TIA. Only the Basic half of the pair "
         "(`IP_IGA_BAS_TEMP_N_32`) exists here, and it is mapped"
     ),
+    "knock_retard_max": (
+        "no `IP_IGA_MAX_KNK` — Maximum value for spark retard. The other three "
+        "knock fast-loop tables are declared by this XDF and are mapped; the "
+        "backstop on total accumulated retard is not, so there is nothing to "
+        "read it against here"
+    ),
     "pedal_dct_offroad_high": (
         "no `IP_FAC_TQ_REQ_DRIV_H_OFRD_DCT` — Driver pedal torque request, "
         "high speed, off-road (DCT). This car's DCT pedal family is normal / "
@@ -463,11 +499,12 @@ _GROUPS: dict[str, tuple[str, ...]] = {
         "wastegate_feedforward_vvl0",
         "wastegate_feedforward_vvl1",
         "wastegate_exh_flow_axis",
+        "wastegate_intake_flow_axis",
         "charge_air_pressure_max_diag",
         "charge_air_diag_put_axis",
         "charge_air_diag_rpm_axis",
     ),
-    GROUP_TIMING: IGNITION_BASE_VVL0 + (
+    GROUP_TIMING: IGNITION_BASE_VVL0 + KNOCK_CONTROL + (
         "ignition_temp_correction_basic",
         "ignition_temp_rpm_axis",
     ),
@@ -508,6 +545,7 @@ _SPECS = apply_groups("SCGA05", _SPECS, _GROUPS)
 #:   unknown harmless.
 TABLE_SETS: dict[str, tuple[str, ...]] = {
     "ignition_base_vvl0": IGNITION_BASE_VVL0,
+    "knock_control": KNOCK_CONTROL,
     "ignition_temp_correction": (
         "ignition_temp_correction_basic",
         "ignition_temp_rpm_axis",
@@ -560,6 +598,7 @@ __all__ = [
     "TABLE_SETS",
     "UNAVAILABLE",
     "IGNITION_GRID_SHAPE",
+    "KNOCK_CONTROL",
     "IGNITION_BASE_VVL0",
     "LAMBDA_FAMILY",
     "LAMBDA_FLOORS",

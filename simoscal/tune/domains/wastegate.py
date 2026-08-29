@@ -30,6 +30,34 @@ __all__ = ["Wastegate", "WG_CLOSED", "WG_OPEN"]
 #: Physical bounds of a wastegate-position cell.
 WG_OPEN, WG_CLOSED = 0.0, 1.0
 
+#: Two encoding steps of the feedforward table (its step is ~6.1e-5).
+#:
+#: Not a comfort margin — it is the floor of what "unchanged" can mean here. A
+#: resampled cell is stored to the nearest step, and clamping one into the
+#: physical [0, 1] range can move it a further step, so a bilinear blend of two
+#: such cells can differ from the original surface by two steps without anything
+#: being wrong. Two steps is 0.012 wastegate position points, on the order of
+#: 0.0002 psi of boost. Anything above it is a resample defect, not rounding.
+_REBREAKPOINT_TOLERANCE = 1.22e-4
+
+
+def _bilinear(grid, x_axis, y_axis, x: float, y: float) -> float:
+    """The ECU's own feedforward lookup, unrolled.
+
+    Replaying this against the logged ``WG Pos Base (%)`` over the R18 sessions
+    reproduces the commanded feedforward to 0.066 points RMS, which is what
+    licenses using it to assert that a re-breakpoint changed nothing.
+    """
+    xi = float(np.clip(np.interp(x, x_axis, np.arange(len(x_axis))),
+                       0, len(x_axis) - 1))
+    yi = float(np.clip(np.interp(y, y_axis, np.arange(len(y_axis))),
+                       0, len(y_axis) - 1))
+    x0, y0 = int(np.floor(xi)), int(np.floor(yi))
+    x1, y1 = min(x0 + 1, len(x_axis) - 1), min(y0 + 1, len(y_axis) - 1)
+    fx, fy = xi - x0, yi - y0
+    return (grid[y0, x0] * (1 - fx) * (1 - fy) + grid[y0, x1] * fx * (1 - fy)
+            + grid[y1, x0] * (1 - fx) * fy + grid[y1, x1] * fx * fy)
+
 
 class Wastegate(Domain):
     """Reached as ``tune.wastegate``."""
@@ -144,3 +172,146 @@ class Wastegate(Domain):
             detail=("shared by both VVL feedforward maps and referenced by "
                     "nothing else, so both are re-breakpointed together"),
         )
+
+    @dry_runnable
+    def move_intake_flow_breakpoint(
+        self,
+        index: int,
+        value: float,
+        *,
+        preserve_to: float,
+        exhaust_range: tuple[float, float],
+        intent: str = "",
+    ) -> tuple[EditEntry, ...]:
+        """Move one intake-flow-factor breakpoint and resample both maps onto it.
+
+        Why this exists as its own method rather than a raw axis write: moving a
+        breakpoint changes what every cell in that row *means*. Writing the axis
+        alone silently reinterprets the whole row, which is a calibration change
+        nobody declared. So this does both halves at once — the axis move and the
+        resample that holds the delivered surface still.
+
+        ``preserve_to`` and ``exhaust_range`` together declare the operating
+        envelope this car actually reaches: intake flow factor up to
+        ``preserve_to``, exhaust flow factor within ``exhaust_range``. Inside
+        that rectangle the commanded position is reproduced **exactly**;
+        outside it the rows above the moved breakpoint are extrapolated and the
+        surface deliberately is not preserved. That is a real trade — it spends
+        the top of the axis — and it is only sound while the engine cannot
+        reach there. Pass what the car has been logged at, with margin.
+
+        The guarantee is *verified*, not argued: the ECU's bilinear lookup is
+        replayed over a dense grid of that rectangle before and after, and any
+        movement beyond half an encoding step raises. Both axes matter, which
+        is why both are declared — rows above ``preserve_to`` still act as
+        interpolation endpoints below it, so a cell clamped into the physical
+        [0, 1] range up there can still move the delivered surface down here.
+
+        Both VVL maps are resampled identically, as with :meth:`overlay`.
+        """
+        axis_name = "wastegate_intake_flow_axis"
+        axis = self._values(axis_name).ravel().astype(float)
+        if not 0 <= index < len(axis):
+            raise ValueError(
+                f"wastegate.move_intake_flow_breakpoint: index {index} is "
+                f"outside the {len(axis)}-breakpoint axis"
+            )
+        old = float(axis[index])
+        lower = float(axis[index - 1]) if index > 0 else float("-inf")
+        upper = float(axis[index + 1]) if index + 1 < len(axis) else float("inf")
+        if not lower < value < upper:
+            raise ValueError(
+                f"wastegate.move_intake_flow_breakpoint: {value:g} does not sit "
+                f"strictly between its neighbours {lower:g} and {upper:g} — "
+                "breakpoints must stay strictly increasing"
+            )
+        if preserve_to <= value:
+            raise ValueError(
+                f"wastegate.move_intake_flow_breakpoint: preserve_to "
+                f"{preserve_to:g} must be above the new breakpoint {value:g}; "
+                "there would be nothing left to preserve"
+            )
+
+        names = self._table_set("wastegate_maps")
+        grids = {name: self._values(name).astype(float) for name in names}
+
+        new_axis = axis.copy()
+        new_axis[index] = float(value)
+        resampled: dict[str, np.ndarray] = {}
+        for name, grid in grids.items():
+            out = grid.copy()
+            for col in range(grid.shape[1]):
+                column = grid[:, col]
+                at_new = float(np.interp(value, axis, column))
+                at_env = float(np.interp(preserve_to, axis, column))
+                out[index, col] = at_new
+                # Rows above the moved breakpoint carry the surface's own slope
+                # through `preserve_to`, so the used range stays exact.
+                for above in range(index + 1, len(axis)):
+                    span = (new_axis[above] - value) / (preserve_to - value)
+                    out[above, col] = at_new + (at_env - at_new) * span
+            resampled[name] = np.clip(out, WG_OPEN, WG_CLOSED)
+
+        # The guarantee, checked rather than reasoned about. Clamping a cell
+        # above `preserve_to` can still move the surface below it, because that
+        # row is an interpolation endpoint — so verify the rectangle directly.
+        x_axis = self._values("wastegate_exh_flow_axis").ravel().astype(float)
+        lo_x, hi_x = float(exhaust_range[0]), float(exhaust_range[1])
+        if not lo_x < hi_x:
+            raise ValueError(
+                f"wastegate.move_intake_flow_breakpoint: exhaust_range "
+                f"{exhaust_range!r} is not (low, high)"
+            )
+        probe_x = np.linspace(lo_x, hi_x, 64)
+        probe_y = np.linspace(0.0, preserve_to, 64)
+        worst, worst_at = 0.0, None
+        for name in names:
+            for x in probe_x:
+                for y in probe_y:
+                    moved = abs(
+                        _bilinear(resampled[name], x_axis, new_axis, x, y)
+                        - _bilinear(grids[name], x_axis, axis, x, y)
+                    )
+                    if moved > worst:
+                        worst, worst_at = moved, (name, float(x), float(y))
+        if worst > _REBREAKPOINT_TOLERANCE:
+            name, x, y = worst_at
+            raise ValueError(
+                f"wastegate.move_intake_flow_breakpoint: the resample moved the "
+                f"commanded position by {worst * 100:.4f} points at {name} "
+                f"exhaust {x:.3f} / intake {y:.3f}, inside the declared "
+                f"operating envelope (exhaust {lo_x:g}..{hi_x:g}, intake up to "
+                f"{preserve_to:g}). Refusing to alter the delivered surface."
+            )
+
+        first = resampled[names[0]]
+        for name in names[1:]:
+            if not np.array_equal(resampled[name][index:], first[index:]):
+                raise ValueError(
+                    "wastegate.move_intake_flow_breakpoint: the VVL tables "
+                    "resampled differently — they are one calibration for two "
+                    "cam positions and must match. Refusing to continue."
+                )
+
+        reason = intent or (
+            f"move intake flow factor breakpoint {index} from {old:g} to "
+            f"{value:g} and resample both feedforward maps so the commanded "
+            f"position is unchanged up to intake flow factor {preserve_to:g}"
+        )
+        detail = (
+            f"commanded position verified unchanged (worst {worst * 100:.5f} "
+            f"points) over exhaust flow {lo_x:g}..{hi_x:g} and intake flow up "
+            f"to {preserve_to:g}; above that the rows are extrapolated along "
+            f"the same slope, which this car is not logged to reach"
+        )
+        entries = [
+            self._tune.write(
+                axis_name, new_axis.reshape(self._values(axis_name).shape),
+                kind=KIND_AXIS, intent=reason, detail=detail,
+            )
+        ]
+        for name in names:
+            entries.append(self._tune.write(
+                name, resampled[name], intent=reason, detail=detail,
+            ))
+        return tuple(entries)

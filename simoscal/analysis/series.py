@@ -166,6 +166,44 @@ DERIVED_REQUIRES: dict[str, tuple[str, ...]] = {
 }
 
 
+def contiguous_runs(mask: np.ndarray) -> list[tuple[int, int]]:
+    """Inclusive index runs where ``mask`` is True — so a line never bridges a hole."""
+    runs: list[tuple[int, int]] = []
+    n = mask.size
+    i = 0
+    while i < n:
+        if not mask[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and mask[j + 1]:
+            j += 1
+        runs.append((i, j))
+        i = j + 1
+    return runs
+
+
+def _knock_event_subtitle(ctx: CheckContext) -> Optional[str]:
+    """'XX knock events across YY pulls' — one event per contiguous per-cylinder
+    run of nonzero retard (any knock logged, not just at/below a threshold),
+    within the loaded-WOT mask."""
+    total = len(ctx.pulls)
+    if total == 0:
+        return None
+    events = 0
+    for pull in ctx.pulls:
+        loaded = _loaded_mask(ctx, pull)
+        for cid in _KNOCK_CHANNELS:
+            arr = _col(ctx, pull, cid)
+            if arr is None:
+                continue
+            mask = loaded & np.isfinite(arr) & (arr < 0.0)
+            events += len(contiguous_runs(mask))
+    ev = "event" if events == 1 else "events"
+    pl = "pull" if total == 1 else "pulls"
+    return f"{events} knock {ev} across {total} {pl}"
+
+
 # --------------------------------------------------------------------------- #
 # The declarative types
 # --------------------------------------------------------------------------- #
@@ -236,7 +274,9 @@ class PlotSpec:
     ``description`` says which parameters are drawn — it is the line that sits
     above the plot in the app and answers "what am I looking at". ``tip`` says
     how to *read* it. Both live here rather than in the app so the two halves
-    describe the same plot in the same words.
+    describe the same plot in the same words. ``subtitle_fn``, if set, computes
+    a one-line summary appended under the top panel's title (e.g. an event
+    count) — ``None`` return skips it.
     """
 
     id: str
@@ -244,6 +284,7 @@ class PlotSpec:
     description: str
     tip: str
     panels: tuple[PanelSpec, ...]
+    subtitle_fn: Optional[Callable[[CheckContext], Optional[str]]] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -354,6 +395,7 @@ PLOT_SPECS: tuple[PlotSpec, ...] = (
                 ),
             ),
         ),
+        subtitle_fn=_knock_event_subtitle,
     ),
     PlotSpec(
         id="lambda",
@@ -537,23 +579,6 @@ def _resolve(ctx: CheckContext, pull, source: str) -> Optional[np.ndarray]:
     if fn is not None:
         return fn(ctx, pull)
     return _col(ctx, pull, source)
-
-
-def contiguous_runs(mask: np.ndarray) -> list[tuple[int, int]]:
-    """Inclusive index runs where ``mask`` is True — so a line never bridges a hole."""
-    runs: list[tuple[int, int]] = []
-    n = mask.size
-    i = 0
-    while i < n:
-        if not mask[i]:
-            i += 1
-            continue
-        j = i
-        while j + 1 < n and mask[j + 1]:
-            j += 1
-        runs.append((i, j))
-        i = j + 1
-    return runs
 
 
 def gear_trim_mask(ctx: CheckContext, pull) -> np.ndarray:

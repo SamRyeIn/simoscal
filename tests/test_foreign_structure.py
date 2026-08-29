@@ -924,7 +924,7 @@ def test_f6_a05_declares_no_stock_references() -> None:
 
 
 # ---- declared gaps --------------------------------------------------------- #
-def test_f6_the_ten_absent_names_are_declared_not_omitted() -> None:
+def test_f6_the_eleven_absent_names_are_declared_not_omitted() -> None:
     """A gap that was investigated must be distinguishable from one that was not."""
     assert set(SCGA05.unavailable) == {
         "airmass_full_load",
@@ -937,6 +937,7 @@ def test_f6_the_ten_absent_names_are_declared_not_omitted() -> None:
         "ignition_temp_iat_axis",
         "cylinder_head_temp_rpm_axis",
         "cylinder_head_temp_charge_axis",
+        "knock_retard_max",
     }
     # Every one of them is a name the *other* car has, which is what makes the
     # declaration meaningful rather than a list of arbitrary strings.
@@ -1004,7 +1005,7 @@ def test_f6_shared_names_are_filed_under_the_same_heading() -> None:
     reintroducing the coupling.
     """
     shared = set(SCGA05.names()) & set(SC8S50.names())
-    assert len(shared) == 60, "the overlap moved; check the map before the test"
+    assert len(shared) == 64, "the overlap moved; check the map before the test"
     mismatched = {
         n: (SC8S50[n].group, SCGA05[n].group)
         for n in shared
