@@ -85,6 +85,7 @@ def render_report_html(
     parts.append(_gate_chips(result, journal))
     parts.append(_attention_section(tune, journal))
     parts.append(_changed_tables_section(result, journal))
+    parts.append(_vs_stock_section(result, journal))
     parts.append(_journal_section(journal))
     parts.append(_artifacts_footer(result))
     parts.append("</div>")
@@ -321,6 +322,34 @@ def _changed_tables_section(result: "BuildResult", journal: Journal) -> str:
     return f"<section>{''.join(out)}</section>"
 
 
+def _vs_stock_section(result: "BuildResult", journal: Journal) -> str:
+    """Full-history comparison: this build against the untouched stock bin.
+
+    Sourced from :attr:`BuildResult.plots_by_table_vs_stock`, which spans every
+    table the journal has ever touched — not just this revision's delta — so
+    it is normally the larger of the two comparison sections. Skips entirely
+    when the build carried no stock snapshot or drew no such plots.
+    """
+    plots_by_table = result.plots_by_table_vs_stock
+    if not plots_by_table:
+        return ""
+    entries_by_table = _entries_by_table(journal)
+    cards = [
+        _table_card(result, _primary_entry(entries_by_table[key]), plots)
+        for key, plots in plots_by_table.items()
+        if plots and key in entries_by_table
+    ]
+    out = [_sec_head(
+        "Changed vs stock",
+        "every table that differs from the untouched recovery bin",
+    )]
+    if cards:
+        out.append(f'<div class="cards">{"".join(cards)}</div>')
+    else:
+        out.append('<p class="empty">No comparison plots vs stock to review.</p>')
+    return f"<section>{''.join(out)}</section>"
+
+
 def _changed_tables_no_reference(
     result: "BuildResult", entries_by_table: dict[_TableKey, list[EditEntry]]
 ) -> str:
@@ -444,8 +473,10 @@ def _artifacts_footer(result: "BuildResult") -> str:
         "<code>simoscal.tune.render_report_html</code> from the build journal — "
         "the same source as <code>report.md</code>. Artifacts in this run folder: "
         f"<code>{_esc(result.bin_path.name)}</code> (the bin), "
-        f'<a href="{_esc(result.report_path.name)}">report.md</a>, and the '
-        "<code>compare/</code> plots. Every revision is a starting point, not a "
+        f'<a href="{_esc(result.report_path.name)}">report.md</a>, the '
+        "<code>compare/</code> plots (vs previous revision), and the "
+        "<code>compare_vs_stock/</code> plots (vs the untouched recovery bin). "
+        "Every revision is a starting point, not a "
         "finished calibration: only logs validate it. Flash (human step) → log → "
         "review → iterate."
         "</div>"

@@ -413,8 +413,11 @@ def test_compare_figures_show_complete_bin_filenames_without_parent_paths(tmp_pa
         ),
     )
     for fig in figures:
-        text = {line for artist in fig.texts for line in artist.get_text().splitlines()}
-        assert names <= text
+        # Provenance renders as one combined line (not one per side) to keep
+        # the header block short, so check containment rather than exact
+        # per-line membership.
+        text = " ".join(artist.get_text() for artist in fig.texts)
+        assert all(name in text for name in names)
         assert all("/some/" not in artist.get_text() for artist in fig.texts)
         assert _savefig_bytes(fig)
 

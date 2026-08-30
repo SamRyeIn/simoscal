@@ -30,6 +30,8 @@ from typing import Optional, Union
 import numpy as np
 from matplotlib import colormaps, colors
 from matplotlib.figure import Figure
+from matplotlib.font_manager import FontProperties
+from matplotlib.textpath import TextPath
 
 # Registers the "3d" projection used by add_subplot(projection="3d"). Imported
 # for its side effect; the name is referenced so linters keep the import.
@@ -49,11 +51,16 @@ __all__ = [
     "TableMismatchError",
 ]
 
-# Default value/delta colormaps (plan Key Decision 11) and cell-text format
-# (Decision 7). All exposed as kwargs on the public functions.
+# Default value/delta colormaps (plan Key Decision 11). Exposed as kwargs on
+# the public functions.
 _VALUE_CMAP = "turbo"
 _DELTA_CMAP = "RdBu_r"
-_CELL_FMT = "{:.4g}"
+
+# Sentinel default for the cell-text ``fmt`` kwarg: "pick a shared fixed-point
+# precision from this figure's own values" (see ``_resolve_fmt``), rather than
+# a fixed format string. A caller that passes an explicit ``fmt=`` (e.g. the
+# old "{:.4g}") is honored verbatim and never auto-picked.
+_CELL_FMT: object = object()
 
 # Baked-in surface camera (plan Key Decision 13): a conventional three-quarter
 # view that shows both axes and the surface's relief in a non-interactive PNG.
@@ -146,15 +153,16 @@ def _apply_compare_header(
     if b_bin_name is not None:
         provenance.append(f"B: {Path(b_bin_name).name}")
     if provenance:
+        # One line, not one per side: two stacked lines were the biggest single
+        # contributor to the gap between the title block and the axes below.
         fig.text(
             0.5,
-            0.905,
-            "\n".join(provenance),
+            0.92,
+            "   ".join(provenance),
             ha="center",
             va="top",
             fontsize=8,
             family="monospace",
-            linespacing=1.2,
             zorder=100,
             bbox={"facecolor": "white", "edgecolor": "none", "pad": 1.5},
         )
@@ -171,6 +179,40 @@ def _text_color(rgba) -> str:
     return "black" if luminance > 0.5 else "white"
 
 
+def _auto_decimals(*value_arrays: np.ndarray, max_decimals: int = 4, tol: float = 1e-6) -> int:
+    """Decimal places every value across ``value_arrays`` needs to round-trip.
+
+    The largest per-value requirement wins (capped at ``max_decimals``), so a
+    figure's whole cell-text set shares one precision — ``6`` renders as
+    ``6.000`` alongside ``9.375`` rather than at mismatched precision.
+    """
+    decimals = 0
+    for arr in value_arrays:
+        for v in np.ravel(np.asarray(arr, dtype=np.float64)):
+            if not np.isfinite(v):
+                continue
+            for d in range(decimals, max_decimals + 1):
+                if abs(round(float(v), d) - float(v)) < tol:
+                    break
+            else:
+                d = max_decimals
+            decimals = max(decimals, d)
+    return decimals
+
+
+def _resolve_fmt(fmt, *value_arrays: np.ndarray) -> str:
+    """A concrete ``str.format`` spec for cell text.
+
+    ``fmt`` verbatim when the caller supplied one; otherwise (the
+    :data:`_CELL_FMT` sentinel) a fixed-point spec auto-picked from
+    ``value_arrays`` via :func:`_auto_decimals` — never scientific notation,
+    and the same precision for every cell on the figure.
+    """
+    if fmt is not _CELL_FMT:
+        return fmt
+    return f"{{:.{_auto_decimals(*value_arrays)}f}}"
+
+
 def _annotation_fontsize(rows: int, cols: int) -> float:
     """A grid-size-adaptive font size for the cell-value overlay (Decision 7).
 
@@ -179,6 +221,55 @@ def _annotation_fontsize(rows: int, cols: int) -> float:
     """
     largest = max(rows, cols)
     return float(max(4.0, min(9.0, 90.0 / largest)))
+
+
+_TEXT_FONT_PROPS = FontProperties()  # matches ax.text's default family/weight
+
+
+def _text_extent_per_point(text: str) -> tuple[float, float]:
+    """``(width, height)`` of ``text`` at 1pt, in points — real glyph metrics.
+
+    Built from :class:`~matplotlib.textpath.TextPath`, which lays out the
+    actual font outlines rather than guessing an average character width; it
+    needs no renderer or canvas, so it works on a bare, undrawn ``Figure``.
+    Scale-invariant in font size, so this is measured once at size 1 and the
+    caller scales linearly to whatever size it is solving for.
+    """
+    if not text:
+        return (0.0, 0.0)
+    ext = TextPath((0, 0), text, size=1.0, prop=_TEXT_FONT_PROPS).get_extents()
+    return (float(ext.width), float(ext.height))
+
+
+def _fit_cell_fontsize(ax, rows: int, cols: int, values: np.ndarray, fmt: str) -> float:
+    """Font size that keeps every cell's formatted value inside its own cell.
+
+    Derived from the axes' actual on-figure size (its position, read after
+    layout is settled) and the widest formatted value this table will draw,
+    measured with real glyph metrics (:func:`_text_extent_per_point`) rather
+    than an average-character-width guess — not just the grid's row/column
+    count, which :func:`_annotation_fontsize` uses and which the comparison
+    heatmap's shared 2x2 layout can put more or less real estate behind: the
+    A/B tiles are half the figure's width, the delta tile below is the full
+    width, so the same row/col count needs a different font size in each.
+
+    No floor: a table dense enough that even a tiny font would overflow its
+    cell gets that tiny font rather than a bigger one guaranteed to overlap —
+    overflow is worse than small.
+    """
+    fig = ax.get_figure()
+    bbox = ax.get_position()
+    fig_w_in, fig_h_in = fig.get_size_inches()
+    cell_w_pt = bbox.width * fig_w_in * 72.0 / max(cols, 1)
+    cell_h_pt = bbox.height * fig_h_in * 72.0 / max(rows, 1)
+    widest = max((fmt.format(v) for v in np.ravel(values)), key=len, default="")
+    width_per_pt, height_per_pt = _text_extent_per_point(widest)
+    if width_per_pt <= 0 or height_per_pt <= 0:
+        return 9.0
+    # A small margin so text clears the cell border rather than touching it.
+    width_fit = (cell_w_pt * 0.90) / width_per_pt
+    height_fit = (cell_h_pt * 0.70) / height_per_pt
+    return float(min(9.0, width_fit, height_fit))
 
 
 def _axis_ticks(ax, x_labels, y_labels) -> None:
@@ -247,7 +338,7 @@ def _heatmap_figure(
     rt: RenderedTable,
     *,
     value_cmap: str = _VALUE_CMAP,
-    fmt: str = _CELL_FMT,
+    fmt: Union[str, object] = _CELL_FMT,
     norm: Optional[colors.Normalize] = None,
 ) -> Figure:
     """A TunerPro-style heatmap of ``rt.values`` with every cell value overlaid.
@@ -274,12 +365,13 @@ def _heatmap_figure(
     ax.set_ylabel(rt.y_units or "", fontweight="bold")
     ax.set_title(_axes_title(rt))
 
+    resolved_fmt = _resolve_fmt(fmt, values)
     fontsize = _annotation_fontsize(rows, cols)
     for r in range(rows):
         for c in range(cols):
             v = values[r, c]
             ax.text(
-                c, r, fmt.format(v),
+                c, r, resolved_fmt.format(v),
                 ha="center", va="center",
                 color=_text_color(cmap(norm(v))),
                 fontsize=fontsize,
@@ -410,7 +502,7 @@ def plot_table(
     surface: bool = True,
     heatmap: bool = True,
     value_cmap: str = _VALUE_CMAP,
-    fmt: str = _CELL_FMT,
+    fmt: Union[str, object] = _CELL_FMT,
     elev: float = _ELEV,
     azim=_AZIM_AUTO,
     adaptive_azim: bool = True,
@@ -521,13 +613,36 @@ def _diverging_limits(delta: np.ndarray) -> tuple[float, float]:
 # --------------------------------------------------------------------------- #
 # Comparison — figure builders (U3)
 # --------------------------------------------------------------------------- #
-def _draw_heatmap_panel(ax, rt, values, *, cmap, norm, fmt, title) -> None:
-    """Draw one imshow panel with value overlay onto an existing axes."""
+def _draw_heatmap_panel(ax, rt, values, *, cmap, norm, title):
+    """Draw one imshow panel (no cell text yet) onto an existing axes.
+
+    Cell-value text is added later, by :func:`_annotate_heatmap_cells`, once
+    every axes on the figure has its *final* position — for the comparison
+    heatmap's A/B panels that means after the shared colorbar has carved its
+    space out of them, since sizing text from a pre-colorbar width would
+    overflow once the colorbar shrinks the panel.
+    """
     im = ax.imshow(values, cmap=cmap, norm=norm, aspect="auto")
     _axis_ticks(ax, rt.x_labels, rt.y_labels)
-    ax.set_title(title, fontsize=9)
+    # Cell borders: a minor-tick grid one half-cell off the major (labeled)
+    # ticks, so it falls on cell edges rather than cell centers. Kept separate
+    # from the major ticks so it never grows tick labels of its own.
     rows, cols = values.shape
-    fontsize = _annotation_fontsize(rows, cols)
+    ax.set_xticks(np.arange(-0.5, cols, 1.0), minor=True)
+    ax.set_yticks(np.arange(-0.5, rows, 1.0), minor=True)
+    ax.grid(which="minor", color="black", linewidth=0.6)
+    ax.tick_params(which="minor", bottom=False, left=False)
+    ax.set_xlabel(rt.x_units or "", fontweight="bold")
+    if rt.y_labels is not None:
+        ax.set_ylabel(rt.y_units or "", fontweight="bold")
+    ax.set_title(title, fontsize=9)
+    return im
+
+
+def _annotate_heatmap_cells(ax, values, *, cmap, norm, fmt) -> None:
+    """Overlay every cell's formatted value, sized to that axes' final bbox."""
+    rows, cols = values.shape
+    fontsize = _fit_cell_fontsize(ax, rows, cols, values, fmt)
     cmap_obj = colormaps[cmap] if isinstance(cmap, str) else cmap
     for r in range(rows):
         for c in range(cols):
@@ -536,7 +651,6 @@ def _draw_heatmap_panel(ax, rt, values, *, cmap, norm, fmt, title) -> None:
                 c, r, fmt.format(v), ha="center", va="center",
                 color=_text_color(cmap_obj(norm(v))), fontsize=fontsize,
             )
-    return im
 
 
 def _compare_heatmap_figure(
@@ -546,7 +660,7 @@ def _compare_heatmap_figure(
     *,
     value_cmap: str = _VALUE_CMAP,
     delta_cmap: str = _DELTA_CMAP,
-    fmt: str = _CELL_FMT,
+    fmt: Union[str, object] = _CELL_FMT,
     a_bin_name: Optional[Union[str, Path]] = None,
     b_bin_name: Optional[Union[str, Path]] = None,
 ) -> Figure:
@@ -560,20 +674,36 @@ def _compare_heatmap_figure(
     ax_a = fig.add_subplot(2, 2, 1)
     ax_b = fig.add_subplot(2, 2, 2)
     ax_d = fig.add_subplot(2, 1, 2)
+    # Fix the subplot positions *before* drawing the colorbars: each colorbar
+    # carves its space out of the axes' current position, so creating one
+    # ahead of a later subplots_adjust leaves it stranded over the A/B panel
+    # once that adjust shifts everything up to clear the header.
+    fig.subplots_adjust(top=0.87)
 
     im_a = _draw_heatmap_panel(ax_a, rt_a, rt_a.values, cmap=value_cmap,
-                               norm=value_norm, fmt=fmt, title="A")
+                               norm=value_norm, title="A")
     _draw_heatmap_panel(ax_b, rt_b, rt_b.values, cmap=value_cmap,
-                        norm=value_norm, fmt=fmt, title="B")
+                        norm=value_norm, title="B")
     im_d = _draw_heatmap_panel(ax_d, rt_a, delta, cmap=delta_cmap,
-                               norm=delta_norm, fmt=fmt, title="Δ (B − A)")
+                               norm=delta_norm, title="Δ (B − A)")
 
+    # Colorbars before cell text: a colorbar carves its space out of the axes
+    # it's attached to, so ax_a/ax_b are only at their final (narrower) width
+    # once this runs — sizing text before it would overflow the panel.
     fig.colorbar(im_a, ax=[ax_a, ax_b], label=rt_a.units or "", shrink=0.7)
     fig.colorbar(im_d, ax=ax_d, label=rt_a.units or "", shrink=0.7)
+
+    # One shared precision across all three panels (A, B, and the delta), not
+    # picked per-panel — so the same quantity reads at the same precision
+    # wherever it appears on this figure.
+    resolved_fmt = _resolve_fmt(fmt, rt_a.values, rt_b.values, delta)
+    _annotate_heatmap_cells(ax_a, rt_a.values, cmap=value_cmap, norm=value_norm, fmt=resolved_fmt)
+    _annotate_heatmap_cells(ax_b, rt_b.values, cmap=value_cmap, norm=value_norm, fmt=resolved_fmt)
+    _annotate_heatmap_cells(ax_d, delta, cmap=delta_cmap, norm=delta_norm, fmt=resolved_fmt)
+
     _apply_compare_header(
         fig, rt_a, a_bin_name=a_bin_name, b_bin_name=b_bin_name
     )
-    fig.subplots_adjust(top=0.80)
     return fig
 
 
@@ -625,7 +755,7 @@ def _compare_surface_figure(
     _apply_compare_header(
         fig, rt_a, a_bin_name=a_bin_name, b_bin_name=b_bin_name
     )
-    fig.subplots_adjust(top=0.68, bottom=0.04)
+    fig.subplots_adjust(top=0.78, bottom=0.04)
     return fig
 
 
@@ -709,7 +839,12 @@ def _compare_columns_figure(
     _apply_compare_header(
         fig, rt_a, a_bin_name=a_bin_name, b_bin_name=b_bin_name
     )
-    fig.tight_layout(rect=(0.0, 0.0, 0.88, 0.80))
+    # tight_layout alone pads well beyond the header block to keep clear of the
+    # suptitle, even with an explicit rect; fixing the top margin afterward
+    # with subplots_adjust overrides that and closes the gap. The right-side
+    # rect stays, since that margin is for the legend, not the header.
+    fig.tight_layout(rect=(0.0, 0.0, 0.88, 1.0))
+    fig.subplots_adjust(top=0.80)
     return fig
 
 
@@ -745,7 +880,11 @@ def _compare_line_figure(
     _apply_compare_header(
         fig, rt_a, a_bin_name=a_bin_name, b_bin_name=b_bin_name
     )
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.80))
+    # tight_layout alone pads well beyond the header block to keep clear of the
+    # suptitle, even with an explicit rect; fixing the top margin afterward
+    # with subplots_adjust overrides that and closes the gap.
+    fig.tight_layout()
+    fig.subplots_adjust(top=0.84)
     return fig
 
 
@@ -759,7 +898,7 @@ def compare_tables(
     columns: bool = True,
     value_cmap: str = _VALUE_CMAP,
     delta_cmap: str = _DELTA_CMAP,
-    fmt: str = _CELL_FMT,
+    fmt: Union[str, object] = _CELL_FMT,
     elev: float = _ELEV,
     azim=_AZIM_AUTO,
     adaptive_azim: bool = True,
@@ -860,7 +999,7 @@ def plot_tables(
     surface: bool = True,
     heatmap: bool = True,
     value_cmap: str = _VALUE_CMAP,
-    fmt: str = _CELL_FMT,
+    fmt: Union[str, object] = _CELL_FMT,
     elev: float = _ELEV,
     azim=_AZIM_AUTO,
     adaptive_azim: bool = True,
@@ -903,7 +1042,7 @@ def compare_bins(
     columns: bool = True,
     value_cmap: str = _VALUE_CMAP,
     delta_cmap: str = _DELTA_CMAP,
-    fmt: str = _CELL_FMT,
+    fmt: Union[str, object] = _CELL_FMT,
     elev: float = _ELEV,
     azim=_AZIM_AUTO,
     adaptive_azim: bool = True,

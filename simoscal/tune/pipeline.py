@@ -192,12 +192,21 @@ class BuildResult:
     #: same paths ungrouped; this mapping lets a reviewer-facing renderer show a
     #: changed table's plot next to that table without re-resolving names.
     plots_by_table: dict[tuple[str, Union[str, int]], tuple[Path, ...]] = None  # type: ignore[assignment]
+    #: Same shape as :attr:`plots` / :attr:`plots_by_table`, but each table's
+    #: PNG(s) show this build against the untouched stock/recovery bin the tune
+    #: was opened from (:attr:`Tune.source_snapshot`) rather than against
+    #: ``reference_bin``. Normally the larger set — it carries every prior
+    #: revision's change forward, not just this revision's delta.
+    plots_vs_stock: tuple[Path, ...] = ()
+    plots_by_table_vs_stock: dict[tuple[str, Union[str, int]], tuple[Path, ...]] = None  # type: ignore[assignment]
     html_report_path: Optional[Path] = None
     problems: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.plots_by_table is None:
             self.plots_by_table = {}
+        if self.plots_by_table_vs_stock is None:
+            self.plots_by_table_vs_stock = {}
 
     @property
     def checksum_state(self) -> str:
@@ -223,6 +232,7 @@ def build(
     title: str = "",
     summary: str = "",
     plots: bool = True,
+    compare_to_stock: bool = True,
     extra_allowances: Sequence[audit.Allowance] = (),
 ) -> BuildResult:
     """Verify and emit ``tune`` as revision ``revision``.
@@ -233,7 +243,16 @@ def build(
     ``reference_bin`` is the previous revision's output. Supplying it turns on
     the byte-level audit, which is the gate that catches a change nobody
     declared; omitting it (a first revision has no predecessor) skips that gate
-    and says so in the report.
+    and says so in the report. It also drives the ``compare/`` plots — this
+    build against that previous revision, typically a handful of tables.
+
+    ``compare_to_stock`` (default on) additionally draws ``compare_vs_stock/``
+    plots — this build against the untouched stock/recovery bin the tune was
+    opened from, over every table the journal has ever touched. No extra bin
+    path is needed: the tune already carries its own starting point
+    (:attr:`~simoscal.tune.project.Tune.source_snapshot`). This set is normally
+    larger than ``compare/``, since it carries every prior revision's change
+    forward rather than just this revision's delta.
     """
     out_root = Path(out_root)
     stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -256,6 +275,15 @@ def build(
         plots_by_table = _compare_plots(tune, reference_bin, bin_path, out_dir / "compare")
     plot_paths = tuple(p for group in plots_by_table.values() for p in group)
 
+    plots_by_table_vs_stock: dict[tuple[str, Union[str, int]], tuple[Path, ...]] = {}
+    if plots and compare_to_stock and tune.source_snapshot:
+        plots_by_table_vs_stock = _compare_plots_vs_stock(
+            tune, bin_path, out_dir / "compare_vs_stock"
+        )
+    plot_paths_vs_stock = tuple(
+        p for group in plots_by_table_vs_stock.values() for p in group
+    )
+
     # 6. report --------------------------------------------------------------- #
     result = BuildResult(
         revision=revision,
@@ -268,6 +296,8 @@ def build(
         diff=outcome.diff,
         plots=plot_paths,
         plots_by_table=plots_by_table,
+        plots_vs_stock=plot_paths_vs_stock,
+        plots_by_table_vs_stock=plots_by_table_vs_stock,
         html_report_path=out_dir / "report.html",
         problems=outcome.problems,
     )
@@ -451,6 +481,10 @@ def _compare_plots(
     resolved, so a reviewer-facing renderer never has to guess which file goes
     with which table.
 
+    A table journaled this revision but whose value is identical to
+    ``reference_bin`` (a domain call re-declared it without changing it) draws
+    no plot — an empty entry — since there is nothing to show.
+
     A table whose own axis was re-breakpointed raises
     :class:`TableMismatchError` — a composite of two different axes would be
     misleading, so it is skipped here (an empty entry) and covered by the
@@ -477,12 +511,83 @@ def _compare_plots(
                 str(space.xdf), str(bin_path), structure=space.cal.structure,
                 base_offset=space.cal.base_offset,
             )
+        before_view = before_cals[space_name].get(key)
+        after_view = after_cals[space_name].get(key)
+        if _tables_equal(before_view, after_view):
+            by_table[(space_name, key)] = ()
+            continue
         try:
             written = compare_tables(
-                render_table(before_cals[space_name].get(key)),
-                after_cals[space_name].get(key),
+                render_table(before_view),
+                after_view,
                 png_dir,
                 a_bin_name=Path(reference_bin).name,
+                b_bin_name=bin_path.name,
+            )
+        except TableMismatchError:
+            written = []  # axis re-breakpointed; the report's detail covers it
+        by_table[(space_name, key)] = tuple(written)
+    return by_table
+
+
+def _tables_equal(before: "TableView", after: "TableView") -> bool:
+    """True when two same-key table reads hold the exact same values.
+
+    Both sides decode through the same XDF model, so identical raw bytes
+    decode bit-for-bit identically — an exact comparison, no tolerance, is the
+    correct test for "did this table actually change" (as opposed to
+    :data:`READBACK_ATOL`, which allows for round-trip float noise against a
+    journal-recorded expectation).
+    """
+    before_values = np.asarray(before.values, dtype=np.float64)
+    after_values = np.asarray(after.values, dtype=np.float64)
+    return (
+        before_values.shape == after_values.shape
+        and bool(np.array_equal(before_values, after_values))
+    )
+
+
+def _compare_plots_vs_stock(
+    tune: Tune, bin_path: Path, png_dir: Path
+) -> dict[tuple[str, Union[str, int]], tuple[Path, ...]]:
+    """Before/after PNGs for every ever-touched table, stock vs this build.
+
+    Unlike :func:`_compare_plots` (previous revision vs this build — normally a
+    handful of tables), this diffs against the tune's own starting point
+    (:attr:`Tune.source_snapshot`, via :meth:`Tune.source_space`) rather than a
+    separately-opened bin, so no extra file path is required. It covers every
+    table the journal has ever touched, which is normally the larger set: it
+    carries every prior revision's change forward, not just this revision's.
+
+    Same skip rules as :func:`_compare_plots`: a table whose value is
+    identical to stock draws no plot, and a re-breakpointed axis raises
+    :class:`TableMismatchError` and is left as an empty entry.
+    """
+    from ..plot import TableMismatchError, compare_tables
+
+    by_table: dict[tuple[str, Union[str, int]], tuple[Path, ...]] = {}
+    after_cals: dict[str, CalFile] = {}
+    for space_name, key in tune.journal.tables_touched():
+        source_space = tune.source_space(space_name)
+        if source_space is None:
+            continue  # no snapshot captured (e.g. a recovered session)
+        if space_name not in after_cals:
+            space = tune.space(space_name)
+            after_cals[space_name] = CalFile.open(
+                str(space.xdf), str(bin_path), structure=space.cal.structure,
+                base_offset=space.cal.base_offset,
+            )
+        before_view = source_space.get(key)
+        after_view = after_cals[space_name].get(key)
+        if _tables_equal(before_view, after_view):
+            by_table[(space_name, key)] = ()
+            continue
+        try:
+            written = compare_tables(
+                render_table(before_view),
+                after_view,
+                png_dir,
+                a_bin_name=tune.source_bin.name,
                 b_bin_name=bin_path.name,
             )
         except TableMismatchError:
@@ -555,7 +660,9 @@ def render_report(
               f"- Bin: `{result.bin_path.name}`",
               f"- Report: `{result.report_path.name}`"]
     for path in result.plots:
-        lines.append(f"- Plot: `{path.relative_to(result.out_dir)}`")
+        lines.append(f"- Plot vs previous revision: `{path.relative_to(result.out_dir)}`")
+    for path in result.plots_vs_stock:
+        lines.append(f"- Plot vs stock: `{path.relative_to(result.out_dir)}`")
     lines += ["",
               "Every revision is a starting point, not a finished calibration: "
               "only logs validate it. Flash (human step) → log → review → "
