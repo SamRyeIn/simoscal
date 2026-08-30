@@ -47,12 +47,13 @@ call's, there is deliberately none: see :data:`NOT_ADAPTED`.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
 from ..tune import EditRejected, Tune, TuneError
+from ..tune.units import psi_from_hpa
 from ..tune.editing import EditOp, Selection, apply_op
 from ..tune.journal import EditEntry
 from .schema import (
@@ -71,6 +72,7 @@ __all__ = [
     "ProvenanceMismatch",
     "Queued",
     "ReviewResult",
+    "Staging",
     "review",
 ]
 
@@ -108,6 +110,59 @@ _REV_TRIO = re.compile(r"^rev_limit_(?P<which>soft|medium|hard)$")
 # results
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
+class Staging:
+    """How the owning editor should pre-load this change, in **its** units.
+
+    The client does no unit arithmetic. There is none anywhere in it, and this
+    field is what keeps it that way: a slot boost cap is stored in hPa absolute
+    and edited in psi gauge, so somebody has to convert, and the side that owns
+    :func:`~simoscal.tune.units.psi_from_hpa` is the side that should. A second
+    implementation of that conversion on a tablet is the same class of drift the
+    dry run exists to avoid.
+
+    :attr:`editor` names one screen's draft and is the only string the client
+    switches on:
+
+    ``boost``
+        A per-slot cap curve. :attr:`values` is one row of psi gauge, one per
+        rpm breakpoint, and :attr:`slot` says which slot it belongs to.
+    ``lambda``
+        One time-row of the full-load enrichment map, with :attr:`row` naming it.
+    ``limiters``
+        One scalar, with :attr:`key` naming which — ``soft``/``medium``/``hard``
+        for the cylinder-cut trio, ``static`` for the standstill cap, ``speed``
+        for the road-speed quartet.
+    ``slots``
+        The per-slot switchboard.
+    ``table``
+        The generic grid editor: :attr:`values` is the whole table, in the
+        table's own units, and the recommendation already names the table.
+
+    :attr:`editor` names the screen even when nothing can be pre-loaded onto it,
+    so the client never has to infer a destination from :attr:`Queued.routed_via`
+    — routing stays a fact this side owns. A non-empty :attr:`reason` is what
+    says the pre-load is absent, and why, in words a person can act on: a flag
+    that is one press, an axis with no draft to put values in. Such a
+    recommendation is still queued and still shown in full.
+
+    :attr:`values` is always nested rows, the same shape discipline
+    :class:`Preview` uses, so both read the same way round on the client.
+    """
+
+    editor: str = ""
+    values: tuple = ()
+    units: str = ""
+    #: The switch-patch slot this stages onto; 0 when the editor has no slots.
+    slot: int = 0
+    #: The row of a per-row editor; -1 when the editor edits the whole thing.
+    row: int = -1
+    #: Which member of a multi-field editor — a limiter's name, a flag's key.
+    key: str = ""
+    #: Why there is nothing to stage. Empty whenever :attr:`editor` is set.
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class Preview:
     """What the replay actually computed — not what the recommendation claimed.
 
@@ -123,6 +178,12 @@ class Preview:
     quantized: bool
     max_abs_quantization: float
     warning: str = ""
+    #: What the three arrays above are in — the **table's** own units, which are
+    #: not always the units the owning editor works in (a slot cap is stored in
+    #: hPa absolute and edited in psi gauge). Carried so a client can label these
+    #: numbers without guessing, and without reusing
+    #: :attr:`Staging.units`, which describes a different set of numbers.
+    units: str = ""
 
 
 @dataclass(frozen=True)
@@ -141,6 +202,8 @@ class Queued:
     overlaps: tuple[str, ...] = ()
     #: Anything true about the replay a reviewer should read before accepting.
     note: str = ""
+    #: How the owning editor pre-loads this change if it is accepted.
+    staging: Staging = Staging()
 
 
 @dataclass(frozen=True)
@@ -190,18 +253,44 @@ class ProvenanceMismatch(AdviceRejected):
 # --------------------------------------------------------------------------- #
 # adapters — table -> the call that owns writing it
 # --------------------------------------------------------------------------- #
-def _slot_curve(tune: Tune, name: str, space: str, target: np.ndarray) -> Sequence[EditEntry]:
+#: What an adapter returns: the dry-run entries, and how the screen that owns
+#: the table would pre-load the same change. Returned together, from one
+#: function, so the call that knows which domain wrote it is also the one that
+#: says which editor stages it — the pairing cannot drift.
+Adapted = tuple[Sequence[EditEntry], Staging]
+
+
+def _slot_curve(tune: Tune, name: str, space: str, target: np.ndarray) -> Adapted:
     """A per-slot boost grid: one curve, tiled across the meaningless Y rows."""
     slot = int(_SLOT_CURVE.match(name)["slot"])
     curve = _one_curve(tune, name, space, target)
-    return (tune.switchpatch.slot_curve(slot, hpa=curve, dry_run=True),)
+    entry = tune.switchpatch.slot_curve(slot, hpa=curve, dry_run=True)
+    # The *requested* curve, converted — not the encoded one. Staging is "type
+    # this in for me", so the editor's own guards and the psi floor apply to it
+    # exactly as they would to a number somebody typed, and the encoded figure
+    # stays where it belongs: in the preview, saying what it will really become.
+    # Unrounded, too — the editor snaps its own nudges and would only ever round
+    # a staged cap *up*, which is the wrong direction for a boost ceiling.
+    return (entry,), Staging(
+        editor="boost",
+        slot=slot,
+        units="psi gauge",
+        values=_as_tuple([psi_from_hpa(float(v)) for v in curve]),
+    )
 
 
-def _slot_rpm_axis(tune: Tune, name: str, space: str, target: np.ndarray) -> Sequence[EditEntry]:
-    return (tune.switchpatch.slot_rpm_axis(target.ravel(), dry_run=True),)
+def _slot_rpm_axis(tune: Tune, name: str, space: str, target: np.ndarray) -> Adapted:
+    return (tune.switchpatch.slot_rpm_axis(target.ravel(), dry_run=True),), Staging(
+        editor="boost",
+        reason=(
+            "the rpm axis is shared by all five slots, so it is re-breakpointed "
+            "in one advanced action rather than staged as a draft. Open Boost "
+            "and use the axis editor there."
+        ),
+    )
 
 
-def _slot_flag(tune: Tune, name: str, space: str, target: np.ndarray) -> Sequence[EditEntry]:
+def _slot_flag(tune: Tune, name: str, space: str, target: np.ndarray) -> Adapted:
     key = _SLOT_FLAG.match(name)["key"]
     slot = int(_SLOT_FLAG.match(name)["slot"])
     value = float(target.ravel()[0])
@@ -209,29 +298,51 @@ def _slot_flag(tune: Tune, name: str, space: str, target: np.ndarray) -> Sequenc
         raise EditRejected(
             f"{name} is a 0/1 flag; {value:g} is neither on nor off"
         )
-    return tune.switchpatch.set_slot_flag(
+    entries = tune.switchpatch.set_slot_flag(
         key, slots=(slot,), on=bool(value), dry_run=True
     )
-
-
-def _lambda_full_load(tune: Tune, name: str, space: str, target: np.ndarray) -> Sequence[EditEntry]:
-    row = _one_changed_row(tune, name, space, target)
-    return (tune.fueling.full_load_enrichment(target[row], row=row, dry_run=True),)
-
-
-def _rev_limit(tune: Tune, name: str, space: str, target: np.ndarray) -> Sequence[EditEntry]:
-    which = _REV_TRIO.match(name)["which"]
-    return tune.limits.rev_limits(
-        space=space, dry_run=True, **{which: float(target.ravel()[0])}
+    # A flag has two states and no in-between, so the Slots screen sends one
+    # straight through rather than staging it. There is no draft to pre-load.
+    return entries, Staging(
+        editor="slots",
+        key=key,
+        slot=slot,
+        reason=(
+            f"a per-slot flag is one press on the Slots screen, not a staged "
+            f"draft. Set {key} on slot {slot} "
+            f"{'on' if value else 'off'} there."
+        ),
     )
 
 
-def _static_rev_limit(tune: Tune, name: str, space: str, target: np.ndarray) -> Sequence[EditEntry]:
-    return tune.limits.static_rev_limit(float(target.ravel()[0]), dry_run=True)
+def _lambda_full_load(tune: Tune, name: str, space: str, target: np.ndarray) -> Adapted:
+    row = _one_changed_row(tune, name, space, target)
+    entry = tune.fueling.full_load_enrichment(target[row], row=row, dry_run=True)
+    return (entry,), Staging(
+        editor="lambda", row=row, units="lambda", values=_as_tuple(target[row]),
+    )
 
 
-def _speed_limiter(tune: Tune, name: str, space: str, target: np.ndarray) -> Sequence[EditEntry]:
-    return tune.limits.speed_limiter(float(target.ravel()[0]), dry_run=True)
+def _rev_limit(tune: Tune, name: str, space: str, target: np.ndarray) -> Adapted:
+    which = _REV_TRIO.match(name)["which"]
+    value = float(target.ravel()[0])
+    return tune.limits.rev_limits(
+        space=space, dry_run=True, **{which: value}
+    ), Staging(editor="limiters", key=which, units="rpm", values=_as_tuple(value))
+
+
+def _static_rev_limit(tune: Tune, name: str, space: str, target: np.ndarray) -> Adapted:
+    value = float(target.ravel()[0])
+    return tune.limits.static_rev_limit(value, dry_run=True), Staging(
+        editor="limiters", key="static", units="rpm", values=_as_tuple(value),
+    )
+
+
+def _speed_limiter(tune: Tune, name: str, space: str, target: np.ndarray) -> Adapted:
+    value = float(target.ravel()[0])
+    return tune.limits.speed_limiter(value, dry_run=True), Staging(
+        editor="limiters", key="speed", units="km/h", values=_as_tuple(value),
+    )
 
 
 #: Logical name (or pattern) -> the label of the call that owns it, and the
@@ -355,7 +466,8 @@ def _as_tuple(values) -> tuple:
 
 
 def _preview_from_entries(
-    tune: Tune, name: str, space: str, target: np.ndarray, entries: Sequence[EditEntry]
+    tune: Tune, name: str, space: str, target: np.ndarray,
+    entries: Sequence[EditEntry], units: str = "",
 ) -> Preview:
     named = next(
         (e for e in entries if e.name == name and e.after is not None), None
@@ -376,10 +488,13 @@ def _preview_from_entries(
         _as_tuple(before), _as_tuple(requested), _as_tuple(enc),
         bool(quantized), worst,
         " ".join(e.warning for e in entries if e.warning).strip(),
+        units,
     )
 
 
-def _replay(tune: Tune, rec: Recommendation) -> tuple[str, Preview, frozenset, str]:
+def _replay(
+    tune: Tune, rec: Recommendation
+) -> tuple[str, Preview, frozenset, str, Staging]:
     """Replay one recommendation. Raises :class:`EditRejected` on a refusal."""
     name, space = rec.table.name, rec.change.space
     try:
@@ -410,8 +525,17 @@ def _replay(tune: Tune, rec: Recommendation) -> tuple[str, Preview, frozenset, s
             _as_tuple(result.requested), _as_tuple(result.encoded),
             bool(result.quantized), result.max_abs_quantization(),
             result.warning or "",
+            resolved.units or "",
         )
-        return "bridge op `edit`", preview, _footprint((entry,)), ""
+        # The generic editor already works in the table's own units, so the
+        # requested grid is staged verbatim — this is the one editor that needs
+        # no conversion, which is exactly why it is the generic one.
+        staging = Staging(
+            editor="table",
+            units=resolved.units or "",
+            values=_as_tuple(result.requested),
+        )
+        return "bridge op `edit`", preview, _footprint((entry,)), "", staging
 
     if name in NOT_ADAPTED:
         raise EditRejected(f"{resolved.label} has no courier write path: {NOT_ADAPTED[name]}")
@@ -440,7 +564,7 @@ def _replay(tune: Tune, rec: Recommendation) -> tuple[str, Preview, frozenset, s
     # the adapters.
     with tune.dry_run():
         try:
-            entries = adapt(tune, name, space, target)
+            entries, staging = adapt(tune, name, space, target)
         except (ValueError, TypeError, KeyError) as exc:
             # The domain calls raise a loud ValueError for their guard refusals —
             # the boost/limiter analog of apply_op's EditRejected. Either way the
@@ -448,7 +572,9 @@ def _replay(tune: Tune, rec: Recommendation) -> tuple[str, Preview, frozenset, s
             if isinstance(exc, EditRejected):
                 raise
             raise EditRejected(str(exc)) from None
-        preview = _preview_from_entries(tune, name, space, target, entries)
+        preview = _preview_from_entries(
+            tune, name, space, target, entries, resolved.units or ""
+        )
         footprint = _footprint(entries)
     note = ""
     others = sorted({e.name for e in entries} - {name})
@@ -457,7 +583,7 @@ def _replay(tune: Tune, rec: Recommendation) -> tuple[str, Preview, frozenset, s
             f"{label} writes {', '.join(others)} in the same call — accepting "
             "this changes those too."
         )
-    return label, preview, footprint, note
+    return label, preview, footprint, note, staging
 
 
 # --------------------------------------------------------------------------- #
@@ -491,11 +617,11 @@ def review(
     dropped: list[Dropped] = []
     for rec in parsed.recommendations:
         try:
-            label, preview, footprint, note = _replay(tune, rec)
+            label, preview, footprint, note, staging = _replay(tune, rec)
         except EditRejected as exc:
             dropped.append(Dropped(rec, str(exc), _routed_label(tune, rec)))
             continue
-        queued.append(Queued(rec, label, preview, footprint, (), note))
+        queued.append(Queued(rec, label, preview, footprint, (), note, staging))
 
     queued = _flag_overlaps(queued)
     return ReviewResult(
@@ -553,8 +679,8 @@ def _flag_overlaps(queued: list[Queued]) -> list[Queued]:
             for j, other in enumerate(queued)
             if j != i and item.footprint & other.footprint
         )
-        out.append(Queued(
-            item.recommendation, item.routed_via, item.preview,
-            item.footprint, others, item.note,
-        ))
+        # `replace` rather than a positional rebuild: this function only has an
+        # opinion about `overlaps`, and a rebuild silently drops whatever field
+        # is added to Queued next — as it already would have dropped `staging`.
+        out.append(replace(item, overlaps=others))
     return out

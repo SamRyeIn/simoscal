@@ -1673,6 +1673,26 @@ def test_advice_review_queues_a_valid_recommendation(session: str, tmp_path: Pat
     assert res["can_undo"] is False
 
 
+def test_advice_review_sends_a_staging_payload_the_client_can_pre_load(
+    session: str, tmp_path: Path
+):
+    """Every queued item says which editor stages it, in that editor's units."""
+    current = ok_result(call("table_detail", session_id=session, name="pressure_quotient_max"))
+    first = current["table"]["values"][0][0]
+    advice = _advice_file(tmp_path, session, [
+        _advice_record(session, "pressure_quotient_max", first + 0.02),
+    ])
+    res = ok_result(call("advice_review", session_id=session, **advice))
+
+    staging = res["queued"][0]["staging"]
+    assert staging["editor"] == "table"
+    assert staging["values"] == res["queued"][0]["preview"]["requested"]
+    assert staging["reason"] == ""
+    # Every field is present whether or not it applies, so the client reads one
+    # shape rather than testing for absent keys.
+    assert set(staging) == {"editor", "values", "units", "slot", "row", "key", "reason"}
+
+
 def test_advice_review_drops_the_airmass_trap_without_queueing_it(session: str, tmp_path: Path):
     """AE2, through the wire: the refusal is returned, the suggestion is not."""
     advice = _advice_file(tmp_path, session, [

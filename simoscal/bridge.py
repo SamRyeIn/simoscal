@@ -1386,9 +1386,25 @@ def _op_advice_review(params: dict) -> dict:
                     "quantized": bool(item.preview.quantized),
                     "max_abs_quantization": float(item.preview.max_abs_quantization),
                     "warning": item.preview.warning,
+                    # The table's units, which the staging payload's may differ
+                    # from — these label the three arrays above and nothing else.
+                    "units": item.preview.units,
                 },
                 "overlaps": list(item.overlaps),
                 "note": item.note,
+                # How the owning editor pre-loads this if it is accepted, in
+                # that editor's own units — see `advice.review.Staging`. The
+                # client does no unit arithmetic, so an empty `editor` means it
+                # must not try: `reason` is what it shows instead.
+                "staging": {
+                    "editor": item.staging.editor,
+                    "values": _jsonify(item.staging.values),
+                    "units": item.staging.units,
+                    "slot": int(item.staging.slot),
+                    "row": int(item.staging.row),
+                    "key": item.staging.key,
+                    "reason": item.staging.reason,
+                },
             }
             for item in result.queued
         ],

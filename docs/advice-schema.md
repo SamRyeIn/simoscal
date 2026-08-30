@@ -207,7 +207,7 @@ separately:
 
 | Outcome       | Meaning                                                                    |
 |---------------|-----------------------------------------------------------------------------|
-| **queued**    | The guards accepted it. Shown to a person with a preview of the *real* effect — what the bin would actually hold, re-decoded, not what the record claimed. |
+| **queued**    | The guards accepted it. Shown to a person with a preview of the *real* effect — what the bin would actually hold, re-decoded, not what the record claimed — plus the values restated in the units of the editor that owns the table, so accepting can pre-load that editor without converting anything. |
 | **dropped**   | The guards refused it, or the table has no write path. Never shown as a suggestion. The refusal reason comes back so the file can be improved. |
 | **malformed** | It failed this schema. Counted apart from *dropped*, because a bad file and bad advice are different problems. |
 

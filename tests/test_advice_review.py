@@ -29,6 +29,7 @@ from simoscal.advice import AdviceRejected
 from simoscal.advice.review import ProvenanceMismatch, review
 from simoscal.tune import SC8S50, SessionHistory, Tune
 from simoscal.tune.domains.switchpatch import PATCH_SPACE
+from simoscal.tune.units import psi_from_hpa
 from simoscal.tune.profiles.switchpatch_2933 import SWITCH_PATCH_2933
 
 CODE_ROOT = Path(__file__).resolve().parents[1]
@@ -512,3 +513,125 @@ def test_a_setting_the_profile_will_not_write_is_dropped_in_its_own_words(patche
     ]))
     (drop,) = result.dropped
     assert "switchpatch.set_slot_flag:" in drop.reason
+
+
+# --------------------------------------------------------------------------- #
+# staging — the editor that owns the change, in that editor's units
+# --------------------------------------------------------------------------- #
+def test_a_boost_recommendation_stages_in_psi_not_the_hpa_it_states(patched_tune):
+    """The one conversion in the courier, and it happens here rather than on the client.
+
+    A slot cap is stored in hPa absolute and edited in psi gauge. If the staging
+    payload carried hPa, the client would have to convert — a second
+    implementation of `psi_from_hpa` on a tablet, which is exactly the drift the
+    dry run exists to prevent.
+    """
+    ceiling = float(patched_tune.values("put_setpoint").max())
+    curve = [ceiling - 400.0] * 12
+    result = review(patched_tune, _file([
+        _rec(patched_tune, "slot1_put_setpoint", space=PATCH_SPACE, id="boost",
+             operation="paste", selection={"kind": "row", "args": [0]},
+             array=curve, risk="safety-relevant"),
+    ]))
+    (item,) = result.queued
+    assert item.staging.editor == "boost"
+    assert item.staging.slot == 1
+    assert item.staging.units == "psi gauge"
+    # The preview keeps the *table's* units, which are not the editor's. Both are
+    # sent because they label different numbers, and a client that reused one for
+    # the other would print a boost cap in hPa and call it psi.
+    assert item.preview.units == patched_tune.table(
+        "slot1_put_setpoint", space=PATCH_SPACE
+    ).units
+    assert item.preview.units != item.staging.units
+    assert item.staging.values == ((pytest.approx(psi_from_hpa(curve[0])),) * 12,)
+    # And the psi is genuinely a different number from the hPa it came from —
+    # a payload that had quietly passed hPa through would still be "12 values".
+    assert item.staging.values[0][0] < curve[0] / 10
+
+
+def test_a_generic_table_stages_the_requested_grid_verbatim(base_tune):
+    """No conversion, because the generic editor already works in the table's units."""
+    current = base_tune.values(GRID)
+    target = float(current.ravel()[0]) + 0.05
+    result = review(base_tune, _file([
+        _rec(base_tune, GRID, id="grid", value=target),
+    ]))
+    (item,) = result.queued
+    assert item.staging.editor == "table"
+    assert item.staging.values == item.preview.requested
+    assert item.staging.units == base_tune.table(GRID).units
+
+
+def test_the_speed_limiter_stages_one_scalar_under_its_own_key(base_tune):
+    result = review(base_tune, _file([
+        _rec(base_tune, "speed_limiter_level1", id="speed", value=250.0),
+    ]))
+    (item,) = result.queued
+    assert item.staging.editor == "limiters"
+    assert item.staging.key == "speed"
+    assert item.staging.units == "km/h"
+    assert item.staging.values == ((250.0,),)
+
+
+def test_the_standstill_cap_stages_under_a_different_key_than_the_road_speed(base_tune):
+    """One screen, several fields — the key is how the client knows which."""
+    limit = float(base_tune.values("static_rev_limit_dct").ravel()[0])
+    result = review(base_tune, _file([
+        _rec(base_tune, "static_rev_limit_dct", id="static", value=limit + 200.0),
+    ]))
+    (item,) = result.queued
+    assert item.staging.editor == "limiters"
+    assert item.staging.key == "static"
+    assert item.staging.units == "rpm"
+
+
+def test_full_load_enrichment_stages_the_row_it_changed(base_tune):
+    """The lambda editor edits one time-row, so staging has to name which."""
+    current = base_tune.values("lambda_full_load")
+    row = 1
+    target = current.copy()
+    target[row] = current[row] - 0.05
+    result = review(base_tune, _file([
+        _rec(base_tune, "lambda_full_load", id="lam", operation="paste",
+             selection={"kind": "all", "args": []}, array=target.tolist(),
+             risk="safety-relevant"),
+    ]))
+    assert result.counts["queued"] == 1, result.dropped
+    (item,) = result.queued
+    assert item.staging.editor == "lambda"
+    assert item.staging.row == row
+    assert item.staging.units == "lambda"
+    assert item.staging.values == (tuple(pytest.approx(v) for v in target[row]),)
+
+
+def test_a_slot_flag_has_nothing_to_stage_and_says_why(patched_tune):
+    """Queued and shown in full — only the pre-load is absent, with a reason."""
+    name = "slot1_enable_lc"
+    current = float(patched_tune.values(name, space=PATCH_SPACE).ravel()[0])
+    result = review(patched_tune, _file([
+        _rec(patched_tune, name, space=PATCH_SPACE, id="flag",
+             value=0.0 if current else 1.0),
+    ]))
+    (item,) = result.queued
+    # The screen is still named — routing is this side's job either way — and
+    # the empty values plus the reason are what say it cannot be pre-loaded.
+    assert item.staging.editor == "slots"
+    assert item.staging.values == ()
+    assert "one press" in item.staging.reason
+    assert item.staging.key == "enable_lc" and item.staging.slot == 1
+
+
+def test_flagging_an_overlap_does_not_drop_the_staging(base_tune):
+    """`_flag_overlaps` rebuilds every queued item; staging has to survive it."""
+    current = base_tune.values(GRID)
+    target = float(current.ravel()[0]) + 0.05
+    result = review(base_tune, _file([
+        _rec(base_tune, GRID, id="one", value=target),
+        _rec(base_tune, GRID, id="two", value=target + 0.01),
+    ]))
+    assert result.counts["queued"] == 2, result.dropped
+    for item in result.queued:
+        assert item.overlaps  # the precondition this test is about
+        assert item.staging.editor == "table"
+        assert item.staging.values
