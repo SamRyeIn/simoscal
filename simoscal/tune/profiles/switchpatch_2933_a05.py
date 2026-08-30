@@ -28,9 +28,17 @@ perfectly, which is the failure this library exists to make impossible.
 shapes, so nothing is declared unavailable and no per-car shape override is
 needed. That is *not* true of the patch XDF as a whole — six of its 185 tables
 are (16, 18) here against S50's (16, 16), the same grid difference the base
-profile carries (see :mod:`.scga05`) — but none of the six is one of ours. If a
-later revision maps the flex-fuel ``Spark modifier`` grids, they need per-car
-shapes.
+profile carries (see :mod:`.scga05`).
+
+Five of those six are the per-slot ``Spark modifier`` grids, which S50's book
+now binds and this one does not. That gap is deliberate and it is *only* the
+addresses: this book has never been read for them, and A05's offsets cannot be
+derived from S50's for the reason above. So ``build_switch_patch_profile`` takes
+``spark_grid_uids`` as optional and this call omits it — A05 keeps its 92 tables
+and gains the five when someone reads them off ``A05 Switch
+Patch.29.33.V2.xdf``. When that happens, the shape to pass is **(16, 18)**, not
+S50's (16, 16), which is exactly why the builder demands a shape alongside the
+uniqueids rather than defaulting one.
 
 .. note::
 

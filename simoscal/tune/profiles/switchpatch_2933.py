@@ -54,6 +54,16 @@ SLOT_DEFAULT_HPA = 4000.0
 #: The shared axis header is a length marker the patch reads; it must stay 12.
 SLOT_AXIS_HEADER_VALUE = 12.0
 
+#: The as-patched, no-op value in every ``Spark modifier`` cell, in °CRK. Note
+#: it is a *decoded* zero, not a raw zero: the grid carries the base ignition
+#: map's own codec (``0.375 * raw - 35.625``), so neutral is raw 95. That the
+#: patch ships every slot neutral at 0.00° is what proves the grid is an
+#: **additive** offset rather than a replacement or a multiplier — a
+#: replacement would have every slot commanding no timing at all, and a
+#: multiplier would have to ship neutral at 1.0. See
+#: ``knowledge/sc8s50-switchpatch-xdf.md`` § Per-slot ``Spark modifier``.
+SPARK_DEFAULT_DEGREES = 0.0
+
 # Every table in this profile is domain-owned: the patch's structural rules —
 # eight-row tiling, the below-base-ceiling cap, the separate axis-length header —
 # live in ``SwitchPatch``, and a generic grid write honours none of them. So each
@@ -66,6 +76,7 @@ _OWNER_AXIS_HEADER = (
     "no write path at all — tune.switchpatch checks this header and never "
     "writes it"
 )
+_OWNER_SLOT_SPARK = "tune.switchpatch.slot_spark_map() (bridge op `spark_edit`)"
 _OWNER_TRACTION = "tune.switchpatch.traction_control()"
 _OWNER_SLOT_FLAG = "tune.switchpatch.set_slot_flag() (bridge op `slot_flag`)"
 _OWNER_REV_LIMITS = (
@@ -407,6 +418,8 @@ def _check_address_book(
     standalone_uids: Mapping[str, str],
     put_grid_uids: Mapping[int, str],
     slot_setting_uids: Mapping[str, Mapping[int, str]],
+    spark_grid_uids: Mapping[int, str] | None,
+    spark_grid_shape: tuple[int, int] | None,
 ) -> None:
     """Refuse an address book that is incomplete, over-full, or self-colliding.
 
@@ -438,8 +451,23 @@ def _check_address_book(
                 f"missing {missing or 'none'}, unexpected {extra or 'none'}"
             )
 
+    # The spark grids are optional — a car gains them when someone reads their
+    # uniqueids off that car's own patch XDF — but they are all-or-nothing, and
+    # they never come without a shape. S50's grid is (16, 16) and A05's is
+    # (16, 18), so unlike every other table in this patch the geometry is
+    # genuinely per-car; a shared constant here would put a book's grids in the
+    # profile at the wrong size while resolving perfectly.
+    if (spark_grid_uids is None) != (spark_grid_shape is None):
+        raise ValueError(
+            f"{name}: spark_grid_uids and spark_grid_shape must be given "
+            "together — the Spark modifier grid's shape differs between cars "
+            "(S50 is 16x16, A05 is 16x18), so it cannot be defaulted"
+        )
+
     for label, slots in (
         ("PUT grids", set(put_grid_uids)),
+        *(() if spark_grid_uids is None
+          else (("Spark modifier grids", set(spark_grid_uids)),)),
         *((f"setting {k!r}", set(v)) for k, v in slot_setting_uids.items()),
     ):
         if slots != set(SLOTS):
@@ -452,6 +480,8 @@ def _check_address_book(
     everything = [
         *((role, uid) for role, uid in standalone_uids.items()),
         *((f"slot{s}_put_setpoint", uid) for s, uid in put_grid_uids.items()),
+        *((f"slot{s}_spark_modifier", uid)
+          for s, uid in (spark_grid_uids or {}).items()),
         *(
             (f"slot{s}_{key}", uid)
             for key, per_slot in slot_setting_uids.items()
@@ -476,15 +506,29 @@ def build_switch_patch_profile(
     standalone_uids: Mapping[str, str],
     put_grid_uids: Mapping[int, str],
     slot_setting_uids: Mapping[str, Mapping[int, str]],
+    spark_grid_uids: Mapping[int, str] | None = None,
+    spark_grid_shape: tuple[int, int] | None = None,
 ) -> Profile:
-    """Bind this patch's 92 tables to one car's address book.
+    """Bind this patch's tables — 92, or 97 with the spark grids — to one car.
 
-    The descriptions, units, shapes and owners come from the patch — they are the
-    same on every car it is cut for. Only ``*_uids`` change, and they are read off
-    that car's own patch XDF rather than offset from another car's (see the module
-    docstring for why arithmetic does not work here).
+    The descriptions, units and owners come from the patch — they are the same on
+    every car it is cut for. Only ``*_uids`` change, and they are read off that
+    car's own patch XDF rather than offset from another car's (see the module
+    docstring for why arithmetic does not work here). Shapes are the same on
+    every car too, with exactly one exception, which is why it is the one shape
+    this signature asks for: see ``spark_grid_shape`` below.
+
+    ``spark_grid_uids`` is the one optional part, and the only place a shape is
+    asked for. The five per-slot ``Spark modifier`` grids came later than the
+    rest of this book, and a car keeps working without them — so a book that has
+    not had them read off its own XDF yet simply omits them and gets the other
+    92. Supplying them requires ``spark_grid_shape`` in the same call, because
+    that geometry is per-car (see :func:`_check_address_book`).
     """
-    _check_address_book(name, standalone_uids, put_grid_uids, slot_setting_uids)
+    _check_address_book(
+        name, standalone_uids, put_grid_uids, slot_setting_uids,
+        spark_grid_uids, spark_grid_shape,
+    )
 
     specs = _standalone_specs(standalone_uids)
     for slot in SLOTS:
@@ -494,6 +538,17 @@ def build_switch_patch_profile(
             units="hPa", shape=SLOT_GRID_SHAPE, tags=frozenset({TAG_NO_SYMBOL}),
             owner=_OWNER_SLOT_CURVE,
         ))
+        if spark_grid_uids is not None:
+            specs.append(TableSpec(
+                name=f"slot{slot}_spark_modifier", key=spark_grid_uids[slot],
+                description=(
+                    "Spark modifier — additive ignition-angle offset for map "
+                    f"slot {slot}, on the shared base-timing rpm × airmass grid"
+                ),
+                units="\N{DEGREE SIGN}CRK", shape=spark_grid_shape,
+                tags=frozenset({TAG_NO_SYMBOL}),
+                owner=_OWNER_SLOT_SPARK,
+            ))
         # The sixteen per-slot scalars, straight off the registry above. Owned
         # like everything else in this profile: a flag is only written through
         # the domain call that checks it *is* a flag first, and a read-only
@@ -544,6 +599,23 @@ S50_PUT_GRID_UIDS = {
     1: "0x7d41a", 2: "0x7d4da", 3: "0x7d59a", 4: "0x7d65a", 5: "0x7d71a",
 }
 
+#: S50 — the five per-slot ``Spark modifier`` grids.
+#:
+#: Slot attribution is from each table's third ``CATEGORYMEM`` in
+#: ``S50 Switch Patch.29.33.V2.xdf`` (``category="248"`` down to ``"244"``,
+#: i.e. ``CATEGORY`` indices ``0xF7``–``0xF3`` = Map Slot 1–5), not from address
+#: order: the five sit at a tidy ``0x100`` stride and reading the slot off that
+#: stride would be a guess that happened to be right.
+S50_SPARK_GRID_UIDS = {
+    1: "0x7cf1a", 2: "0x7d01a", 3: "0x7d11a", 4: "0x7d21a", 5: "0x7d31a",
+}
+
+#: S50 — the ``Spark modifier`` geometry: the 16 rpm × 16 mg/stk breakpoints of
+#: the base ignition maps' own axes (``0x3ce5a`` and ``0x3cdbc``, which these
+#: grids reuse byte for byte). A05's is (16, 18), which is why this travels with
+#: the address book instead of being a constant of the patch.
+S50_SPARK_GRID_SHAPE = (16, 16)
+
 #: S50 — the sixteen per-slot scalars, ``setting key -> {slot: uniqueid}``.
 S50_SLOT_SETTING_UIDS = {
     "enable_sl_tc":     {1: "0x7d83f", 2: "0x7d840", 3: "0x7d841", 4: "0x7d842", 5: "0x7d843"},
@@ -571,12 +643,16 @@ SWITCH_PATCH_2933 = build_switch_patch_profile(
     standalone_uids=S50_STANDALONE_UIDS,
     put_grid_uids=S50_PUT_GRID_UIDS,
     slot_setting_uids=S50_SLOT_SETTING_UIDS,
+    spark_grid_uids=S50_SPARK_GRID_UIDS,
+    spark_grid_shape=S50_SPARK_GRID_SHAPE,
 )
 
 __all__ = [
     "SWITCH_PATCH_2933",
     "STANDALONE_ROLES",
     "S50_PUT_GRID_UIDS",
+    "S50_SPARK_GRID_SHAPE",
+    "S50_SPARK_GRID_UIDS",
     "S50_SLOT_SETTING_UIDS",
     "S50_STANDALONE_UIDS",
     "build_switch_patch_profile",
@@ -585,6 +661,7 @@ __all__ = [
     "SLOTS",
     "SLOT_GRID_SHAPE",
     "SLOT_DEFAULT_HPA",
+    "SPARK_DEFAULT_DEGREES",
     "SLOT_AXIS_HEADER_VALUE",
     "SLOT_SETTINGS",
     "SLOT_SETTINGS_BY_KEY",

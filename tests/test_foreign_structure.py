@@ -1249,6 +1249,48 @@ def _patch_role_correspondence() -> list[tuple[int, int]]:
     return [(s.uniqueid, a.uniqueid) for s, a in zip(s50, a05)]
 
 
+#: The five names S50's book carries and A05's does not: the per-slot
+#: ``Spark modifier`` grids. Not a drift between two maps of one patch — a gap
+#: in one address book, and the only kind of gap the builder allows. A05's
+#: uniqueids have never been read off ``A05 Switch Patch.29.33.V2.xdf``, and
+#: they cannot be offset from S50's for the reason this whole f8 block exists.
+#: Every cross-map check below therefore runs on the names both books declare,
+#: and :func:`test_f8_the_spark_grids_are_the_only_asymmetry` pins the gap
+#: itself so it cannot quietly widen.
+_SPARK_GRID_NAMES = frozenset(f"slot{n}_spark_modifier" for n in (1, 2, 3, 4, 5))
+
+
+def _shared_patch_names() -> list[str]:
+    return sorted(set(SWITCH_PATCH_2933.names()) & set(SWITCH_PATCH_2933_A05.names()))
+
+
+def test_f8_the_spark_grids_are_the_only_asymmetry() -> None:
+    """S50 binds five tables A05 does not, and that is the whole difference."""
+    s50, a05 = set(SWITCH_PATCH_2933.names()), set(SWITCH_PATCH_2933_A05.names())
+    assert s50 - a05 == _SPARK_GRID_NAMES
+    assert a05 - s50 == set()
+    assert len(_shared_patch_names()) == 92
+
+
+def test_f8_a05_spark_grids_would_need_their_own_shape() -> None:
+    """Why the gap is a gap and not a copy: the geometry differs between cars.
+
+    S50's ``Spark modifier`` is 16 x 16 and A05's is 16 x 18 — one of the six
+    tables where these two definitions disagree on shape rather than only on
+    address. Reading A05's uniqueids off its XDF is the cheap part; passing
+    S50's shape along with them would bind five tables at the wrong size, and
+    because they bind by uniqueid it would still resolve.
+    """
+    _require(S50_PATCH_BINTOOLZ, A05_PATCH_BINTOOLZ)
+    s50 = {t.uniqueid: t for t in parse_xdf(str(S50_PATCH_BINTOOLZ)).tables}
+    a05 = dict(_patch_role_correspondence())
+    a05_tables = {t.uniqueid: t for t in parse_xdf(str(A05_PATCH_BINTOOLZ)).tables}
+    for name in sorted(_SPARK_GRID_NAMES):
+        uid = int(SWITCH_PATCH_2933[name].key, 16)
+        assert s50[uid].shape == (16, 16) == SWITCH_PATCH_2933[name].shape
+        assert a05_tables[a05[uid]].shape == (16, 18)
+
+
 def test_f8_the_two_patch_definitions_are_one_file_with_the_addresses_moved() -> None:
     """The premise the whole port rests on, measured rather than assumed.
 
@@ -1272,7 +1314,7 @@ def test_f8_the_committed_a05_addresses_are_the_ones_role_mapping_produces() -> 
     """
     _require(S50_PATCH_BINTOOLZ, A05_PATCH_BINTOOLZ)
     derived = dict(_patch_role_correspondence())
-    for name in sorted(SWITCH_PATCH_2933.names()):
+    for name in _shared_patch_names():
         expected = derived[int(SWITCH_PATCH_2933[name].key, 16)]
         assert int(SWITCH_PATCH_2933_A05[name].key, 16) == expected, (
             f"{name}: A05 map says {SWITCH_PATCH_2933_A05[name].key}, "
@@ -1289,7 +1331,7 @@ def test_f8_the_a05_offsets_are_not_one_delta_from_s50s() -> None:
     """
     deltas = [
         int(SWITCH_PATCH_2933_A05[n].key, 16) - int(SWITCH_PATCH_2933[n].key, 16)
-        for n in SWITCH_PATCH_2933.names()
+        for n in _shared_patch_names()
     ]
     assert set(deltas) == {0x13000, 0x12F60, 0x13020}
     assert sum(d != 0x13000 for d in deltas) == 25
@@ -1400,8 +1442,7 @@ def test_f8_both_patch_maps_describe_the_patch_identically() -> None:
     two maps of the same BinToolz build could disagree about what a table does
     while both resolving. Here they cannot, and this asserts it stays that way.
     """
-    assert set(SWITCH_PATCH_2933.names()) == set(SWITCH_PATCH_2933_A05.names())
-    for name in sorted(SWITCH_PATCH_2933.names()):
+    for name in _shared_patch_names():
         s50, a05 = SWITCH_PATCH_2933[name], SWITCH_PATCH_2933_A05[name]
         assert (s50.description, s50.units, s50.shape, s50.tags, s50.owner,
                 s50.group) == (a05.description, a05.units, a05.shape, a05.tags,

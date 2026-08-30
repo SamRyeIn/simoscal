@@ -388,6 +388,68 @@ def test_switch_patch_map_binds_every_slot_by_uniqueid() -> None:
             assert isinstance(spec.key, str) and spec.key.startswith("0x")
 
 
+def test_switch_patch_binds_the_five_spark_modifier_grids() -> None:
+    """The 92-table book gains five, and they are owned like everything else."""
+    assert len(SWITCH_PATCH_2933.specs) == 92 + 5
+
+    names = sp_map.slot_names("spark_modifier")
+    assert names == tuple(f"slot{n}_spark_modifier" for n in (1, 2, 3, 4, 5))
+
+    for slot, uid in sp_map.S50_SPARK_GRID_UIDS.items():
+        spec = SWITCH_PATCH_2933[f"slot{slot}_spark_modifier"]
+        assert spec.key == uid
+        assert spec.shape == sp_map.S50_SPARK_GRID_SHAPE == (16, 16)
+        assert spec.units == "\N{DEGREE SIGN}CRK"
+        assert spec.has(prof.TAG_NO_SYMBOL)
+        # Domain-owned, so the generic editor refuses it (CR-20260813-01).
+        assert "slot_spark_map" in spec.owner
+
+
+def test_spark_grids_are_optional_and_a05_declines_them() -> None:
+    """A05's uniqueids have never been read off its own XDF; it keeps its 92."""
+    assert len(SWITCH_PATCH_2933_A05.specs) == 92
+    assert not [n for n in SWITCH_PATCH_2933_A05.specs if "spark_modifier" in n]
+
+
+def _s50_book(**overrides):
+    book = dict(
+        name="probe", xdf="S50 Switch Patch.29.33.V2.xdf",
+        standalone_uids=sp_map.S50_STANDALONE_UIDS,
+        put_grid_uids=sp_map.S50_PUT_GRID_UIDS,
+        slot_setting_uids=sp_map.S50_SLOT_SETTING_UIDS,
+        spark_grid_uids=sp_map.S50_SPARK_GRID_UIDS,
+        spark_grid_shape=sp_map.S50_SPARK_GRID_SHAPE,
+    )
+    book.update(overrides)
+    return book
+
+
+def test_spark_uids_without_a_shape_are_refused() -> None:
+    """S50 is (16, 16) and A05 is (16, 18), so a defaulted shape would be a lie."""
+    with pytest.raises(ValueError, match="16x18"):
+        sp_map.build_switch_patch_profile(**_s50_book(spark_grid_shape=None))
+
+    with pytest.raises(ValueError, match="together"):
+        sp_map.build_switch_patch_profile(**_s50_book(spark_grid_uids=None))
+
+
+def test_a_spark_book_missing_a_slot_fails_at_build_time() -> None:
+    short = {s: u for s, u in sp_map.S50_SPARK_GRID_UIDS.items() if s != 3}
+    with pytest.raises(ValueError, match="Spark modifier grids"):
+        sp_map.build_switch_patch_profile(**_s50_book(spark_grid_uids=short))
+
+
+def test_a_spark_grid_reusing_a_put_grid_uniqueid_fails_at_build_time() -> None:
+    """The copy-a-column typo: two logical names on one table."""
+    collide = dict(sp_map.S50_SPARK_GRID_UIDS)
+    collide[5] = sp_map.S50_PUT_GRID_UIDS[5]
+    with pytest.raises(ValueError) as excinfo:
+        sp_map.build_switch_patch_profile(**_s50_book(spark_grid_uids=collide))
+
+    message = str(excinfo.value)
+    assert "slot5_spark_modifier" in message and "slot5_put_setpoint" in message
+
+
 def test_lineage_helper_tuples_name_real_entries() -> None:
     for name in (*sc_map.IGNITION_BASE_VVL0, *sc_map.IGNITION_TEMP_CORRECTION,
                  *sc_map.LAMBDA_FAMILY, *sc_map.LAMBDA_FLOORS,
@@ -638,6 +700,10 @@ def test_switch_patch_profile_resolves_on_its_real_xdf(
     slot5 = resolved["slot5_put_setpoint"]
     assert slot5.view.uniqueid == 0x7D71A
     assert slot5.view.shape == sp_map.SLOT_GRID_SHAPE
+
+    spark5 = resolved["slot5_spark_modifier"]
+    assert spark5.view.uniqueid == 0x7D31A
+    assert spark5.view.shape == sp_map.S50_SPARK_GRID_SHAPE
 
 
 def test_wrong_xdf_fails_loud_before_any_edit(
