@@ -187,6 +187,10 @@ BASE_CALLS = {
 PATCH_CALLS = {
     "switchpatch.slot_curve":
         lambda t, d: t.switchpatch.slot_curve(1, psi=10.0, dry_run=d),
+    "switchpatch.slot_spark_map":
+        lambda t, d: t.switchpatch.slot_spark_map(
+            5, rpm=[5000, 5500], rows={1200: [1.5, 1.5], 1400: [1.5, 1.5]},
+            max_delivered_degrees=12.0, dry_run=d),
     "switchpatch.slot_rpm_axis":
         lambda t, d: t.switchpatch.slot_rpm_axis(
             _axis_nudged(t, "slot_put_rpm_axis", space=PATCH_SPACE), dry_run=d),

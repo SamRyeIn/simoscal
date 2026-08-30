@@ -21,10 +21,12 @@ from simoscal.tune import (
     build,
 )
 from simoscal.tune.domains.switchpatch import PATCH_SPACE
+from simoscal.tune.editing import EditRejected, apply_op
 from simoscal.tune.profiles.switchpatch_2933 import (
     SLOT_DEFAULT_HPA,
     SLOT_SETTINGS,
     SLOTS,
+    SPARK_DEFAULT_DEGREES,
 )
 from simoscal.tune.units import hpa_from_psi
 from tests.conftest import requires_bintoolz
@@ -372,3 +374,198 @@ def test_the_full_patched_build_passes_every_gate(
     assert result.diff is not None and result.diff.clean
     # 1 base ceiling + axis + 2 slot grids + 10 TC flags = 14 tables read back.
     assert len(result.journal.tables_touched()) == 14
+
+
+# --------------------------------------------------------------------------- #
+# Per-slot timing — the Spark modifier grid
+# --------------------------------------------------------------------------- #
+#: The R20 shape: the two top airmass rows, written identically, over the eight
+#: rpm breakpoints above 3000. Every other cell of the 16x16 stays neutral.
+R20_RPM = [3000, 3500, 4000, 4500, 5000, 5500, 6000, 6500]
+#: The brainstorm's shape on the grid's 0.375 deg lattice. The raw figures
+#: (1.00, 2.00, 2.75, 3.50) are not storable and the domain refuses them rather
+#: than rounding; these are the round-*up* neighbours, chosen so the deliberate
+#: half-octane-credit margin is preserved rather than eroded.
+R20_OFFSETS = [1.125, 1.500, 2.250, 3.000, 3.750, 2.250, 1.500, 1.125]
+R20_ROWS = {1200: R20_OFFSETS, 1400: R20_OFFSETS}
+
+#: Comfortably above the +4.38 the R20 map actually delivers, so the guard is
+#: not the thing under test except where a test means it to be.
+GENEROUS_CEILING = 8.0
+
+
+def test_spark_modifiers_start_neutral(patched: Tune) -> None:
+    """Neutral is a decoded 0.00 degrees, not a raw zero — the additive proof."""
+    for slot in SLOTS:
+        values = patched.values(f"slot{slot}_spark_modifier", space=PATCH_SPACE)
+        assert values.shape == (16, 16)
+        assert np.allclose(values, SPARK_DEFAULT_DEGREES, atol=1e-6)
+
+
+def test_slot_spark_map_writes_only_the_named_cells(patched: Tune) -> None:
+    patched.switchpatch.slot_spark_map(
+        5, rpm=R20_RPM, rows=R20_ROWS,
+        max_delivered_degrees=GENEROUS_CEILING,
+        intent="slot 5 booster timing",
+    )
+    grid = patched.values("slot5_spark_modifier", space=PATCH_SPACE)
+
+    written = ~np.isclose(grid, SPARK_DEFAULT_DEGREES, atol=1e-6)
+    assert written.sum() == 16, "16 of 256 cells, as declared"
+    assert np.allclose(grid[15][8:], R20_OFFSETS)
+    assert np.allclose(grid[14][8:], R20_OFFSETS)
+    # Every other slot is untouched: this is the point of a per-slot grid.
+    for slot in (1, 2, 3, 4):
+        other = patched.values(f"slot{slot}_spark_modifier", space=PATCH_SPACE)
+        assert np.allclose(other, SPARK_DEFAULT_DEGREES, atol=1e-6)
+
+
+def test_slot_spark_map_leaves_the_shared_base_timing_alone(patched: Tune) -> None:
+    """The invariant the whole R20 approach rests on."""
+    before = patched.values("ignition_base_vvl0_i0_e0")
+    patched.switchpatch.slot_spark_map(
+        5, rpm=R20_RPM, rows=R20_ROWS, max_delivered_degrees=GENEROUS_CEILING,
+    )
+    assert np.array_equal(before, patched.values("ignition_base_vvl0_i0_e0"))
+
+
+def test_delivered_timing_ceiling_counts_the_base_not_the_offset(
+    patched: Tune,
+) -> None:
+    """A modest offset onto an advanced cell is not a modest amount of timing."""
+    base = patched.values("ignition_base_vvl0_i0_e0")
+    # Both rows this writes have to clear the ceiling, so the binding cell is
+    # whichever of the two carries more base advance at 6500 rpm.
+    highest_base = max(float(base[14][15]), float(base[15][15]))
+    offset = 1.875
+    # An offset well under 2 degrees, refused against a ceiling well over it,
+    # because the cell it lands on already carries base advance.
+    with pytest.raises(ValueError, match="above the declared ceiling"):
+        patched.switchpatch.slot_spark_map(
+            5, rpm=[6500], rows={1200: [offset], 1400: [offset]},
+            max_delivered_degrees=highest_base + offset - 0.5,
+        )
+    # The same offset passes once the ceiling admits the delivered figure.
+    patched.switchpatch.slot_spark_map(
+        5, rpm=[6500], rows={1200: [offset], 1400: [offset]},
+        max_delivered_degrees=highest_base + offset + 0.001,
+    )
+
+
+def test_the_ceiling_refuses_rather_than_passes_without_a_base_map(
+    patched: Tune,
+) -> None:
+    with pytest.raises(ValueError, match="cannot read the base ignition map"):
+        patched.switchpatch.slot_spark_map(
+            5, rpm=R20_RPM, rows=R20_ROWS,
+            max_delivered_degrees=GENEROUS_CEILING,
+            base_map="no_such_ignition_map",
+        )
+
+
+def test_the_top_airmass_row_must_match_the_one_below(patched: Tune) -> None:
+    """WOT runs past 1400 mg/stk, and only a flat last segment is bounded."""
+    with pytest.raises(ValueError, match="only a flat last segment is bounded"):
+        patched.switchpatch.slot_spark_map(
+            5, rpm=R20_RPM,
+            rows={1200: R20_OFFSETS, 1400: [v + 0.375 for v in R20_OFFSETS]},
+            max_delivered_degrees=GENEROUS_CEILING,
+        )
+    # Writing the top row alone trips it too — the row below is still neutral.
+    with pytest.raises(ValueError, match="only a flat last segment is bounded"):
+        patched.switchpatch.slot_spark_map(
+            5, rpm=R20_RPM, rows={1400: R20_OFFSETS},
+            max_delivered_degrees=GENEROUS_CEILING,
+        )
+
+
+def test_a_row_or_column_off_the_breakpoints_is_refused_not_snapped(
+    patched: Tune,
+) -> None:
+    with pytest.raises(ValueError, match="4600 rpm is not a rpm breakpoint"):
+        patched.switchpatch.slot_spark_map(
+            5, rpm=[4600], rows={1200: [0.75], 1400: [0.75]},
+            max_delivered_degrees=GENEROUS_CEILING,
+        )
+    with pytest.raises(ValueError, match="1300 mg/stk is not a airmass breakpoint"):
+        patched.switchpatch.slot_spark_map(
+            5, rpm=[5000], rows={1300: [0.75]},
+            max_delivered_degrees=GENEROUS_CEILING,
+        )
+
+
+def test_the_nominal_breakpoints_are_named_despite_a_quantised_axis(
+    patched: Tune,
+) -> None:
+    """1200 mg/stk decodes to 1200.01, and naming it must still work."""
+    airmass = patched.axis("slot5_spark_modifier", "y", space=PATCH_SPACE)
+    assert not np.array_equal(airmass, np.round(airmass)), "axis really is quantised"
+    patched.switchpatch.slot_spark_map(
+        5, rpm=[5000], rows={1200: [0.75], 1400: [0.75]},
+        max_delivered_degrees=GENEROUS_CEILING,
+    )
+
+
+def test_an_offset_off_the_storage_lattice_is_refused_not_rounded(
+    patched: Tune,
+) -> None:
+    """+1.00 deg would silently become +1.125 -- a round *up*, on advance."""
+    with pytest.raises(ValueError, match="do not land on it"):
+        patched.switchpatch.slot_spark_map(
+            5, rpm=[5000], rows={1200: [1.0], 1400: [1.0]},
+            max_delivered_degrees=GENEROUS_CEILING,
+        )
+    with pytest.raises(ValueError, match=r"nearest storable \+0.750 or \+1.125"):
+        patched.switchpatch.slot_spark_map(
+            5, rpm=[5000], rows={1200: [1.0], 1400: [1.0]},
+            max_delivered_degrees=GENEROUS_CEILING,
+        )
+
+
+def test_what_the_grid_stores_is_what_was_asked_for(patched: Tune) -> None:
+    """The point of refusing: no gap between the calibration and the bin."""
+    patched.switchpatch.slot_spark_map(
+        5, rpm=R20_RPM, rows=R20_ROWS, max_delivered_degrees=GENEROUS_CEILING,
+    )
+    grid = patched.values("slot5_spark_modifier", space=PATCH_SPACE)
+    assert np.allclose(grid[15][8:], R20_OFFSETS, atol=1e-9)
+    assert np.allclose(grid[14][8:], R20_OFFSETS, atol=1e-9)
+
+
+def test_a_row_with_the_wrong_number_of_offsets_is_refused(patched: Tune) -> None:
+    with pytest.raises(ValueError, match="one offset per rpm"):
+        patched.switchpatch.slot_spark_map(
+            5, rpm=R20_RPM, rows={1200: [0.75, 1.5], 1400: R20_OFFSETS},
+            max_delivered_degrees=GENEROUS_CEILING,
+        )
+
+
+def test_spark_map_rejects_an_unknown_slot(patched: Tune) -> None:
+    with pytest.raises(ValueError, match="does not exist"):
+        patched.switchpatch.slot_spark_map(
+            6, rpm=R20_RPM, rows=R20_ROWS,
+            max_delivered_degrees=GENEROUS_CEILING,
+        )
+
+
+def test_spark_map_require_as_patched_catches_a_written_grid(patched: Tune) -> None:
+    patched.switchpatch.slot_spark_map(
+        5, rpm=R20_RPM, rows=R20_ROWS, max_delivered_degrees=GENEROUS_CEILING,
+    )
+    with pytest.raises(ValueError, match="not the untouched base"):
+        patched.switchpatch.slot_spark_map(
+            5, rpm=R20_RPM, rows=R20_ROWS,
+            max_delivered_degrees=GENEROUS_CEILING,
+            require_as_patched=True,
+        )
+
+
+def test_a_generic_edit_to_a_spark_grid_is_refused(patched: Tune) -> None:
+    """Domain-owned: the generic editor cannot bypass the delivered-timing guard."""
+    with pytest.raises(EditRejected) as excinfo:
+        apply_op(
+            patched, "slot5_spark_modifier", "set",
+            space=PATCH_SPACE, value=4.0,
+            intent="bypass the domain",
+        )
+    assert "slot_spark_map" in str(excinfo.value)

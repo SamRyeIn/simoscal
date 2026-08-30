@@ -26,7 +26,7 @@ Two more things the patch tables need care with, both encoded here:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional, Sequence, Union
+from typing import Iterable, Mapping, Optional, Sequence, Union
 
 import numpy as np
 
@@ -40,6 +40,7 @@ from ..profiles.switchpatch_2933 import (
     SLOT_SETTINGS,
     SLOT_SETTINGS_BY_KEY,
     SLOTS,
+    SPARK_DEFAULT_DEGREES,
 )
 from ..units import AMBIENT_HPA, hpa_from_psi, psi_from_hpa
 from ._common import Domain, dry_runnable, require_shape
@@ -139,6 +140,103 @@ class SwitchPatch(Domain):
             "slot_put_rpm_axis", new, space=self.space, kind=KIND_AXIS,
             intent=intent or "re-breakpoint the shared slot rpm axis",
             detail="shared by all five slot PUT setpoint grids",
+        )
+
+    # -- per-slot timing ------------------------------------------------------- #
+    @dry_runnable
+    def slot_spark_map(
+        self,
+        slot: int,
+        *,
+        rpm: Sequence[float],
+        rows: Mapping[float, Sequence[float]],
+        max_delivered_degrees: float,
+        base_map: str = "ignition_base_vvl0_i0_e0",
+        require_as_patched: bool = False,
+        intent: str = "",
+    ) -> EditEntry:
+        """Give one slot its own ignition timing, as an offset onto the shared base.
+
+        This is the *only* way to make one slot's timing differ from another's.
+        The nine ``IP_IGA_BAS_IVVT_VVL_PORT_L[STND][i][e]`` — Basic ignition
+        angle maps are shared by all five slots, so editing them moves every
+        slot at once. The patch's per-slot ``Spark modifier`` grid is an
+        **additive** offset in °CRK onto whichever of those the ECU is on, laid
+        out on their own rpm × airmass axes (see
+        ``knowledge/sc8s50-switchpatch-xdf.md`` for the evidence that it is
+        additive rather than a replacement or a multiplier).
+
+        The map is given as the cells you actually mean:
+
+        * ``rpm`` — the rpm breakpoints the columns refer to;
+        * ``rows`` — ``{airmass mg/stk: one offset per rpm}``.
+
+        Both must name **exact breakpoints** of the grid's own axes. A value
+        between breakpoints has no cell to land in, and rounding it to the
+        nearest would silently write a different map than the one asked for.
+        Every cell not named keeps what it holds, which for an as-patched bin is
+        the neutral 0.00°.
+
+        ``max_delivered_degrees`` is required and has no default. The quantity
+        worth capping is **delivered** timing — base + modifier — not the offset
+        on its own: +4° onto a cell already at +3.38° is a very different engine
+        to +4° onto one at −7.50°. There is no safe universal figure for it, so
+        the calibration states its own and this refuses anything above it.
+        """
+        self._require_slot(slot)
+        name = f"slot{slot}_spark_modifier"
+
+        current = self._tune.values(name, space=self.space)
+        if require_as_patched and not np.allclose(
+            current, SPARK_DEFAULT_DEGREES, atol=1e-6
+        ):
+            raise ValueError(
+                f"switchpatch.slot_spark_map: slot {slot} already holds "
+                f"{current.min():+.2f}..{current.max():+.2f}°CRK, not the "
+                f"as-patched neutral {SPARK_DEFAULT_DEGREES:.2f}° — this bin is "
+                "not the untouched base this call assumed"
+            )
+
+        rpm_axis = self._axis_or_fail(name, "x", "rpm")
+        airmass_axis = self._axis_or_fail(name, "y", "airmass")
+        columns = [self._breakpoint_index(rpm_axis, float(v), "rpm", "rpm")
+                   for v in rpm]
+        cells: dict[tuple[int, int], float] = {}
+        for airmass, offsets in rows.items():
+            row = self._breakpoint_index(
+                airmass_axis, float(airmass), "airmass", "mg/stk"
+            )
+            offsets = np.asarray(offsets, dtype=np.float64).ravel()
+            if offsets.size != len(columns):
+                raise ValueError(
+                    f"switchpatch.slot_spark_map: the {airmass:g} mg/stk row has "
+                    f"{offsets.size} offsets but rpm names {len(columns)} "
+                    "breakpoints — one offset per rpm, in the same order"
+                )
+            for column, offset in zip(columns, offsets):
+                cells[(row, column)] = float(offset)
+
+        self._check_representable(cells)
+        self._check_delivered_timing(slot, cells, base_map, max_delivered_degrees)
+        self._check_top_row_is_flat(slot, cells, current, airmass_axis)
+
+        written = np.array(sorted(cells.values()))
+        return self._tune.write_cells(
+            name, cells, space=self.space,
+            intent=intent or (
+                f"give map slot {slot} its own timing: "
+                f"{written.min():+.2f} to {written.max():+.2f}°CRK onto the "
+                "shared base ignition map"
+            ),
+            detail=(
+                f"{len(cells)} of {current.size} cells, additive °CRK; "
+                + "; ".join(
+                    f"{airmass:g} mg/stk: "
+                    + ", ".join(f"{v:+.2f}" for v in np.asarray(offsets).ravel())
+                    for airmass, offsets in rows.items()
+                )
+                + f"; delivered timing capped at {max_delivered_degrees:+.2f}°CRK"
+            ),
         )
 
     # -- traction control ------------------------------------------------------ #
@@ -377,6 +475,168 @@ class SwitchPatch(Domain):
                 "base table would cap this slot instead of its own grid, so "
                 "the slot switch would stop meaning anything."
             )
+
+    def _axis_or_fail(self, name: str, which: str, label: str) -> np.ndarray:
+        axis = self._tune.axis(name, which, space=self.space)
+        if axis is None:
+            raise ValueError(
+                f"switchpatch.slot_spark_map: {name} has no readable {label} "
+                f"({which}) axis, so a breakpoint cannot be named"
+            )
+        return axis
+
+    #: How far a named breakpoint may sit from a real one and still be that
+    #: breakpoint. Not zero, because a stored axis is quantised — the airmass
+    #: axis is a 16-bit raw divided by 23.5907, so its nominal 1200 mg/stk
+    #: breakpoint decodes to 1200.01 and no exact match would ever succeed. Not
+    #: loose either: 0.1% admits that rounding while still refusing 4600 rpm
+    #: against a 4500 breakpoint by a factor of twenty.
+    _BREAKPOINT_RTOL = 1e-3
+
+    @classmethod
+    def _breakpoint_index(
+        cls, axis: np.ndarray, value: float, label: str, units: str
+    ) -> int:
+        """The index of the named breakpoint, or a refusal naming the real ones.
+
+        Deliberately not a snap-to-nearest. A typo'd 4600 rpm quietly written at
+        4500 reads as intentional everywhere downstream — in the report, the
+        journal and the diff — so a value that is not a breakpoint is an error,
+        not something to round.
+        """
+        nearest = int(np.argmin(np.abs(axis - value)))
+        tolerance = cls._BREAKPOINT_RTOL * max(1.0, abs(value))
+        if abs(float(axis[nearest]) - value) > tolerance:
+            offered = ", ".join(f"{v:g}" for v in axis)
+            raise ValueError(
+                f"switchpatch.slot_spark_map: {value:g} {units} is not a "
+                f"{label} breakpoint of this grid; it has {offered}"
+            )
+        return nearest
+
+    def _check_representable(self, cells: Mapping[tuple[int, int], float]) -> None:
+        """Refuse an offset the grid cannot store, rather than rounding it.
+
+        This grid holds 0.375 °CRK per raw step, so most round numbers are not
+        on its lattice: 2.00° would encode to 1.875° and 1.00° to **1.125°**.
+        The generic editor treats that as a warning, but this is ignition
+        advance — half the roundings go the unsafe way, and a calibration that
+        says +1.00 while the ECU holds +1.125 is wrong in the direction that
+        matters. ``slot_curve`` floors psi for the same reason; here there is a
+        better option than flooring, because the caller can simply be told the
+        two values the grid can actually hold and pick one.
+        """
+        step = self._value_step()
+        if step is None:
+            return
+        offenders = []
+        for cell, offset in sorted(cells.items()):
+            steps = offset / step
+            if abs(steps - round(steps)) < 1e-6:
+                continue
+            low = np.floor(steps) * step
+            high = np.ceil(steps) * step
+            offenders.append(f"{offset:+.3f} (nearest storable {low:+.3f} or {high:+.3f})")
+        if offenders:
+            raise ValueError(
+                f"switchpatch.slot_spark_map: this grid stores {step:g}\u00b0CRK per "
+                f"raw step, and {len(offenders)} requested offset(s) do not land "
+                "on it: " + "; ".join(sorted(set(offenders))) + ". Refusing rather "
+                "than rounding — on ignition advance a silent round-up is the "
+                "unsafe direction, and the calibration should say what the ECU "
+                "will actually hold."
+            )
+
+    def _value_step(self) -> Optional[float]:
+        """Physical units per raw step for a slot's spark grid, or None."""
+        view = self._tune.table("slot1_spark_modifier", space=self.space).view
+        scaling = view.table.z.scaling if view.table.z is not None else None
+        if scaling is None or not scaling.is_linear or not scaling.m:
+            return None
+        return abs(float(scaling.m))
+
+    def _check_delivered_timing(
+        self,
+        slot: int,
+        cells: Mapping[tuple[int, int], float],
+        base_map: str,
+        ceiling: float,
+    ) -> None:
+        """KTD3: cap base + modifier, not the modifier on its own.
+
+        Reads the live base map rather than a constant, so the check stays true
+        when a revision moves base timing in the same script. If the base space
+        is not mapped there is nothing to add to, and the guard cannot run —
+        that is a refusal, not a pass, because the whole point is that the
+        offset alone says nothing about what the engine will see.
+        """
+        try:
+            base = self._tune.values(base_map)
+        except Exception as exc:  # noqa: BLE001 - re-raised with the reason
+            raise ValueError(
+                f"switchpatch.slot_spark_map: cannot read the base ignition map "
+                f"{base_map!r}, so delivered timing cannot be checked. The "
+                "modifier is additive; capping it alone would say nothing about "
+                f"what the engine sees. ({exc})"
+            ) from exc
+
+        worst: Optional[tuple[tuple[int, int], float, float]] = None
+        for cell, offset in cells.items():
+            delivered = float(base[cell]) + offset
+            if delivered > ceiling and (worst is None or delivered > worst[2]):
+                worst = (cell, float(base[cell]), delivered)
+        if worst is not None:
+            (row, column), base_value, delivered = worst
+            raise ValueError(
+                f"switchpatch.slot_spark_map: slot {slot} would deliver "
+                f"{delivered:+.2f}°CRK at row {row}, column {column} "
+                f"({base_value:+.2f}° base + {delivered - base_value:+.2f}° "
+                f"modifier), above the declared ceiling of {ceiling:+.2f}°CRK. "
+                "The offset is additive, so the cell's base value is half the "
+                "answer — a modest offset onto an already-advanced cell is not "
+                "a modest amount of timing."
+            )
+
+    def _check_top_row_is_flat(
+        self,
+        slot: int,
+        cells: Mapping[tuple[int, int], float],
+        current: np.ndarray,
+        airmass_axis: np.ndarray,
+    ) -> None:
+        """Above the top breakpoint, only a flat map is bounded.
+
+        Measured airmass at WOT reaches ~1600 mg/stk against a top breakpoint of
+        1400 (``Logs/BasicsGuide_R19``), so every pull runs off the end of this
+        grid. Whether the ECU clamps there or extrapolates along the last slope
+        is not established — but it does not have to be, as long as the last two
+        rows agree: a flat segment has zero slope, so clamping and extrapolation
+        give the same answer. Writing the top row *differently* from the one
+        below makes the unresolved question load-bearing, on the advance side,
+        at the highest load the engine ever sees.
+        """
+        top = len(airmass_axis) - 1
+        if not any(row == top for row, _ in cells):
+            return
+        below = top - 1
+        result = current.copy()
+        for (row, column), value in cells.items():
+            result[row, column] = value
+        if np.allclose(result[top], result[below], rtol=0, atol=1e-6):
+            return
+        differing = np.flatnonzero(
+            ~np.isclose(result[top], result[below], rtol=0, atol=1e-6)
+        )
+        raise ValueError(
+            f"switchpatch.slot_spark_map: slot {slot}'s top airmass row "
+            f"({airmass_axis[top]:g} mg/stk) would differ from the "
+            f"{airmass_axis[below]:g} mg/stk row below it at column(s) "
+            f"{', '.join(str(int(c)) for c in differing)}. WOT airmass runs past "
+            "the top breakpoint, and only a flat last segment is bounded there — "
+            "write the two rows identically, or the behaviour above 1400 mg/stk "
+            "depends on whether the ECU clamps or extrapolates, which is not "
+            "established."
+        )
 
     def _check_axis_header(self) -> EditEntry:
         header = float(
