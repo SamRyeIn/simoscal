@@ -875,6 +875,7 @@ def _compare_curves_figure(
         ax.set_ylabel(rt_a.units or "", fontweight="bold")
         ax.set_title(title, fontsize=9)
         ax.set_ylim(ylim)
+        ax.minorticks_on()
         ax.grid(True, which="both", alpha=0.3)
         axes.append(ax)
 
