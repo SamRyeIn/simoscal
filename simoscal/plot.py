@@ -774,7 +774,37 @@ def _comparison_line_limits(*arrays: np.ndarray) -> tuple[float, float]:
     return lo - pad, hi + pad
 
 
-def _compare_columns_figure(
+def _is_rpm(units: Optional[str]) -> bool:
+    return (units or "").strip().lower() == "rpm"
+
+
+def _curve_axes(rt: RenderedTable) -> tuple[np.ndarray, Optional[str], np.ndarray, Optional[str], bool]:
+    """Pick which table axis is the plot's X axis vs. the per-curve key.
+
+    RPM, when present on exactly one axis, is always the plot's X axis — an
+    RPM sweep is what a reader wants to see spread along the bottom, whatever
+    row/column position it happens to occupy in the table. Otherwise falls
+    back to the row axis (``y_labels``) as X, keyed by the column axis
+    (``x_labels``), matching this composite's original orientation.
+
+    Returns ``(x_axis, x_axis_units, key_axis, key_axis_units, x_is_table_x)``.
+    """
+    x_is_rpm = _is_rpm(rt.x_units)
+    y_is_rpm = _is_rpm(rt.y_units)
+    if x_is_rpm and not y_is_rpm:
+        return (
+            np.asarray(rt.x_labels, dtype=float), rt.x_units,
+            np.asarray(rt.y_labels, dtype=float), rt.y_units,
+            True,
+        )
+    return (
+        np.asarray(rt.y_labels, dtype=float), rt.y_units,
+        np.asarray(rt.x_labels, dtype=float), rt.x_units,
+        False,
+    )
+
+
+def _compare_curves_figure(
     rt_a: RenderedTable,
     rt_b: RenderedTable,
     delta: np.ndarray,
@@ -783,16 +813,16 @@ def _compare_columns_figure(
     a_bin_name: Optional[Union[str, Path]] = None,
     b_bin_name: Optional[Union[str, Path]] = None,
 ) -> Figure:
-    """A 3-panel line composite with one labeled curve per table column.
+    """A 3-panel line composite with one labeled curve per table row/column.
 
-    Curves run over the row-axis breakpoints and are keyed by their column-axis
-    breakpoint. Colors and labels are identical across A, B, and ``B - A``;
-    all three panels also receive the exact same Y limits so their vertical
-    shapes and magnitudes can be compared directly.
+    Curves run over the plot's X axis and are keyed by the other axis's
+    breakpoints — see :func:`_curve_axes` for which axis becomes which (an
+    RPM axis always wins the X slot). Colors and labels are identical across
+    A, B, and ``B - A``; all three panels also receive the exact same Y
+    limits so their vertical shapes and magnitudes can be compared directly.
     """
-    row_axis = np.asarray(rt_a.y_labels, dtype=float)
-    column_axis = np.asarray(rt_a.x_labels, dtype=float)
-    line_colors = colormaps[value_cmap](np.linspace(0.05, 0.95, len(column_axis)))
+    x_axis, x_units, key_axis, key_units, x_is_table_x = _curve_axes(rt_a)
+    line_colors = colormaps[value_cmap](np.linspace(0.05, 0.95, len(key_axis)))
     ylim = _comparison_line_limits(rt_a.values, rt_b.values, delta)
 
     fig = Figure(figsize=(15.0, 5.0))
@@ -804,28 +834,29 @@ def _compare_columns_figure(
     axes = []
     for pos, (values, title) in enumerate(panels, start=1):
         ax = fig.add_subplot(1, 3, pos)
-        for col, (column_value, color) in enumerate(zip(column_axis, line_colors)):
+        for key, (key_value, color) in enumerate(zip(key_axis, line_colors)):
+            curve = values[key, :] if x_is_table_x else values[:, key]
             ax.plot(
-                row_axis,
-                values[:, col],
+                x_axis,
+                curve,
                 marker="o",
                 markersize=3,
                 linewidth=1.2,
                 color=color,
-                label=f"{column_value:g}",
+                label=f"{key_value:g}",
             )
         if pos == 3:
             ax.axhline(0.0, color="0.6", linewidth=0.8)
-        ax.set_xlabel(rt_a.y_units or "", fontweight="bold")
+        ax.set_xlabel(x_units or "", fontweight="bold")
         ax.set_ylabel(rt_a.units or "", fontweight="bold")
         ax.set_title(title, fontsize=9)
         ax.set_ylim(ylim)
         ax.grid(True, which="both", alpha=0.3)
         axes.append(ax)
 
-    legend_title = "Column value"
-    if rt_a.x_units:
-        legend_title += f" ({rt_a.x_units})"
+    legend_title = "Curve key"
+    if key_units:
+        legend_title += f" ({key_units})"
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(
         handles,
@@ -895,7 +926,7 @@ def compare_tables(
     *,
     surface: bool = True,
     heatmap: bool = True,
-    columns: bool = True,
+    curves: bool = True,
     value_cmap: str = _VALUE_CMAP,
     delta_cmap: str = _DELTA_CMAP,
     fmt: Union[str, object] = _CELL_FMT,
@@ -919,7 +950,7 @@ def compare_tables(
     * ``(1, 1)`` scalar → nothing produced (returns ``[]``).
     * single row (1D) → one ``<name>__compare_line.png`` (2-panel: overlay + delta).
     * otherwise (2D) → ``<name>__compare_surface.png``,
-      ``<name>__compare_heatmap.png``, and/or ``<name>__compare_columns.png``
+      ``<name>__compare_heatmap.png``, and/or ``<name>__compare_curves.png``
       (each a 3-panel composite), gated by its corresponding toggle.
 
     ``a_bin_name`` and ``b_bin_name`` add centered provenance lines containing
@@ -964,12 +995,12 @@ def compare_tables(
                                       a_bin_name=a_bin_name,
                                       b_bin_name=b_bin_name)
         written.append(_write_figure(fig, out / f"{stem}__compare_heatmap.png"))
-    if columns:
-        fig = _compare_columns_figure(
+    if curves:
+        fig = _compare_curves_figure(
             rt_a, rt_b, delta, value_cmap=value_cmap,
             a_bin_name=a_bin_name, b_bin_name=b_bin_name,
         )
-        written.append(_write_figure(fig, out / f"{stem}__compare_columns.png"))
+        written.append(_write_figure(fig, out / f"{stem}__compare_curves.png"))
     return written
 
 
@@ -1039,7 +1070,7 @@ def compare_bins(
     all_tables: bool = False,
     surface: bool = True,
     heatmap: bool = True,
-    columns: bool = True,
+    curves: bool = True,
     value_cmap: str = _VALUE_CMAP,
     delta_cmap: str = _DELTA_CMAP,
     fmt: Union[str, object] = _CELL_FMT,
@@ -1071,7 +1102,7 @@ def compare_bins(
         for cat in _category_dirs(rt_a):
             written += compare_tables(
                 rt_a, rt_b, out / cat, surface=surface, heatmap=heatmap,
-                columns=columns,
+                curves=curves,
                 value_cmap=value_cmap, delta_cmap=delta_cmap, fmt=fmt,
                 elev=elev, azim=azim, adaptive_azim=adaptive_azim,
                 a_bin_name=a_bin_name, b_bin_name=b_bin_name,

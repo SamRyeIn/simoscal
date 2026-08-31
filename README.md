@@ -400,16 +400,18 @@ compare_tables(before, view, "review/")
 | Member                                                                                                                     | Description                                                                                                   |
 |----------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------|
 | `plot_table(source, out_dir, *, surface=True, heatmap=True, value_cmap="turbo", fmt="{:.4g}", elev=30, azim=-120)`         | Render one table (`TableView` or `RenderedTable`) to PNG(s), flat into `out_dir`. Returns written paths.      |
-| `compare_tables(a, b, out_dir, *, surface=True, heatmap=True, columns=True, value_cmap="turbo", delta_cmap="RdBu_r", ...)` | Composite comparison of two views of one table (`b − a`). Raises `TableMismatchError` on shape/axis mismatch. |
+| `compare_tables(a, b, out_dir, *, surface=True, heatmap=True, curves=True, value_cmap="turbo", delta_cmap="RdBu_r", ...)` | Composite comparison of two views of one table (`b − a`). Raises `TableMismatchError` on shape/axis mismatch. |
 | `plot_tables(cal, out_dir, *, symbols=None, category=None, all_tables=False, ...)`                                         | Batch-plot a selection into per-category subfolders (`_uncategorized/` for a category-less table).            |
-| `compare_bins(cal_a, cal_b, out_dir, *, symbols=None, category=None, all_tables=False, columns=True, ...)`                 | Batch-compare a selection across two bins, matched by `uniqueid` (fails loud if `cal_b` lacks a match).       |
+| `compare_bins(cal_a, cal_b, out_dir, *, symbols=None, category=None, all_tables=False, curves=True, ...)`                 | Batch-compare a selection across two bins, matched by `uniqueid` (fails loud if `cal_b` lacks a match).       |
 | `TableMismatchError`                                                                                                       | Raised by the compare path when two tables are not comparable.                                                |
 
 Output model: one PNG set per table under `out_dir/<category>/`; a multi-category
 table is duplicated under each of its categories (mirroring Phase 2 xlsx). Files
 are `<name>__<kind>.png` where `name` = symbol → title → uniqueid and `kind` ∈
 {`surface`, `heatmap`, `line`, `compare_surface`, `compare_heatmap`,
-`compare_columns`, `compare_line`}. Defaults: `turbo` values / `RdBu_r` delta,
+`compare_curves`, `compare_line`}. The curves composite's X axis is RPM whenever
+exactly one table axis is in `rpm`, regardless of whether that's the table's row
+or column axis; otherwise it defaults to the row axis. Defaults: `turbo` values / `RdBu_r` delta,
 both overridable
 (e.g. `value_cmap="turbo"` for a TunerPro-like look); surfaces bake in a fixed
 camera (`elev=30, azim=-120`, tunable) since the PNG is non-interactive.

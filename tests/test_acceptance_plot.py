@@ -116,7 +116,7 @@ def test_ae4_2d_compare_composites(mini_cal: CalFile, tmp_path):
     paths = compare_tables(a, b, tmp_path)
     assert {p.name for p in paths} == {
         "SYM_10X10__compare_surface.png", "SYM_10X10__compare_heatmap.png",
-        "SYM_10X10__compare_columns.png",
+        "SYM_10X10__compare_curves.png",
     }
 
     delta = plot._delta(a, b)
@@ -161,17 +161,17 @@ def test_ae6_compare_toggles(mini_cal: CalFile, tmp_path):
         y_units=a.y_units, values=a.values + 1.0,
     )
     heat_only = compare_tables(
-        a, b, tmp_path / "h", surface=False, columns=False
+        a, b, tmp_path / "h", surface=False, curves=False
     )
     assert {p.name for p in heat_only} == {"SYM_10X10__compare_heatmap.png"}
     surf_only = compare_tables(
-        a, b, tmp_path / "s", heatmap=False, columns=False
+        a, b, tmp_path / "s", heatmap=False, curves=False
     )
     assert {p.name for p in surf_only} == {"SYM_10X10__compare_surface.png"}
-    columns_only = compare_tables(
+    curves_only = compare_tables(
         a, b, tmp_path / "c", surface=False, heatmap=False
     )
-    assert {p.name for p in columns_only} == {"SYM_10X10__compare_columns.png"}
+    assert {p.name for p in curves_only} == {"SYM_10X10__compare_curves.png"}
 
 
 # --------------------------------------------------------------------------- #
@@ -198,7 +198,7 @@ def test_ae8_before_after_single_cal(mini_cal: CalFile, tmp_path):
     paths = compare_tables(before, view, tmp_path)
     assert {p.name for p in paths} == {
         "SYM_10X10__compare_surface.png", "SYM_10X10__compare_heatmap.png",
-        "SYM_10X10__compare_columns.png",
+        "SYM_10X10__compare_curves.png",
     }
     # The pre-edit snapshot survived the edit (render_table does not alias).
     np.testing.assert_array_equal(before.values, snapshot)
