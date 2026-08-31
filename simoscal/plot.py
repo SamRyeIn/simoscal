@@ -876,7 +876,8 @@ def _compare_curves_figure(
         ax.set_title(title, fontsize=9)
         ax.set_ylim(ylim)
         ax.minorticks_on()
-        ax.grid(True, which="both", alpha=0.3)
+        ax.grid(True, which="major", alpha=0.3)
+        ax.grid(True, which="minor", alpha=0.12)
         axes.append(ax)
 
     legend_title = "Curve key"
