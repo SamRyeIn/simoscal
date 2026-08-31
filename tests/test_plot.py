@@ -328,6 +328,58 @@ def test_resolve_name_falls_back_to_uniqueid(mini_cal: CalFile):
     assert plot._resolve_name(rt) == "table"
 
 
+def test_compare_stem_comes_from_the_side_that_knows_its_uniqueid(
+    tmp_path, mini_cal: CalFile
+):
+    """A before/after pair names its PNGs from the view, not the snapshot.
+
+    The snapshot side is a RenderedTable and has no uniqueid, so naming from it
+    would collapse every patch-added table onto one stem — two changed tables in
+    one build would then write over each other.
+    """
+    view = mini_cal.get("SYM_10X10")
+    before = plot.render_table(view)
+    before = plot.RenderedTable(
+        symbol="|X: x|Y: y", title="Spark modifier", units=before.units,
+        categories=before.categories, x_labels=before.x_labels,
+        y_labels=before.y_labels, x_units=before.x_units,
+        y_units=before.y_units, values=before.values + 1.0,
+    )
+    written = plot.compare_tables(before, view, tmp_path,
+                                  surface=False, heatmap=False, curves=True)
+    assert written, "a differing pair must produce a plot"
+    # Named from the view's symbol, not the snapshot's shared description line.
+    assert all(p.name.startswith("SYM_10X10__") for p in written)
+    assert not any("|X_ x|Y_ y" in p.name for p in written)
+
+
+def test_resolve_name_shapes():
+    """Only a symbol-shaped name stands alone; anything else carries the uid."""
+    class _Src:
+        def __init__(self, symbol, title, uniqueid_hex):
+            self.symbol, self.title = symbol, title
+            self.uniqueid_hex = uniqueid_hex
+
+    # A2L symbols, including the bracketed array families, stay as they are.
+    for symbol in ("IP_IGA_DEC_KNK", "ldp_fac_2_ip_fac_bpa_sp",
+                   "IP_TQ_POW_MAX_AT[POW_1][0]",
+                   "IP_IGA_BAS_IVVT_VVL_PORT_L[STND][0][0]"):
+        assert plot._resolve_name(_Src(symbol, "t", "0x1234")) == symbol
+
+    # The patch XDF's non-symbol description line is shared by every one of its
+    # tables: the readable title wins, and the uniqueid separates the slots.
+    assert (plot._resolve_name(_Src("|X: x|Y: y", "Spark modifier", "0x7d31a"))
+            == "Spark modifier 0x7d31a")
+    # No title either — the junk symbol still cannot stand alone.
+    assert (plot._resolve_name(_Src("|X: x|Y: y", None, "0x7d31a"))
+            == "|X: x|Y: y 0x7d31a")
+    # A title with spaces is not a symbol either.
+    assert (plot._resolve_name(_Src(None, "PUT SP RPM Axis", "0x7d7da"))
+            == "PUT SP RPM Axis 0x7d7da")
+    # No name at all still falls back to the uniqueid alone.
+    assert plot._resolve_name(_Src(None, None, "0x7d31a")) == "0x7d31a"
+
+
 # --------------------------------------------------------------------------- #
 # Comparison — pure numeric helpers (U3)
 # --------------------------------------------------------------------------- #

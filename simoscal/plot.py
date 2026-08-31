@@ -24,6 +24,7 @@ import (plan Key Decision 1).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Optional, Union
 
@@ -463,19 +464,42 @@ def _normalize(source: Union[TableView, RenderedTable]) -> RenderedTable:
     return render_table(source)
 
 
-def _resolve_name(source: Union[TableView, RenderedTable]) -> str:
-    """The base name for a table's files: symbol, else title, else ``uniqueid``.
+#: An A2L symbol as this ECU's definitions spell one: a C identifier, optionally
+#: with the bracketed array indices the XDF uses for table families
+#: (``IP_TQ_POW_MAX_AT[POW_1][0]``). A name that does not match is not a symbol,
+#: whatever field it came out of — see :func:`_resolve_name`.
+_SYMBOL_SHAPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[[^\[\]]+\])*$")
 
-    Resolved from the *source* so a :class:`~simoscal.calfile.TableView` can fall
-    back to its ``uniqueid_hex`` — a :class:`RenderedTable` carries no uniqueid,
-    so it falls back to a generic stem (in practice every real table has a
-    symbol).
+
+def _resolve_name(source: Union[TableView, RenderedTable]) -> str:
+    """The base name for a table's files, unique per table.
+
+    Symbol, else title, else ``uniqueid`` — but a name that is not shaped like
+    an A2L symbol gets its ``uniqueid`` appended, because only a symbol is
+    guaranteed to name one table.
+
+    That distinction is not pedantry. A table's ``symbol`` is the first line of
+    the XDF ``<description>``, and patch-added tables have no A2L symbol at all:
+    in ``S50 Switch Patch.29.33.V2.xdf`` every one of them reads ``|X: x|Y: y``,
+    and the five ``PUT setpoint`` grids share a title as well. Without the
+    suffix all 185 of those tables resolve to the same stem, and a build that
+    changed two of them would write one plot over the other and leave a review
+    gate looking at the wrong table.
+
+    A :class:`RenderedTable` carries no uniqueid, so it falls back to a generic
+    stem.
     """
-    name = source.symbol or source.title
-    if name:
-        return name
+    symbol = source.symbol
     hexid = getattr(source, "uniqueid_hex", None)
-    return hexid or "table"
+    if symbol and _SYMBOL_SHAPE.match(symbol):
+        return symbol
+    # Not a symbol. Prefer the title, which for a patch table is the only
+    # human-readable thing it has ("Spark modifier" beats "|X: x|Y: y"), and
+    # disambiguate with the uniqueid because titles repeat across slots.
+    name = source.title or symbol
+    if not name:
+        return hexid or "table"
+    return f"{name} {hexid}" if hexid else name
 
 
 def _sanitize_filename(name: str) -> str:
@@ -965,7 +989,12 @@ def compare_tables(
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    stem = _sanitize_filename(_resolve_name(a))
+    # Name from whichever side still knows its uniqueid. A before/after pair is
+    # normally a RenderedTable snapshot against a live TableView, and only the
+    # view carries one — so naming from ``a`` alone would throw away the very
+    # thing that makes a patch table's stem unique (see :func:`_resolve_name`).
+    named = a if getattr(a, "uniqueid_hex", None) else b
+    stem = _sanitize_filename(_resolve_name(named))
 
     rows, cols = rt_a.values.shape
     if rows == 1 and cols == 1:
