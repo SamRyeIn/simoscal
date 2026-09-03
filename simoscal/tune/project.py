@@ -197,6 +197,7 @@ class Tune:
                     table_space.cal.model,
                     self._source_image,
                     structure=table_space.cal.structure,
+                    base_offset=table_space.cal.base_offset,
                 )
         except Exception:  # noqa: BLE001 - a missing ghost must never break a read
             # Same policy as the caller in ``catalog``: a ghost is a nicety, and

@@ -111,6 +111,8 @@ def apply_basics_sop(
             region_size=cal.binimage.region_size,
         ),
         structure=cal.structure,
+        base_offset=cal.base_offset,
+        float_bug_symbols=cal.float_bug_symbols,
     )
 
     entries: list[EditEntry] = []
