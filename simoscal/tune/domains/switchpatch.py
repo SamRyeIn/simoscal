@@ -34,6 +34,7 @@ from ... import btp
 from ..journal import KIND_AXIS, KIND_CHECK, VERDICT_SKIPPED, EditEntry
 from ..profiles.switchpatch_2933 import (
     KIND_FLAG,
+    LAMBDA_DEFAULT_OFFSET,
     SLOT_AXIS_HEADER_VALUE,
     SLOT_DEFAULT_HPA,
     SLOT_GRID_SHAPE,
@@ -238,6 +239,193 @@ class SwitchPatch(Domain):
                 + f"; delivered timing capped at {max_delivered_degrees:+.2f}°CRK"
             ),
         )
+
+    # -- per-slot fuelling ------------------------------------------------- #
+    @dry_runnable
+    def slot_lambda_map(
+        self,
+        slot: int,
+        *,
+        rpm: Sequence[float],
+        rows: Mapping[float, Sequence[float]],
+        delivered_lambda_range: tuple[float, float],
+        base_grid: str = "lambda_basic_hpdi",
+        require_as_patched: bool = False,
+        intent: str = "",
+    ) -> EditEntry:
+        """Give one slot its own fuelling, as an offset onto the shared base grid.
+
+        The sibling of :meth:`slot_spark_map`, and it exists for the same
+        reason: ``IP_LAMB_BAS_HPDI[1]`` — Basic HPDI lambda setpoint grid is
+        shared by all five slots, so editing it moves every slot at once. The
+        patch's per-slot ``Lambda modifier`` grid is an **additive** offset onto
+        whatever that grid asks for, laid out on its own axes.
+
+        Additivity is established the same way as the spark grid's: the patch
+        ships every slot's grid at a decoded 0.00, which a replacement setpoint
+        could not be (every slot would command lambda zero) and a multiplier
+        could not be (neutral would have to be 1.0). See
+        ``LAMBDA_DEFAULT_OFFSET`` in the profile module.
+
+        **The sign is inferred, not measured.** No revision in this lineage has
+        ever written one of these grids, so which way a positive offset moves
+        the mixture has never been observed on this car. The sibling's
+        convention — the offset adds to the quantity named in the title — makes
+        a positive offset *leaner*, and that is what this call assumes. Assuming
+        is not good enough on fuelling, where the wrong direction at wide-open
+        throttle is a lean excursion under boost, so the guard below does not
+        rely on the assumption being right:
+
+        ``delivered_lambda_range`` is required and has no default. It bounds
+        **delivered** lambda — base grid + offset — on *both* sides, and every
+        named cell is checked against both bounds under both sign conventions.
+        A write survives only if it is safe whichever way the patch resolves the
+        sign, which is the only honest way to write this grid before a log has
+        settled the question. The lean bound is the safety one; the rich bound
+        is the high-pressure fuel pump, which on this engine already runs to
+        100 % effective volume at 3500-4500 rpm, and beyond which enrichment
+        stops arriving and the mixture goes lean anyway.
+
+        The map is given as the cells you actually mean, exactly as
+        :meth:`slot_spark_map` takes them:
+
+        * ``rpm`` — the rpm breakpoints the columns refer to;
+        * ``rows`` — ``{airmass mg/stk: one offset per rpm}``.
+
+        Both must name exact breakpoints; a value between them is refused, not
+        snapped. Every cell not named keeps what it holds.
+        """
+        self._require_slot(slot)
+        name = f"slot{slot}_lambda_modifier"
+
+        current = self._tune.values(name, space=self.space)
+        if require_as_patched and not np.allclose(
+            current, LAMBDA_DEFAULT_OFFSET, atol=1e-6
+        ):
+            raise ValueError(
+                f"switchpatch.slot_lambda_map: slot {slot} already holds "
+                f"{current.min():+.4f}..{current.max():+.4f} lambda, not the "
+                f"as-patched neutral {LAMBDA_DEFAULT_OFFSET:.2f} — this bin is "
+                "not the untouched base this call assumed"
+            )
+
+        low, high = (float(v) for v in delivered_lambda_range)
+        if not low < high:
+            raise ValueError(
+                "switchpatch.slot_lambda_map: delivered_lambda_range is "
+                f"({low:g}, {high:g}); it must be (rich bound, lean bound) with "
+                "the rich bound lower"
+            )
+
+        rpm_axis = self._axis_or_fail(name, "x", "rpm")
+        airmass_axis = self._axis_or_fail(name, "y", "airmass")
+        columns = [
+            self._breakpoint_index(rpm_axis, float(v), "rpm", "rpm",
+                                   caller="slot_lambda_map")
+            for v in rpm
+        ]
+        cells: dict[tuple[int, int], float] = {}
+        for airmass, offsets in rows.items():
+            row = self._breakpoint_index(
+                airmass_axis, float(airmass), "airmass", "mg/stk",
+                caller="slot_lambda_map",
+            )
+            offsets = np.asarray(offsets, dtype=np.float64).ravel()
+            if offsets.size != len(columns):
+                raise ValueError(
+                    f"switchpatch.slot_lambda_map: the {airmass:g} mg/stk row "
+                    f"has {offsets.size} offsets but rpm names {len(columns)} "
+                    "breakpoints — one offset per rpm, in the same order"
+                )
+            for column, offset in zip(columns, offsets):
+                cells[(row, column)] = float(offset)
+
+        self._check_representable(
+            cells, table=f"slot{slot}_lambda_modifier", caller="slot_lambda_map",
+            units="lambda",
+            rationale=(
+                "a silent round on a lambda offset moves the mixture by an "
+                "amount the calibration never declared, and the lean half of "
+                "every rounding is the unsafe half"
+            ),
+        )
+        self._check_delivered_lambda(slot, cells, base_grid, low, high)
+        self._check_top_row_is_flat(slot, cells, current, airmass_axis,
+                                    caller="slot_lambda_map")
+
+        written = np.array(sorted(cells.values()))
+        return self._tune.write_cells(
+            name, cells, space=self.space,
+            intent=intent or (
+                f"give map slot {slot} its own fuelling: "
+                f"{written.min():+.4f} to {written.max():+.4f} lambda onto the "
+                "shared base lambda setpoint grid"
+            ),
+            detail=(
+                f"{len(cells)} of {current.size} cells, additive lambda; "
+                + "; ".join(
+                    f"{airmass:g} mg/stk: "
+                    + ", ".join(f"{v:+.4f}" for v in np.asarray(offsets).ravel())
+                    for airmass, offsets in rows.items()
+                )
+                + f"; delivered lambda bounded to [{low:.4f}, {high:.4f}] under "
+                "both sign conventions"
+            ),
+        )
+
+    def _check_delivered_lambda(
+        self,
+        slot: int,
+        cells: Mapping[tuple[int, int], float],
+        base_grid: str,
+        low: float,
+        high: float,
+    ) -> None:
+        """Bound base + offset on both sides, under **both** sign conventions.
+
+        The modifier's sign has never been observed on this car (see
+        :meth:`slot_lambda_map`), so a cell is only allowed if both
+        ``base + offset`` and ``base - offset`` land inside the declared range.
+        That is deliberately strict: it means a revision cannot use this grid to
+        reach a lambda that would be unsafe if the patch turns out to add the
+        offset the other way, which is exactly the mistake that a first use of
+        an unproven table is most likely to make.
+
+        As with delivered timing, the base grid is read live rather than assumed,
+        so the check stays true when a revision moves base fuelling in the same
+        script — which is the normal case here, since holding one slot at its
+        prior lambda while the base grid goes richer is what this grid is for.
+        """
+        try:
+            base = self._tune.values(base_grid)
+        except Exception as exc:  # noqa: BLE001 - re-raised with the reason
+            raise ValueError(
+                f"switchpatch.slot_lambda_map: cannot read the base lambda grid "
+                f"{base_grid!r}, so delivered lambda cannot be checked. The "
+                "modifier is additive; bounding it alone would say nothing "
+                f"about what the engine is fuelled with. ({exc})"
+            ) from exc
+
+        worst: Optional[tuple[tuple[int, int], float, float, int]] = None
+        for cell, offset in cells.items():
+            for sign in (+1, -1):
+                delivered = float(base[cell]) + sign * offset
+                if low <= delivered <= high:
+                    continue
+                excess = max(low - delivered, delivered - high)
+                if worst is None or excess > worst[3]:
+                    worst = (cell, float(base[cell]), delivered, excess)
+        if worst is not None:
+            (row, column), base_value, delivered, _ = worst
+            raise ValueError(
+                f"switchpatch.slot_lambda_map: slot {slot} would deliver lambda "
+                f"{delivered:.4f} at row {row}, column {column} "
+                f"({base_value:.4f} base {delivered - base_value:+.4f} modifier), "
+                f"outside the declared range [{low:.4f}, {high:.4f}]. Both signs "
+                "are checked because the patch's sign has never been observed on "
+                "this car: a write is only allowed if it is safe whichever way "
+                "the offset is applied."
+            )
 
     # -- traction control ------------------------------------------------------ #
     @dry_runnable
@@ -495,7 +683,8 @@ class SwitchPatch(Domain):
 
     @classmethod
     def _breakpoint_index(
-        cls, axis: np.ndarray, value: float, label: str, units: str
+        cls, axis: np.ndarray, value: float, label: str, units: str,
+        caller: str = "slot_spark_map",
     ) -> int:
         """The index of the named breakpoint, or a refusal naming the real ones.
 
@@ -509,12 +698,21 @@ class SwitchPatch(Domain):
         if abs(float(axis[nearest]) - value) > tolerance:
             offered = ", ".join(f"{v:g}" for v in axis)
             raise ValueError(
-                f"switchpatch.slot_spark_map: {value:g} {units} is not a "
+                f"switchpatch.{caller}: {value:g} {units} is not a "
                 f"{label} breakpoint of this grid; it has {offered}"
             )
         return nearest
 
-    def _check_representable(self, cells: Mapping[tuple[int, int], float]) -> None:
+    def _check_representable(
+        self, cells: Mapping[tuple[int, int], float], *,
+        table: str = "slot1_spark_modifier",
+        caller: str = "slot_spark_map",
+        units: str = "\N{DEGREE SIGN}CRK",
+        rationale: str = (
+            "on ignition advance a silent round-up is the unsafe direction, "
+            "and the calibration should say what the ECU will actually hold"
+        ),
+    ) -> None:
         """Refuse an offset the grid cannot store, rather than rounding it.
 
         This grid holds 0.375 °CRK per raw step, so most round numbers are not
@@ -526,7 +724,7 @@ class SwitchPatch(Domain):
         better option than flooring, because the caller can simply be told the
         two values the grid can actually hold and pick one.
         """
-        step = self._value_step()
+        step = self._value_step(table)
         if step is None:
             return
         offenders = []
@@ -539,17 +737,15 @@ class SwitchPatch(Domain):
             offenders.append(f"{offset:+.3f} (nearest storable {low:+.3f} or {high:+.3f})")
         if offenders:
             raise ValueError(
-                f"switchpatch.slot_spark_map: this grid stores {step:g}\u00b0CRK per "
+                f"switchpatch.{caller}: this grid stores {step:g} {units} per "
                 f"raw step, and {len(offenders)} requested offset(s) do not land "
                 "on it: " + "; ".join(sorted(set(offenders))) + ". Refusing rather "
-                "than rounding — on ignition advance a silent round-up is the "
-                "unsafe direction, and the calibration should say what the ECU "
-                "will actually hold."
+                f"than rounding — {rationale}."
             )
 
-    def _value_step(self) -> Optional[float]:
-        """Physical units per raw step for a slot's spark grid, or None."""
-        view = self._tune.table("slot1_spark_modifier", space=self.space).view
+    def _value_step(self, table: str = "slot1_spark_modifier") -> Optional[float]:
+        """Physical units per raw step for one of the slot grids, or None."""
+        view = self._tune.table(table, space=self.space).view
         scaling = view.table.z.scaling if view.table.z is not None else None
         if scaling is None or not scaling.is_linear or not scaling.m:
             return None
@@ -603,6 +799,8 @@ class SwitchPatch(Domain):
         cells: Mapping[tuple[int, int], float],
         current: np.ndarray,
         airmass_axis: np.ndarray,
+        *,
+        caller: str = "slot_spark_map",
     ) -> None:
         """Above the top breakpoint, only a flat map is bounded.
 
@@ -628,14 +826,14 @@ class SwitchPatch(Domain):
             ~np.isclose(result[top], result[below], rtol=0, atol=1e-6)
         )
         raise ValueError(
-            f"switchpatch.slot_spark_map: slot {slot}'s top airmass row "
+            f"switchpatch.{caller}: slot {slot}'s top airmass row "
             f"({airmass_axis[top]:g} mg/stk) would differ from the "
             f"{airmass_axis[below]:g} mg/stk row below it at column(s) "
             f"{', '.join(str(int(c)) for c in differing)}. WOT airmass runs past "
             "the top breakpoint, and only a flat last segment is bounded there — "
-            "write the two rows identically, or the behaviour above 1400 mg/stk "
-            "depends on whether the ECU clamps or extrapolates, which is not "
-            "established."
+            "write the two rows identically, or the behaviour above the top "
+            "breakpoint depends on whether the ECU clamps or extrapolates, "
+            "which is not established."
         )
 
     def _check_axis_header(self) -> EditEntry:

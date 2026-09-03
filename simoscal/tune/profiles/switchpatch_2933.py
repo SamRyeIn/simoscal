@@ -64,6 +64,24 @@ SLOT_AXIS_HEADER_VALUE = 12.0
 #: ``knowledge/sc8s50-switchpatch-xdf.md`` § Per-slot ``Spark modifier``.
 SPARK_DEFAULT_DEGREES = 0.0
 
+#: The as-patched, no-op value in every ``Lambda modifier`` cell, as a lambda
+#: offset. Neutral is again a *decoded* zero on a signed codec centred at raw
+#: 32768 (``raw / 1024 - 32``), which carries the same proof as the spark grid
+#: above: a grid that shipped neutral at 0.00 cannot be a replacement setpoint —
+#: every slot would be commanding lambda 0.00 — and cannot be a multiplier,
+#: which would have to ship neutral at 1.0. It is additive onto the lambda the
+#: base grid asks for.
+#:
+#: What the patch does **not** establish is the sign. The `Spark modifier`
+#: grid's sign was measured — R20 wrote +1.125 to +3.750 CRK and the R20 and
+#: R22 logs show exactly that arriving in `Ign Avg` — but no revision has ever
+#: written a `Lambda modifier` cell, so the direction is inferred from the
+#: sibling and not yet observed. A caller must therefore treat a positive offset
+#: as *leaner* (the sibling's convention) while designing so that being wrong
+#: about it fails rich; :meth:`SwitchPatch.slot_lambda_map` enforces exactly
+#: that by refusing any write it cannot bound on both sides.
+LAMBDA_DEFAULT_OFFSET = 0.0
+
 # Every table in this profile is domain-owned: the patch's structural rules —
 # eight-row tiling, the below-base-ceiling cap, the separate axis-length header —
 # live in ``SwitchPatch``, and a generic grid write honours none of them. So each
@@ -77,6 +95,7 @@ _OWNER_AXIS_HEADER = (
     "writes it"
 )
 _OWNER_SLOT_SPARK = "tune.switchpatch.slot_spark_map() (bridge op `spark_edit`)"
+_OWNER_SLOT_LAMBDA = "tune.switchpatch.slot_lambda_map()"
 _OWNER_TRACTION = "tune.switchpatch.traction_control()"
 _OWNER_SLOT_FLAG = "tune.switchpatch.set_slot_flag() (bridge op `slot_flag`)"
 _OWNER_REV_LIMITS = (
@@ -420,6 +439,8 @@ def _check_address_book(
     slot_setting_uids: Mapping[str, Mapping[int, str]],
     spark_grid_uids: Mapping[int, str] | None,
     spark_grid_shape: tuple[int, int] | None,
+    lambda_grid_uids: Mapping[int, str] | None = None,
+    lambda_grid_shape: tuple[int, int] | None = None,
 ) -> None:
     """Refuse an address book that is incomplete, over-full, or self-colliding.
 
@@ -463,11 +484,25 @@ def _check_address_book(
             "together — the Spark modifier grid's shape differs between cars "
             "(S50 is 16x16, A05 is 16x18), so it cannot be defaulted"
         )
+    # The five ``Lambda modifier`` grids are optional on exactly the same terms,
+    # and for the same reason: a car gains them when someone reads their
+    # uniqueids off that car's own patch XDF. They sit on the *base lambda*
+    # grid's axes rather than the ignition grid's, so their geometry is a
+    # second per-car fact and travels with the book the same way.
+    if (lambda_grid_uids is None) != (lambda_grid_shape is None):
+        raise ValueError(
+            f"{name}: lambda_grid_uids and lambda_grid_shape must be given "
+            "together — the Lambda modifier grid sits on the base lambda "
+            "grid's own axes, whose breakpoint counts are per-car, so its "
+            "shape cannot be defaulted"
+        )
 
     for label, slots in (
         ("PUT grids", set(put_grid_uids)),
         *(() if spark_grid_uids is None
           else (("Spark modifier grids", set(spark_grid_uids)),)),
+        *(() if lambda_grid_uids is None
+          else (("Lambda modifier grids", set(lambda_grid_uids)),)),
         *((f"setting {k!r}", set(v)) for k, v in slot_setting_uids.items()),
     ):
         if slots != set(SLOTS):
@@ -482,6 +517,8 @@ def _check_address_book(
         *((f"slot{s}_put_setpoint", uid) for s, uid in put_grid_uids.items()),
         *((f"slot{s}_spark_modifier", uid)
           for s, uid in (spark_grid_uids or {}).items()),
+        *((f"slot{s}_lambda_modifier", uid)
+          for s, uid in (lambda_grid_uids or {}).items()),
         *(
             (f"slot{s}_{key}", uid)
             for key, per_slot in slot_setting_uids.items()
@@ -508,6 +545,8 @@ def build_switch_patch_profile(
     slot_setting_uids: Mapping[str, Mapping[int, str]],
     spark_grid_uids: Mapping[int, str] | None = None,
     spark_grid_shape: tuple[int, int] | None = None,
+    lambda_grid_uids: Mapping[int, str] | None = None,
+    lambda_grid_shape: tuple[int, int] | None = None,
 ) -> Profile:
     """Bind this patch's tables — 92, or 97 with the spark grids — to one car.
 
@@ -528,6 +567,7 @@ def build_switch_patch_profile(
     _check_address_book(
         name, standalone_uids, put_grid_uids, slot_setting_uids,
         spark_grid_uids, spark_grid_shape,
+        lambda_grid_uids, lambda_grid_shape,
     )
 
     specs = _standalone_specs(standalone_uids)
@@ -548,6 +588,18 @@ def build_switch_patch_profile(
                 units="\N{DEGREE SIGN}CRK", shape=spark_grid_shape,
                 tags=frozenset({TAG_NO_SYMBOL}),
                 owner=_OWNER_SLOT_SPARK,
+            ))
+        if lambda_grid_uids is not None:
+            specs.append(TableSpec(
+                name=f"slot{slot}_lambda_modifier", key=lambda_grid_uids[slot],
+                description=(
+                    "Lambda modifier — additive lambda offset for map slot "
+                    f"{slot}, on the base lambda setpoint grid's own "
+                    "rpm x airmass axes"
+                ),
+                units="lambda", shape=lambda_grid_shape,
+                tags=frozenset({TAG_NO_SYMBOL}),
+                owner=_OWNER_SLOT_LAMBDA,
             ))
         # The sixteen per-slot scalars, straight off the registry above. Owned
         # like everything else in this profile: a flag is only written through
@@ -610,6 +662,22 @@ S50_SPARK_GRID_UIDS = {
     1: "0x7cf1a", 2: "0x7d01a", 3: "0x7d11a", 4: "0x7d21a", 5: "0x7d31a",
 }
 
+#: S50 — the five per-slot ``Lambda modifier`` grids.
+#:
+#: Slot attribution is read the same way as the spark grids above — each table's
+#: third ``CATEGORYMEM`` in ``S50 Switch Patch.29.33.V2.xdf``, ``category="248"``
+#: down to ``"244"`` for Map Slot 1-5 — and not off the tidy ``0xC0`` address
+#: stride, which would be a guess that happened to agree.
+S50_LAMBDA_GRID_UIDS = {
+    1: "0x7cb5a", 2: "0x7cc1a", 3: "0x7ccda", 4: "0x7cd9a", 5: "0x7ce5a",
+}
+
+#: S50 — the ``Lambda modifier`` geometry: the 12 rpm x 8 mg/stk breakpoints of
+#: the base lambda setpoint grid, whose axis tables these reuse. Note this is
+#: the *re-breakpointed* axis this lineage has run since R00, not the factory
+#: one — the grids point at the axis tables themselves, so they follow.
+S50_LAMBDA_GRID_SHAPE = (8, 12)
+
 #: S50 — the ``Spark modifier`` geometry: the 16 rpm × 16 mg/stk breakpoints of
 #: the base ignition maps' own axes (``0x3ce5a`` and ``0x3cdbc``, which these
 #: grids reuse byte for byte). A05's is (16, 18), which is why this travels with
@@ -645,6 +713,8 @@ SWITCH_PATCH_2933 = build_switch_patch_profile(
     slot_setting_uids=S50_SLOT_SETTING_UIDS,
     spark_grid_uids=S50_SPARK_GRID_UIDS,
     spark_grid_shape=S50_SPARK_GRID_SHAPE,
+    lambda_grid_uids=S50_LAMBDA_GRID_UIDS,
+    lambda_grid_shape=S50_LAMBDA_GRID_SHAPE,
 )
 
 __all__ = [
@@ -662,6 +732,9 @@ __all__ = [
     "SLOT_GRID_SHAPE",
     "SLOT_DEFAULT_HPA",
     "SPARK_DEFAULT_DEGREES",
+    "LAMBDA_DEFAULT_OFFSET",
+    "S50_LAMBDA_GRID_SHAPE",
+    "S50_LAMBDA_GRID_UIDS",
     "SLOT_AXIS_HEADER_VALUE",
     "SLOT_SETTINGS",
     "SLOT_SETTINGS_BY_KEY",

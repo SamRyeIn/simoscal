@@ -1258,6 +1258,9 @@ def _patch_role_correspondence() -> list[tuple[int, int]]:
 #: and :func:`test_f8_the_spark_grids_are_the_only_asymmetry` pins the gap
 #: itself so it cannot quietly widen.
 _SPARK_GRID_NAMES = frozenset(f"slot{n}_spark_modifier" for n in (1, 2, 3, 4, 5))
+#: The ``Lambda modifier`` grids are in exactly the same position: bound for S50
+#: off its own XDF, absent from A05 until someone reads A05's uniqueids.
+_LAMBDA_GRID_NAMES = frozenset(f"slot{n}_lambda_modifier" for n in (1, 2, 3, 4, 5))
 
 
 def _shared_patch_names() -> list[str]:
@@ -1265,9 +1268,9 @@ def _shared_patch_names() -> list[str]:
 
 
 def test_f8_the_spark_grids_are_the_only_asymmetry() -> None:
-    """S50 binds five tables A05 does not, and that is the whole difference."""
+    """S50 binds ten tables A05 does not, and that is the whole difference."""
     s50, a05 = set(SWITCH_PATCH_2933.names()), set(SWITCH_PATCH_2933_A05.names())
-    assert s50 - a05 == _SPARK_GRID_NAMES
+    assert s50 - a05 == _SPARK_GRID_NAMES | _LAMBDA_GRID_NAMES
     assert a05 - s50 == set()
     assert len(_shared_patch_names()) == 92
 
@@ -1603,3 +1606,40 @@ def test_f9_a_car_that_declares_no_set_is_refused_not_defaulted() -> None:
     # too — declaring nothing and declaring "none" must not look the same.
     with pytest.raises(ValueError):
         replace(SCGA05, name="Empty", table_sets={"lambda_floors": ()})
+
+
+# ---- F11: every snapshot decoder keeps the profile's address convention ---- #
+
+
+def test_f11_a05_stock_ghost_reads_from_the_cal_relative_address() -> None:
+    """CR-20260828-07: the source decoder must use the live CAL rebase."""
+    from simoscal.tune.catalog import table_detail
+
+    tune = _a05_tune()
+    source = tune.source_space()
+
+    assert source is not None
+    assert source.base_offset == tune.space().cal.base_offset == A05_CAL_FILE_OFFSET
+    ghost = np.asarray(
+        table_detail(tune, "lambda_full_load").source_values,
+        dtype=np.float64,
+    )
+    assert np.array_equal(ghost, tune.values("lambda_full_load"))
+
+
+def test_f11_a05_sop_journals_the_real_cal_relative_before_value() -> None:
+    """CR-20260828-08: the SOP prior decoder must use the live CAL rebase."""
+    from simoscal.sop_recipe import SYMBOL_MAP
+
+    tune = _a05_tune()
+    original = tune.values("put_setpoint")
+    put_recipe = next(
+        entry for entry in SYMBOL_MAP if "IP_PUT_SP" in entry.symbols
+    )
+
+    entries = tune.apply_basics_sop(symbol_map=(put_recipe,))
+    put_entry = next(entry for entry in entries if entry.name == "IP_PUT_SP")
+
+    assert put_entry.key == "IP_PUT_SP"
+    assert put_entry.before is not None
+    assert np.array_equal(put_entry.before, original)

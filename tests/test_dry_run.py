@@ -191,6 +191,10 @@ PATCH_CALLS = {
         lambda t, d: t.switchpatch.slot_spark_map(
             5, rpm=[5000, 5500], rows={1200: [1.5, 1.5], 1400: [1.5, 1.5]},
             max_delivered_degrees=12.0, dry_run=d),
+    "switchpatch.slot_lambda_map":
+        lambda t, d: t.switchpatch.slot_lambda_map(
+            2, rpm=[3008], rows={1200: [0.01953125], 1389: [0.01953125]},
+            delivered_lambda_range=(0.60, 1.20), dry_run=d),
     "switchpatch.slot_rpm_axis":
         lambda t, d: t.switchpatch.slot_rpm_axis(
             _axis_nudged(t, "slot_put_rpm_axis", space=PATCH_SPACE), dry_run=d),

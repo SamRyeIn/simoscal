@@ -389,8 +389,8 @@ def test_switch_patch_map_binds_every_slot_by_uniqueid() -> None:
 
 
 def test_switch_patch_binds_the_five_spark_modifier_grids() -> None:
-    """The 92-table book gains five, and they are owned like everything else."""
-    assert len(SWITCH_PATCH_2933.specs) == 92 + 5
+    """The 92-table book gains ten, and they are owned like everything else."""
+    assert len(SWITCH_PATCH_2933.specs) == 92 + 5 + 5
 
     names = sp_map.slot_names("spark_modifier")
     assert names == tuple(f"slot{n}_spark_modifier" for n in (1, 2, 3, 4, 5))
@@ -405,10 +405,47 @@ def test_switch_patch_binds_the_five_spark_modifier_grids() -> None:
         assert "slot_spark_map" in spec.owner
 
 
+def test_switch_patch_binds_the_five_lambda_modifier_grids() -> None:
+    """The fuelling sibling of the spark grids, bound on the same terms."""
+    names = sp_map.slot_names("lambda_modifier")
+    assert names == tuple(f"slot{n}_lambda_modifier" for n in (1, 2, 3, 4, 5))
+
+    for slot, uid in sp_map.S50_LAMBDA_GRID_UIDS.items():
+        spec = SWITCH_PATCH_2933[f"slot{slot}_lambda_modifier"]
+        assert spec.key == uid
+        assert spec.shape == sp_map.S50_LAMBDA_GRID_SHAPE == (8, 12)
+        assert spec.units == "lambda"
+        assert spec.has(prof.TAG_NO_SYMBOL)
+        assert "slot_lambda_map" in spec.owner
+
+
+def test_the_lambda_grids_do_not_collide_with_any_other_patch_table() -> None:
+    """Ten grids now bind by address; a repeated uniqueid must still fail."""
+    collide = dict(sp_map.S50_LAMBDA_GRID_UIDS)
+    collide[2] = sp_map.S50_SPARK_GRID_UIDS[2]
+    with pytest.raises(ValueError, match="cannot share one table"):
+        sp_map.build_switch_patch_profile(**_s50_book(lambda_grid_uids=collide))
+
+
+def test_lambda_uids_without_a_shape_are_refused() -> None:
+    """Same all-or-nothing rule as the spark grids, for the same reason."""
+    with pytest.raises(ValueError, match="together"):
+        sp_map.build_switch_patch_profile(**_s50_book(lambda_grid_shape=None))
+    with pytest.raises(ValueError, match="together"):
+        sp_map.build_switch_patch_profile(**_s50_book(lambda_grid_uids=None))
+
+
+def test_a_lambda_book_missing_a_slot_fails_at_build_time() -> None:
+    short = {s: u for s, u in sp_map.S50_LAMBDA_GRID_UIDS.items() if s != 4}
+    with pytest.raises(ValueError, match="Lambda modifier grids"):
+        sp_map.build_switch_patch_profile(**_s50_book(lambda_grid_uids=short))
+
+
 def test_spark_grids_are_optional_and_a05_declines_them() -> None:
     """A05's uniqueids have never been read off its own XDF; it keeps its 92."""
     assert len(SWITCH_PATCH_2933_A05.specs) == 92
     assert not [n for n in SWITCH_PATCH_2933_A05.specs if "spark_modifier" in n]
+    assert not [n for n in SWITCH_PATCH_2933_A05.specs if "lambda_modifier" in n]
 
 
 def _s50_book(**overrides):
@@ -419,6 +456,8 @@ def _s50_book(**overrides):
         slot_setting_uids=sp_map.S50_SLOT_SETTING_UIDS,
         spark_grid_uids=sp_map.S50_SPARK_GRID_UIDS,
         spark_grid_shape=sp_map.S50_SPARK_GRID_SHAPE,
+        lambda_grid_uids=sp_map.S50_LAMBDA_GRID_UIDS,
+        lambda_grid_shape=sp_map.S50_LAMBDA_GRID_SHAPE,
     )
     book.update(overrides)
     return book

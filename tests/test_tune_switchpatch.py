@@ -23,6 +23,7 @@ from simoscal.tune import (
 from simoscal.tune.domains.switchpatch import PATCH_SPACE
 from simoscal.tune.editing import EditRejected, apply_op
 from simoscal.tune.profiles.switchpatch_2933 import (
+    LAMBDA_DEFAULT_OFFSET,
     SLOT_DEFAULT_HPA,
     SLOT_SETTINGS,
     SLOTS,
@@ -569,3 +570,163 @@ def test_a_generic_edit_to_a_spark_grid_is_refused(patched: Tune) -> None:
             intent="bypass the domain",
         )
     assert "slot_spark_map" in str(excinfo.value)
+
+
+# --- per-slot Lambda modifier -------------------------------------------- #
+#
+# The base lambda grid's own breakpoints, which these grids share. These are the
+# **factory** ones: this fixture patches the stock bin, and R00's lambda-axis
+# re-breakpoint is a tune edit, not part of the patch. So a test that hard-coded
+# the lineage's 1389 mg/stk top row would be asserting against a bin that does
+# not exist here. 600 and 1020 are the two top airmass rows, and 1020 is the top
+# of the axis, so the flat-top rule applies to it.
+LAMBDA_RPM = [3008, 3520]
+LAMBDA_ROWS_MG = (600, 1020)
+#: Wide enough that the both-sign check is not what a test trips on unless it
+#: means to: the base grid runs 0.80 to 1.00 in these cells.
+GENEROUS_LAMBDA_RANGE = (0.60, 1.20)
+
+
+def _lambda_rows(offsets):
+    return {mg: list(offsets) for mg in LAMBDA_ROWS_MG}
+
+
+def test_lambda_modifiers_start_neutral(patched: Tune) -> None:
+    """Neutral is a decoded 0.00 lambda — the same additive proof as spark."""
+    for slot in SLOTS:
+        values = patched.values(f"slot{slot}_lambda_modifier", space=PATCH_SPACE)
+        assert values.shape == (8, 12)
+        assert np.allclose(values, LAMBDA_DEFAULT_OFFSET, atol=1e-6)
+
+
+def test_slot_lambda_map_writes_only_the_named_cells(patched: Tune) -> None:
+    offsets = [0.01953125, 0.01953125]   # 20 and 20 raw steps of 1/1024
+    patched.switchpatch.slot_lambda_map(
+        2, rpm=LAMBDA_RPM, rows=_lambda_rows(offsets),
+        delivered_lambda_range=GENEROUS_LAMBDA_RANGE,
+        intent="hold slot 2 at its prior lambda",
+    )
+    grid = patched.values("slot2_lambda_modifier", space=PATCH_SPACE)
+
+    written = ~np.isclose(grid, LAMBDA_DEFAULT_OFFSET, atol=1e-9)
+    assert written.sum() == 4, "4 of 96 cells, as declared"
+    for row in (6, 7):
+        assert np.allclose(grid[row][5:7], offsets)
+    # Every other slot untouched — the whole point of a per-slot grid.
+    for slot in (1, 3, 4, 5):
+        other = patched.values(f"slot{slot}_lambda_modifier", space=PATCH_SPACE)
+        assert np.allclose(other, LAMBDA_DEFAULT_OFFSET, atol=1e-9)
+
+
+def test_slot_lambda_map_leaves_the_shared_base_grid_alone(patched: Tune) -> None:
+    before = patched.values("lambda_basic_hpdi")
+    patched.switchpatch.slot_lambda_map(
+        2, rpm=LAMBDA_RPM, rows=_lambda_rows([0.01953125] * 2),
+        delivered_lambda_range=GENEROUS_LAMBDA_RANGE,
+    )
+    assert np.array_equal(before, patched.values("lambda_basic_hpdi"))
+
+
+def test_the_delivered_lambda_range_is_checked_under_both_signs(
+    patched: Tune,
+) -> None:
+    """The guard that makes a first use of this grid safe at all.
+
+    The sign has never been observed on this car, so an offset is only allowed
+    when ``base + offset`` and ``base - offset`` are *both* inside the declared
+    range. Here the lean side of the range admits the offset and the rich side
+    does not, and the write is refused even though one convention would be fine.
+    """
+    base = patched.values("lambda_basic_hpdi")
+    cell = max(float(base[6][5]), float(base[7][5]))
+    offset = 0.05078125   # 52 raw steps
+    with pytest.raises(ValueError, match="outside the declared range"):
+        patched.switchpatch.slot_lambda_map(
+            2, rpm=[3008], rows={600: [offset], 1020: [offset]},
+            delivered_lambda_range=(cell - offset / 2.0, cell + offset + 0.01),
+        )
+    # Widen the rich bound past the other sign and the same write is allowed.
+    patched.switchpatch.slot_lambda_map(
+        2, rpm=[3008], rows={600: [offset], 1020: [offset]},
+        delivered_lambda_range=(cell - offset - 0.01, cell + offset + 0.01),
+    )
+
+
+def test_the_lambda_range_refuses_rather_than_passes_without_a_base_grid(
+    patched: Tune,
+) -> None:
+    with pytest.raises(ValueError, match="cannot read the base lambda grid"):
+        patched.switchpatch.slot_lambda_map(
+            2, rpm=LAMBDA_RPM, rows=_lambda_rows([0.01953125] * 2),
+            delivered_lambda_range=GENEROUS_LAMBDA_RANGE,
+            base_grid="no_such_lambda_grid",
+        )
+
+
+def test_a_lambda_range_the_wrong_way_round_is_refused(patched: Tune) -> None:
+    with pytest.raises(ValueError, match="rich bound lower"):
+        patched.switchpatch.slot_lambda_map(
+            2, rpm=LAMBDA_RPM, rows=_lambda_rows([0.0] * 2),
+            delivered_lambda_range=(1.20, 0.60),
+        )
+
+
+def test_a_lambda_offset_off_the_storage_lattice_is_refused(
+    patched: Tune,
+) -> None:
+    """The grid stores 1/1024 per raw step; 0.02 is not on it."""
+    with pytest.raises(ValueError, match="do not land"):
+        patched.switchpatch.slot_lambda_map(
+            2, rpm=[3008], rows={600: [0.02], 1020: [0.02]},
+            delivered_lambda_range=GENEROUS_LAMBDA_RANGE,
+        )
+
+
+def test_the_top_lambda_row_must_match_the_one_below(patched: Tune) -> None:
+    """WOT airmass runs past the top breakpoint; only a flat segment is bounded."""
+    with pytest.raises(ValueError, match="only a flat last segment is bounded"):
+        patched.switchpatch.slot_lambda_map(
+            2, rpm=[3008], rows={1020: [0.01953125]},
+            delivered_lambda_range=GENEROUS_LAMBDA_RANGE,
+        )
+
+
+def test_a_lambda_row_or_column_off_the_breakpoints_is_refused(
+    patched: Tune,
+) -> None:
+    with pytest.raises(ValueError, match="3200 rpm is not a rpm breakpoint"):
+        patched.switchpatch.slot_lambda_map(
+            2, rpm=[3200], rows={600: [0.0], 1020: [0.0]},
+            delivered_lambda_range=GENEROUS_LAMBDA_RANGE,
+        )
+    with pytest.raises(ValueError, match="1400 mg/stk is not a airmass breakpoint"):
+        patched.switchpatch.slot_lambda_map(
+            2, rpm=[3008], rows={1400: [0.0]},
+            delivered_lambda_range=GENEROUS_LAMBDA_RANGE,
+        )
+
+
+def test_require_as_patched_catches_a_lambda_grid_already_written(
+    patched: Tune,
+) -> None:
+    patched.switchpatch.slot_lambda_map(
+        2, rpm=LAMBDA_RPM, rows=_lambda_rows([0.01953125] * 2),
+        delivered_lambda_range=GENEROUS_LAMBDA_RANGE,
+    )
+    with pytest.raises(ValueError, match="not the untouched base"):
+        patched.switchpatch.slot_lambda_map(
+            2, rpm=LAMBDA_RPM, rows=_lambda_rows([0.01953125] * 2),
+            delivered_lambda_range=GENEROUS_LAMBDA_RANGE,
+            require_as_patched=True,
+        )
+
+
+def test_a_generic_edit_to_a_lambda_grid_is_refused(patched: Tune) -> None:
+    """Domain-owned: the generic editor cannot bypass the both-sign guard."""
+    with pytest.raises(EditRejected) as excinfo:
+        apply_op(
+            patched, "slot3_lambda_modifier", "set",
+            space=PATCH_SPACE, value=-0.1,
+            intent="bypass the domain",
+        )
+    assert "slot_lambda_map" in str(excinfo.value)
