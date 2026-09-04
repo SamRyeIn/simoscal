@@ -1627,6 +1627,35 @@ def test_f11_a05_stock_ghost_reads_from_the_cal_relative_address() -> None:
     assert np.array_equal(ghost, tune.values("lambda_full_load"))
 
 
+def test_f11_the_ghost_image_covers_the_live_cal_region() -> None:
+    """The cause behind the test above, asserted where it is legible.
+
+    The ghost decoder reads the source snapshot through its own ``BinImage``,
+    and that image's region has to be the one the live image actually uses —
+    where the CAL block sits in this file — not the nominal region the model's
+    XDF declares. On S50 the two coincide, which is why building the ghost from
+    the model's region looked correct for as long as this project had one car.
+    On A05 the model declares [0x0, 0x7d000) while the CAL block is at
+    0x220000, so every rebased read lands outside the ghost's region.
+
+    That failure is silent by design: ``source_space`` and ``_source_values``
+    both swallow their exceptions, because losing an editing surface to a
+    broken decoration would be the worse failure. So the ghost simply becomes
+    ``None`` and the test above sees a bare nan with no cause attached. This
+    asserts the region directly, so a regression names the reason.
+    """
+    tune = _a05_tune()
+    live = tune.space().cal.binimage
+    ghost = tune.source_space()
+
+    assert ghost is not None
+    assert ghost.binimage.region_start == live.region_start == A05_CAL_FILE_OFFSET
+    assert ghost.binimage.region_size == live.region_size
+    # And the model's nominal region really is the wrong one to have used, or
+    # this test would pass for the wrong reason on any car.
+    assert tune.space().cal.model.region_start != live.region_start
+
+
 def test_f11_a05_sop_journals_the_real_cal_relative_before_value() -> None:
     """CR-20260828-08: the SOP prior decoder must use the live CAL rebase."""
     from simoscal.sop_recipe import SYMBOL_MAP

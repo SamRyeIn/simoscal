@@ -187,11 +187,22 @@ class Tune:
             table_space = self.space(name)
             if self._source_snapshot:
                 if self._source_image is None:
-                    model = self.space(BASE_SPACE).cal.model
+                    # The region has to come from the **live image**, not from
+                    # the model. A model's region is the nominal one its XDF
+                    # declares; the image's is where that region actually sits
+                    # in this file, which for a discovered structure is the CAL
+                    # block the structure located. On S50 the two coincide, so
+                    # taking the model's looked right for as long as this
+                    # project only had one car. On A05 the model declares
+                    # [0x0, 0x7d000) while the CAL block is at 0x220000, and a
+                    # ghost built on the model's region cannot address a single
+                    # rebased table — every read lands outside it and the ghost
+                    # silently becomes ``None`` (CR-20260828-07).
+                    live = self.space(BASE_SPACE).cal.binimage
                     self._source_image = BinImage(
                         self._source_snapshot,
-                        region_start=model.region_start,
-                        region_size=model.region_size,
+                        region_start=live.region_start,
+                        region_size=live.region_size,
                     )
                 result = CalFile(
                     table_space.cal.model,
